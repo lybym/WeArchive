@@ -129,11 +129,14 @@ jobs:
           vpk @vpkArgs
           if ($LASTEXITCODE -ne 0) { throw "vpk upload failed with exit code $LASTEXITCODE" }
 
-      - name: Attach the portable ZIP to the release
+      - name: Attach the portable ZIP and the Setup.exe copy to the release
         shell: pwsh
         run: |
+          # vpk uploads the assets it tracks; the portable ZIP and the friendlier
+          # WeArchive-Setup.exe copy are attached separately.
           gh release upload "v${{ steps.version.outputs.value }}" `
             artifacts/WeArchive-win-x64.zip `
+            artifacts/velopack/WeArchive-Setup.exe `
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
