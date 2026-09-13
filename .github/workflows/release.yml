@@ -102,12 +102,23 @@ jobs:
       - name: Upload Velopack release assets and create the GitHub Release
         shell: pwsh
         run: |
-          vpk upload github `
-            --repoUrl https://github.com/${{ github.repository }} `
-            --token ${{ secrets.GITHUB_TOKEN }} `
-            --publish `
-            --releaseName "WeArchive ${{ steps.version.outputs.value }}" `
-            --tag v${{ steps.version.outputs.value }}
+          $version = '${{ steps.version.outputs.value }}'
+          $vpkArgs = @(
+            'upload', 'github',
+            '--repoUrl', 'https://github.com/${{ github.repository }}',
+            '--token', '${{ secrets.GITHUB_TOKEN }}',
+            '--publish',
+            '--releaseName', "WeArchive $version",
+            '--tag', "v$version"
+          )
+          # A version carrying a SemVer prerelease suffix (for example 0.1.0-rc.1) is
+          # published as a GitHub pre-release, so it is clearly a test build and is never
+          # picked up as the stable release of record.
+          if ($version.Contains('-')) {
+            $vpkArgs += '--pre'
+            Write-Host 'Publishing as a pre-release.'
+          }
+          vpk @vpkArgs
           if ($LASTEXITCODE -ne 0) { throw "vpk upload failed with exit code $LASTEXITCODE" }
 
       - name: Attach the portable ZIP to the release
