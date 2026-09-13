@@ -6,14 +6,18 @@ The normalized data model decouples the long-lived personal archive from any sin
 
 Source adapters may change often. The archive schema should change only when product semantics change.
 
+The canonical message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md). Phase 1 export behavior is defined by [EXPORT_PRD.md](EXPORT_PRD.md).
+
 ## 2. Core principles
 
 1. Stable IDs and display names are separate concepts.
 2. Source provenance is first-class.
 3. Import runs are auditable.
 4. Re-import must be idempotent.
-5. Attachments are modeled independently from messages.
-6. Source-specific fields belong in provenance/metadata, not in core domain columns unless they have product meaning.
+5. Message semantics are source-independent.
+6. Binary media is not required for the Phase 1 export product.
+7. Source-specific fields belong in provenance/metadata, not in core domain columns unless they have product meaning.
+8. Unknown records are retained rather than silently discarded.
 
 ## 3. Entity relationship overview
 
@@ -24,9 +28,8 @@ erDiagram
     CONVERSATION ||--o{ CONVERSATION_PARTICIPANT : has
     PARTICIPANT ||--o{ CONVERSATION_PARTICIPANT : joins
     PARTICIPANT ||--o{ MESSAGE : sends
-    MESSAGE ||--o{ ATTACHMENT : references
+    MESSAGE ||--o| MESSAGE : replies_to
     IMPORT_RUN ||--o{ MESSAGE : imports
-    IMPORT_RUN ||--o{ ATTACHMENT : imports
     ACCOUNT ||--o{ SOURCE_CHECKPOINT : tracks
 
     ACCOUNT {
@@ -51,30 +54,25 @@ erDiagram
         string id PK
         string account_id FK
         string source_participant_id
-        string display_name
-        string alias
+        string latest_remark
+        string nickname
+        string user_display_name
     }
 
     MESSAGE {
         string id PK
         string conversation_id FK
         string sender_id FK
+        datetime occurred_at
+        string type
+        text semantic_text
+        text payload_json
+        string reply_to_message_id FK
+        text reply_snapshot_json
         string source_message_id
         string source_partition
-        datetime occurred_at
-        string kind
-        text text_content
+        string source_order_key
         string import_run_id FK
-    }
-
-    ATTACHMENT {
-        string id PK
-        string message_id FK
-        string kind
-        string source_ref
-        string archive_path
-        string digest
-        string availability
     }
 
     IMPORT_RUN {
@@ -103,11 +101,11 @@ Represents one logical source profile imported into an archive.
 
 Required concepts:
 
-- Internal archive `id`.
-- Stable `source_profile_id` from adapter.
-- Adapter identity.
-- Source/client version metadata.
-- Optional display label.
+- internal archive `id`;
+- stable `source_profile_id` from adapter;
+- adapter identity;
+- source/client version metadata;
+- optional display label.
 
 An Account is not an authentication credential record.
 
@@ -117,15 +115,15 @@ Represents a private chat, group chat or other supported logical conversation.
 
 Fields:
 
-- stable archive ID
-- account ID
-- stable source conversation ID
-- type: `private`, `group`, `official`, `system`, `unknown`
-- current title/display name
-- optional first/last known timestamps
-- archive timestamps
+- stable archive ID;
+- account ID;
+- stable source conversation ID;
+- type: `direct`, `group`, `official`, `system`, `unknown`;
+- current title/display name;
+- optional user-maintained alias in export configuration;
+- optional first/last known timestamps.
 
-Conversation titles are mutable and must never be used as identity keys.
+Conversation titles are mutable and must never be used as identity keys or physical export paths.
 
 ## 6. Participant
 
@@ -133,46 +131,76 @@ Represents a stable logical sender/contact identity when available.
 
 Recommended fields:
 
-- archive ID
-- account ID
-- source participant ID
-- current display name
-- alias/remark
-- optional avatar reference
+- archive ID;
+- account ID;
+- stable source participant ID;
+- latest available remark;
+- latest nickname;
+- optional user-maintained display name.
 
-Display names can change and can collide.
+Phase 1 export identity rules:
+
+```text
+latest remark exists -> default display_name = latest remark
+no latest remark      -> default display_name = ""
+```
+
+Nickname is retained as metadata but does not automatically fill a missing remark.
+
+Display names can change and collide. Stable participant IDs must remain the canonical identity.
 
 ## 7. ConversationParticipant
 
 Many-to-many relation between conversations and participants.
 
-Possible future fields:
+Useful fields may include:
 
-- role
-- group nickname
-- join/leave timing where available
+- group nickname;
+- role;
+- join/leave timing where available.
+
+Group-specific names never replace the canonical participant ID.
 
 ## 8. Message
 
-Canonical archived message.
+`Message` is the canonical archived semantic event.
 
 Required semantics:
 
-- archive message ID
-- conversation
-- sender if known
-- source message ID if available
-- source partition/shard identifier if applicable
-- source ordering key if applicable
-- occurred-at timestamp
-- normalized kind
-- normalized text content where applicable
-- raw/structured payload reference where retained
-- import run
+- archive message ID;
+- conversation ID;
+- sender ID when resolvable;
+- canonical timestamp;
+- normalized semantic `type`;
+- LLM/search-oriented semantic `text`;
+- optional type-specific structured `payload`;
+- optional reply/reference relationship;
+- source provenance;
+- import run.
 
-### Message kinds
+### 8.1 Common semantic model
 
-Initial normalized set:
+The conceptual structure is:
+
+```text
+Message
+├─ common envelope
+│  ├─ id
+│  ├─ conversation_id
+│  ├─ sender_id
+│  ├─ time
+│  └─ type
+├─ semantic_text
+├─ payload
+├─ reply_to
+└─ source provenance
+```
+
+The archive implementation may store structured data as JSON columns/tables while exports use the canonical shape defined in `MESSAGE_SCHEMA.md`.
+
+### 8.2 Canonical message types
+
+Phase 1 normalized types:
 
 - `text`
 - `image`
@@ -180,82 +208,171 @@ Initial normalized set:
 - `video`
 - `file`
 - `link`
+- `app_share`
+- `mini_program`
+- `forward_bundle`
 - `location`
-- `contact`
-- `quote`
+- `contact_card`
 - `system`
-- `other`
+- `revoke`
+- `red_packet`
+- `transfer`
+- `emoji`
+- `unknown`
 
-Unknown source types must map to `other` with diagnostics; they must not be silently discarded.
+`quote` is not a standalone content type. A quoted/replied message uses the underlying content type plus a `reply_to` relationship.
 
-## 9. Attachment
+Unknown source records must map to `unknown` with diagnostics and source type metadata; they must not be silently discarded.
 
-Represents an attachment or media object associated with a message.
+### 8.3 Semantic text
 
-Availability states:
+Every message should have a compact semantic text representation useful to LLMs and full-text search.
 
-- `metadata_only`
-- `available_local`
-- `archived`
-- `missing`
-- `unsupported`
+Examples:
 
-Recommended fields:
+```text
+text      -> 下午三点开会。
+image     -> [图片]
+voice     -> [语音]
+video     -> [视频]
+file      -> [文件] 华东中心项目汇报V8.pptx
+link      -> [链接] 标题\nhttps://...
+app_share -> [APP分享][来源] 标题\nhttps://...
+unknown   -> [未识别消息]
+```
 
-- attachment ID
-- message ID
-- kind
-- source reference
-- original filename where available
-- MIME/type hint
-- byte size
-- digest
-- archive path
-- availability
-- import run/provenance
+Semantic text must not contain unnecessary upstream XML or implementation details.
 
-## 10. ImportRun
+### 8.4 Structured payload
+
+`payload` contains product-meaningful type-specific semantics, for example:
+
+- file name / extension / size;
+- link title / description / original URL;
+- app source / app ID / page path;
+- voice duration;
+- location fields;
+- transfer fields;
+- forwarded-chat nested items.
+
+Missing fields must not be guessed.
+
+### 8.5 Reply relationship
+
+Replies/quotes are represented structurally.
+
+Recommended archive concepts:
+
+- `reply_to_message_id` when the referenced canonical message resolves;
+- `reply_snapshot_json` for locally available quoted sender/text metadata.
+
+This allows reply graph analysis even when the source stores only a quote snapshot or when the original message is unavailable.
+
+## 9. Non-text events and binary policy
+
+The archive may retain local source metadata needed for diagnostics, but Phase 1 export does not require copying image/audio/video/file binaries.
+
+Product semantics retained include:
+
+- image: event existence;
+- video: event existence;
+- voice: event existence and duration where reliably available;
+- file: original filename and optional metadata;
+- emoji/sticker: event existence.
+
+No OCR/ASR/visual derived layer is part of Phase 1.
+
+## 10. Link and app-share semantics
+
+Links and third-party shared content are first-class message semantics.
+
+The normalized payload should preserve, where locally available:
+
+- title;
+- description;
+- source application;
+- original URL;
+- wrapper/fallback URL;
+- app ID;
+- page path.
+
+The system should prefer a confirmed underlying/original URL over a wrapper/tracking URL when that distinction can be determined from local source metadata.
+
+Phase 1 canonical export does not require remote crawling of target webpages.
+
+## 11. Forwarded bundle semantics
+
+Merged/forwarded chat records may contain nested textual events.
+
+The archive should preserve:
+
+- bundle title;
+- item count;
+- nested sender name;
+- nested sender ID only when reliably resolvable;
+- nested timestamp;
+- nested normalized type;
+- nested semantic text.
+
+An unresolvable nested sender must not be assigned a fabricated canonical identity.
+
+## 12. Unknown records
+
+Unknown records are first-class retained events.
+
+Minimum useful information:
+
+- `type = unknown`;
+- semantic text `[未识别消息]`;
+- upstream type/subtype where available;
+- optional compact raw summary;
+- normal source provenance.
+
+Diagnostics and manifests must count unknown/partial records.
+
+## 13. ImportRun
 
 Every sync/import invocation creates one ImportRun.
 
 Required fields:
 
-- run ID
-- start/end time
-- adapter name/version
-- source version
-- status
-- records scanned
-- records inserted
-- records updated
-- records skipped
-- warnings count
-- errors count
-- structured diagnostic summary
+- run ID;
+- start/end time;
+- adapter name/version;
+- source version;
+- status;
+- records scanned;
+- records inserted;
+- records updated;
+- records skipped;
+- warnings count;
+- errors count;
+- unknown message count;
+- structured diagnostic summary.
 
 This entity is required for operational trust.
 
-## 11. SourceCheckpoint
+## 14. SourceCheckpoint
 
 Stores adapter-owned incremental state.
 
 Rules:
 
-- payload is versioned
-- payload is opaque to the generic importer
-- checkpoint update occurs only after durable archive commit
-- adapter version change may invalidate prior checkpoint
+- payload is versioned;
+- payload is opaque to the generic importer;
+- checkpoint update occurs only after durable archive commit;
+- adapter version changes may invalidate prior checkpoints.
 
-## 12. SourceArtifact / provenance
+## 15. SourceArtifact / provenance
 
-Where needed, archive the relationship between normalized records and source artifacts/partitions.
-
-Minimum provenance fields for Message:
+Minimum provenance fields for Message where available:
 
 ```text
 source_profile_id
 source_conversation_id
 source_message_id
+source_type
+source_subtype
 source_partition
 source_order_key
 adapter_name
@@ -264,7 +381,9 @@ source_version
 import_run_id
 ```
 
-## 13. Identity strategy
+Provenance is not the primary downstream analysis interface but must support reprocessing and diagnostics.
+
+## 16. Identity strategy
 
 Archive IDs should be deterministic where practical.
 
@@ -276,39 +395,39 @@ namespace + stable source identifiers -> deterministic UUID/hash
 
 Example logical inputs:
 
-- Account: adapter + source_profile_id
-- Conversation: account + source_conversation_id
-- Participant: account + source_participant_id
-- Message: account + source conversation + stable source message ID
+- Account: adapter + source profile ID;
+- Conversation: account + source conversation ID;
+- Participant: account + source participant ID;
+- Message: account + conversation + stable source message ID.
 
 When no stable source message ID exists, adapters must define a documented composite identity strategy and collision behavior.
 
-## 14. Deduplication
+## 17. Deduplication
 
 Deduplication must prefer stable source identity over content heuristics.
 
 Fallback content-based deduplication, if ever used, must be explicit and conservative because repeated identical messages are valid data.
 
-## 15. Schema evolution
+## 18. Schema evolution
 
 - Use numbered database migrations.
 - Never mutate production archives without migration records.
 - Backward-incompatible archive changes require a documented migration path.
-- Export formats may evolve independently but must identify their schema/version.
+- Export and message schemas are independently versioned in `manifest.json`.
 
-## 16. Search indexing
+## 19. Search indexing
 
 Full-text search is a derived index, not the canonical store.
 
-The FTS index should be rebuildable from normalized Message rows and selected structured fields.
+The FTS index should be rebuildable from normalized `semantic_text` and selected structured payload fields such as filenames, link titles and descriptions.
 
-## 17. Raw source retention
+## 20. Raw source retention
 
-Raw source records are optional and should not be required for the normal archive experience.
+Raw source records are optional and should not be required for normal archive/export workflows.
 
 If retained for debugging/reproducibility:
 
-- store separately from normalized columns
-- mark format/version
-- allow disabling retention
-- avoid placing large opaque blobs in the core Message table
+- store separately from canonical semantic columns;
+- mark source format/version;
+- allow disabling retention;
+- avoid placing large opaque blobs in the core Message table.
