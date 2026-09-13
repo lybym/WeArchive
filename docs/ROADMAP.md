@@ -8,25 +8,31 @@ The roadmap is milestone-based rather than date-based. A milestone is complete o
 
 ## M0 — Product foundation
 
-**Goal:** establish a stable archive core before integrating a real upstream source.
+**Goal:** establish a stable archive and export contract before integrating a real upstream source.
 
 Deliverables:
 
 - Python package and CLI.
 - Configuration model.
 - Normalized domain models.
+- Canonical message envelope and message-type semantics.
 - Source adapter protocol.
 - Fixture/mock adapter.
 - SQLite archive schema and migrations.
 - Import-run and diagnostic models.
 - Idempotent importer.
-- JSON and Markdown export.
+- Stable-ID identity/conversation catalogs.
+- Monthly JSONL machine export.
 - Unit/integration tests using fixtures.
 
 Acceptance criteria:
 
 - A fixture dataset can be imported end to end.
 - Re-importing the same fixture creates no logical duplicates.
+- Every fixture message follows `docs/MESSAGE_SCHEMA.md`.
+- Unknown message types are retained and counted.
+- Stable conversation paths do not depend on mutable names.
+- Selective export by conversation works.
 - Export results are deterministic.
 - Import provenance can be traced from archive row to source fixture.
 - Interrupted imports are safe to retry.
@@ -41,7 +47,13 @@ Deliverables:
 - Source/client version reporting.
 - Conversation enumeration.
 - Participant/contact mapping.
+- Latest-remark identity mapping.
 - Text-message import.
+- Non-text event normalization.
+- File-name extraction for file messages where available.
+- Link/app-share/mini-program metadata normalization.
+- Best locally obtainable original URL extraction.
+- Reply/quote relationship normalization.
 - Source partition/shard abstraction.
 - Timeline merge and ordering.
 - Completeness/freshness diagnostics.
@@ -54,32 +66,36 @@ Acceptance criteria:
 - Messages from multiple underlying partitions appear in one logical ordered timeline.
 - A second sync imports only new/changed records where supported.
 - Missing partitions or unsupported record types produce explicit warnings.
+- File/image/voice/video events can be represented without binary export.
+- Links and app-share records preserve locally obtainable titles/descriptions/original URLs.
+- Latest available remarks populate the default identity display name, while missing remarks remain blank.
 
-## M2 — Attachment and media archive
+## M2 — Message semantics and completeness
 
-**Goal:** preserve local attachment metadata and supported locally available media.
+**Goal:** improve semantic coverage without changing the canonical export contract.
 
 Deliverables:
 
-- Attachment catalog.
-- Image metadata.
-- Voice metadata.
-- Video/file metadata.
-- Media availability state.
-- Archive copy/link strategy.
-- Digest/integrity tracking.
-- HTML exporter with local media rendering.
+- Forwarded chat bundle normalization.
+- System event normalization.
+- Revoke-event normalization.
+- Location/contact-card normalization.
+- Red-packet/transfer normalization when semantics are reliably understood.
+- Better unknown-type diagnostics.
+- Reply-target resolution improvements.
+- Conversation/identity metadata refresh and merge rules.
 
 Acceptance criteria:
 
-- Message-to-attachment relationships survive re-import.
-- Missing local media is represented as unavailable rather than silently omitted.
-- Media archive paths are stable.
-- HTML exports remain portable within an export bundle.
+- Important non-text/source-card events remain visible in machine exports.
+- Forwarded bundles retain available nested textual content.
+- Unknown records are never silently discarded.
+- Metadata refresh does not change stable paths or stable IDs.
+- Re-export remains deterministic.
 
 ## M3 — Search and retrieval
 
-**Goal:** make the archive genuinely useful as a personal information system.
+**Goal:** make the archive efficient for targeted machine analysis.
 
 Deliverables:
 
@@ -94,46 +110,49 @@ Deliverables:
 
 Acceptance criteria:
 
-- Search results map back to the canonical archived message.
+- Search results map back to canonical archived messages.
 - Rebuilding the search index is deterministic.
 - Large archives remain usable from CLI.
+- Search indexes can be rebuilt entirely from canonical archive data.
 
-## M4 — Analysis-ready workflows
+## M4 — Harness-oriented workflows
 
-**Goal:** prepare selected archive material for downstream personal knowledge and AI workflows.
+**Goal:** make repeated LLM/Harness analysis easy without introducing a separate derived-data layer.
 
 Deliverables:
 
-- Structured analysis export package.
-- Conversation chunking with stable message references.
-- Optional local summarization interface.
-- External-provider boundary with explicit opt-in.
-- Redaction/selective-export hooks.
+- Named collections for recurring analysis scopes.
+- Selective export by collection and time range.
+- Manifest completeness/counter reporting.
+- Stable prompt/reference conventions for exported folders.
+- Optional redaction/selective-field controls.
+- Optional local helper commands for locating relevant JSONL partitions.
 
 Acceptance criteria:
 
-- Users can see exactly what data is selected before external processing.
-- Core archive remains fully functional without any AI provider.
-- Analysis outputs retain references to source archived messages.
+- A Harness can determine what files to load from manifest/catalog files.
+- Users can repeatedly refer to stable conversation IDs/aliases/collections.
+- Core archive/export remains fully functional without any AI provider.
+- No LLM-specific chunk files are required.
 
 ## M5 — Product experience
 
-**Goal:** improve usability after the underlying archive model is stable.
+**Goal:** improve usability after the archive/message/export contracts are stable.
 
 Candidate work:
 
-- Local web UI or desktop UI.
-- Browse conversations.
+- Local web UI or desktop UI for configuration/health only.
+- Browse conversation metadata.
 - Search UI.
 - Import history/health dashboard.
-- Export wizard.
+- Export-selection wizard.
 - Scheduled local sync.
 
-A GUI should not become a prerequisite for the archive engine.
+A GUI is not a prerequisite for the archive engine and human-oriented chat rendering is not a core goal.
 
 ## Deferred / exploratory
 
-These items are intentionally not committed to a milestone yet:
+These items are intentionally not committed to a milestone:
 
 - macOS support.
 - Linux support.
@@ -141,6 +160,10 @@ These items are intentionally not committed to a milestone yet:
 - Encrypted archive-at-rest option.
 - Plugin system for additional chat sources.
 - Direct integration with note systems.
+- Binary media preservation.
+- OCR/ASR pipelines.
+- Remote crawling of linked webpages.
+- LLM-specific derived/chunk datasets.
 
 ## Release discipline
 
@@ -148,13 +171,13 @@ Suggested version mapping:
 
 - `0.1.x` — M0 foundation
 - `0.2.x` — M1 real source adapter
-- `0.3.x` — M2 media
+- `0.3.x` — M2 semantic completeness
 - `0.4.x` — M3 search
-- `0.5.x` — M4 analysis workflows
-- `1.0.0` — stable archive schema and supported upgrade path
+- `0.5.x` — M4 Harness workflows
+- `1.0.0` — stable archive/message/export schemas and supported upgrade path
 
 ## Current priority
 
 The current priority is **M0 before M1**.
 
-Do not optimize upstream compatibility before the normalized archive, provenance, diagnostics and fixture-based tests are stable. This prevents source-specific implementation details from defining the entire product architecture.
+Do not optimize upstream compatibility before the canonical archive, message schema, export contract, provenance, diagnostics and fixture-based tests are stable.
