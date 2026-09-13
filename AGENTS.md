@@ -13,6 +13,17 @@ Before making any non-trivial code change, read the following documents in order
 7. `docs/DEVELOPMENT.md`
 8. relevant files under `docs/adr/`
 
+## Stack
+
+The implementation is a Windows desktop application, not a script collection:
+
+- **C# 14** on **.NET 10 LTS** (`net10.0` for `WeArchive.Core`; `net10.0-windows` for `WeArchive.Infrastructure`, `WeArchive.App` and `tests/WeArchive.Tests`), `win-x64`, self-contained.
+- **WPF** (MVVM) is the only presentation technology.
+- **xUnit v2 on the VSTest platform** is the test runner. xUnit v3 / Microsoft.Testing.Platform was evaluated and rejected: on the .NET 10 SDK its `dotnet test` mode discovered zero tests.
+- Dependencies are centrally pinned in `Directory.Packages.props`; `WeArchive.Core` has no package and no project references at all.
+
+Layout and dependency direction are normative in `docs/ARCHITECTURE.md` and `docs/adr/0003-dotnet-wpf-mvp.md`.
+
 ## Mandatory rules
 
 - Documentation under `docs/` is the source of truth.
@@ -33,6 +44,8 @@ Before making any non-trivial code change, read the following documents in order
 - New major architectural choices require an ADR.
 - Preserve the local-first and read-only-source principles unless documentation explicitly changes them.
 - Do not commit real personal chat data, real archives, exports, secrets or machine-private datasets.
+- WeChat key acquisition, SQLCipher decryption and the WeChat schema/parser compatibility code must stay inside `src/WeArchive.Infrastructure/WeChat` (`Compatibility`, `Schema`, `Parsers`, `Crypto`, `KeyAcquisition`). Nothing outside that boundary may know that WeChat is encrypted, which databases exist, or which upstream type codes mean what.
+- No decrypted WeChat data may be left on disk. Plaintext scratch copies live only under `%LOCALAPPDATA%\WeArchive\scratch` for the duration of a read and are deleted when the adapter is disposed. Keys are never persisted, logged or exported.
 
 ## When docs and code disagree
 
@@ -59,6 +72,8 @@ For each implementation task:
 
 ## Current priority
 
-Current priority is M0: Product foundation.
+Current priority: **M0 is implemented, and the MVP slice of M1 is implemented.** The next work is the rest of M1 (incremental checkpoints, full partition-coverage reporting) and then M2.
 
-Do not skip directly to a real client-specific implementation before the generic adapter protocol, canonical message schema, normalized models, archive persistence, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic JSONL exports are stable enough to support it.
+The foundation this milestone was gated on now exists and must not be weakened: the generic adapter contract, the canonical message schema, normalized models, archive persistence, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic JSONL exports.
+
+Because the implementation shipped ahead of its documentation, **docs under `docs/`, `README.md` and this file must be corrected in the same change as any further behavior change** — a feature is not done until the documents that describe it agree with what the program does.

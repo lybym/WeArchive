@@ -21,78 +21,121 @@ The canonical message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEM
 
 ## 3. Entity relationship overview
 
+This is the shipped archive schema (SQLite, migration 1). Column names and types are normative.
+
 ```mermaid
 erDiagram
     ACCOUNT ||--o{ CONVERSATION : owns
     CONVERSATION ||--o{ MESSAGE : contains
-    CONVERSATION ||--o{ CONVERSATION_PARTICIPANT : has
-    PARTICIPANT ||--o{ CONVERSATION_PARTICIPANT : joins
     PARTICIPANT ||--o{ MESSAGE : sends
     MESSAGE ||--o| MESSAGE : replies_to
-    IMPORT_RUN ||--o{ MESSAGE : imports
+    ACCOUNT ||--o{ PARTICIPANT : contains
     ACCOUNT ||--o{ SOURCE_CHECKPOINT : tracks
 
     ACCOUNT {
-        string id PK
-        string source_profile_id
-        string display_name
-        string adapter_name
-        string source_version
-    }
-
-    CONVERSATION {
-        string id PK
-        string account_id FK
-        string source_conversation_id
-        string type
-        string title
-        datetime first_message_at
-        datetime last_message_at
+        TEXT id PK
+        TEXT source_profile_id
+        TEXT adapter_name
+        TEXT adapter_version
+        TEXT source_version
+        TEXT display_name
+        TEXT data_root_path
     }
 
     PARTICIPANT {
-        string id PK
-        string account_id FK
-        string source_participant_id
-        string latest_remark
-        string nickname
-        string user_display_name
+        TEXT id PK
+        TEXT account_id FK
+        TEXT source_participant_id
+        TEXT latest_remark
+        TEXT nickname
+        TEXT alias
+        TEXT user_display_name
+    }
+
+    CONVERSATION {
+        TEXT id PK
+        TEXT account_id FK
+        TEXT source_conversation_id
+        TEXT kind
+        TEXT title
+        TEXT peer_participant_id
+        TEXT owner_participant_id
+        TEXT first_message_at
+        TEXT last_message_at
+        INTEGER message_count
     }
 
     MESSAGE {
-        string id PK
-        string conversation_id FK
-        string sender_id FK
-        datetime occurred_at
-        string type
-        text semantic_text
-        text payload_json
-        string reply_to_message_id FK
-        text reply_snapshot_json
-        string source_message_id
-        string source_partition
-        string source_order_key
-        string import_run_id FK
+        TEXT id PK
+        TEXT conversation_id FK
+        TEXT sender_id
+        TEXT occurred_at
+        INTEGER occurred_utc
+        TEXT type
+        TEXT semantic_text
+        TEXT payload_json
+        TEXT reply_to_message_id
+        TEXT reply_source_message_id
+        TEXT reply_snapshot_json
+        TEXT source_profile_id
+        TEXT source_conversation_id
+        TEXT source_message_id
+        TEXT source_type
+        TEXT source_subtype
+        TEXT source_partition
+        TEXT source_order_key
+        TEXT adapter_name
+        TEXT adapter_version
+        TEXT source_version
+        TEXT import_run_id
+        TEXT content_hash
+        INTEGER is_partial
     }
 
     IMPORT_RUN {
-        string id PK
-        datetime started_at
-        datetime finished_at
-        string adapter_name
-        string adapter_version
-        string source_version
-        string status
+        TEXT id PK
+        TEXT account_id
+        TEXT adapter_name
+        TEXT adapter_version
+        TEXT source_version
+        TEXT started_at
+        TEXT finished_at
+        TEXT status
+        INTEGER records_scanned
+        INTEGER records_inserted
+        INTEGER records_updated
+        INTEGER records_skipped
+        INTEGER unknown_count
+        INTEGER partial_count
+        INTEGER warning_count
+        INTEGER error_count
+        TEXT diagnostics_json
     }
 
     SOURCE_CHECKPOINT {
-        string id PK
-        string account_id FK
-        string adapter_name
-        string adapter_version
-        text checkpoint_json
-        datetime updated_at
+        TEXT id PK
+        TEXT account_id FK
+        TEXT adapter_name
+        TEXT adapter_version
+        TEXT checkpoint_json
+        TEXT updated_at
     }
+```
+
+`ConversationParticipant` has no dedicated table in migration 1: a conversation's peer and
+owner are referenced directly from `conversations`, and per-participant metadata lives on
+`participants`. A full membership relation remains a future schema change.
+
+Indexes:
+
+```text
+accounts            unique (adapter_name, source_profile_id)
+participants        unique (account_id, source_participant_id)
+conversations       unique (account_id, source_conversation_id)
+messages            (conversation_id, occurred_utc, source_order_key, id)   -- canonical timeline order
+messages            (conversation_id, source_message_id)
+messages            (conversation_id, type)
+source_checkpoints  unique (account_id, adapter_name)
 ```
 
 ## 4. Account
@@ -118,8 +161,10 @@ Fields:
 - stable archive ID;
 - account ID;
 - stable source conversation ID;
-- type: `direct`, `group`, `official`, `system`, `unknown`;
+- `kind`: `direct`, `group`, `official`, `system`, `unknown`;
 - current title/display name;
+- `peer_participant_id` for a direct conversation and `owner_participant_id` where known;
+- `message_count`;
 - optional user-maintained alias in export configuration;
 - optional first/last known timestamps.
 
@@ -129,14 +174,15 @@ Conversation titles are mutable and must never be used as identity keys or physi
 
 Represents a stable logical sender/contact identity when available.
 
-Recommended fields:
+Fields:
 
 - archive ID;
 - account ID;
 - stable source participant ID;
 - latest available remark;
 - latest nickname;
-- optional user-maintained display name.
+- `alias`;
+- `user_display_name`.
 
 Phase 1 export identity rules:
 
@@ -145,7 +191,9 @@ latest remark exists -> default display_name = latest remark
 no latest remark      -> default display_name = ""
 ```
 
-Nickname is retained as metadata but does not automatically fill a missing remark.
+Nickname is retained as metadata but does not automatically fill a missing remark. The
+user-maintained `display_name_override` in the exported `identities.yaml` is a separate,
+export-level hook and wins over the generated default; it is not an archive column.
 
 Display names can change and collide. Stable participant IDs must remain the canonical identity.
 
@@ -153,7 +201,7 @@ Display names can change and collide. Stable participant IDs must remain the can
 
 Many-to-many relation between conversations and participants.
 
-Useful fields may include:
+Migration 1 does not create a `conversation_participants` table. Today the conversation-to-participant relation is expressed by `conversations.peer_participant_id` and `conversations.owner_participant_id`, and participant metadata is stored on `participants`. A future migration may add a real membership table carrying:
 
 - group nickname;
 - role;
@@ -176,9 +224,32 @@ Required semantics:
 - optional type-specific structured `payload`;
 - optional reply/reference relationship;
 - source provenance;
-- import run.
+- import run;
+- a semantic `content_hash` for idempotent upserts.
 
-### 8.1 Common semantic model
+### 8.1 Timestamps and ordering
+
+A message stores its time twice:
+
+- `occurred_at` — ISO-8601 text **with the source's timezone offset** (`yyyy-MM-dd'T'HH:mm:sszzz`), which is what the export publishes and what a human or LLM reads;
+- `occurred_utc` — the same instant as epoch seconds (`INTEGER`), which is what the archive orders by and range-queries on.
+
+Storing both avoids re-parsing text on every range query while keeping the exported timestamp
+unambiguous. Canonical timeline order is `(occurred_utc, source_order_key, id)`, which is the
+index `ix_messages_timeline`.
+
+### 8.2 Idempotent upsert and `content_hash`
+
+`content_hash` is a SHA-256 over the **semantic** fields only: canonical type, sender, epoch
+time, semantic text, payload JSON, the reply's upstream source id, the reply's sender and
+text, and the partial flag.
+
+Fields that only carry metadata — for example the refreshed adapter version, source version
+or import run id — are deliberately excluded. A re-import of unchanged source data is
+therefore recognised as unchanged and does not count as an update, which is what makes
+repeated imports idempotent in practice rather than only in primary-key terms.
+
+### 8.3 Common semantic model
 
 The conceptual structure is:
 
@@ -196,9 +267,9 @@ Message
 └─ source provenance
 ```
 
-The archive implementation may store structured data as JSON columns/tables while exports use the canonical shape defined in `MESSAGE_SCHEMA.md`.
+The archive stores the type-specific structure in the `payload_json` column while exports use the canonical shape defined in `MESSAGE_SCHEMA.md`.
 
-### 8.2 Canonical message types
+### 8.4 Canonical message types
 
 Phase 1 normalized types:
 
@@ -224,7 +295,7 @@ Phase 1 normalized types:
 
 Unknown source records must map to `unknown` with diagnostics and source type metadata; they must not be silently discarded.
 
-### 8.3 Semantic text
+### 8.5 Semantic text
 
 Every message should have a compact semantic text representation useful to LLMs and full-text search.
 
@@ -243,7 +314,7 @@ unknown   -> [未识别消息]
 
 Semantic text must not contain unnecessary upstream XML or implementation details.
 
-### 8.4 Structured payload
+### 8.6 Structured payload
 
 `payload` contains product-meaningful type-specific semantics, for example:
 
@@ -257,16 +328,22 @@ Semantic text must not contain unnecessary upstream XML or implementation detail
 
 Missing fields must not be guessed.
 
-### 8.5 Reply relationship
+### 8.7 Reply relationship
 
-Replies/quotes are represented structurally.
+Replies/quotes are represented structurally. Three columns work together:
 
-Recommended archive concepts:
+- `reply_source_message_id` — the **upstream** id of the referenced record, addressed with the
+  composite strategy of section 16.2. It is stored exactly as the adapter supplied it and is
+  what makes resolution possible, but it is provenance and is never exported.
+- `reply_to_message_id` — the resolved canonical `m_...` id, filled in by the archive when the
+  referenced record is present in the same archive (resolved on insert and by a backfill pass
+  for records imported later). It is null while the target does not resolve. The archive never
+  fabricates a target id.
+- `reply_snapshot_json` — the locally available quoted sender/text metadata, kept even when no
+  canonical target resolves.
 
-- `reply_to_message_id` when the referenced canonical message resolves;
-- `reply_snapshot_json` for locally available quoted sender/text metadata.
-
-This allows reply graph analysis even when the source stores only a quote snapshot or when the original message is unavailable.
+This allows reply graph analysis both when the target is archived and when the source only
+stored a quote snapshot, or when the target is missing from the local source entirely.
 
 ## 9. Non-text events and binary policy
 
@@ -338,6 +415,7 @@ Required fields:
 
 - run ID;
 - start/end time;
+- account ID;
 - adapter name/version;
 - source version;
 - status;
@@ -348,7 +426,8 @@ Required fields:
 - warnings count;
 - errors count;
 - unknown message count;
-- structured diagnostic summary.
+- partial count;
+- structured diagnostic summary (`diagnostics_json`).
 
 This entity is required for operational trust.
 
@@ -356,12 +435,23 @@ This entity is required for operational trust.
 
 Stores adapter-owned incremental state.
 
+Schema fields:
+
+- `id`;
+- `account_id`;
+- `adapter_name` / `adapter_version`;
+- `checkpoint_json` — the opaque, versioned payload;
+- `updated_at`.
+
 Rules:
 
 - payload is versioned;
 - payload is opaque to the generic importer;
 - checkpoint update occurs only after durable archive commit;
-- adapter version changes may invalidate prior checkpoints.
+- adapter version changes may invalidate prior checkpoints;
+- uniqueness is `(account_id, adapter_name)`.
+
+**Status:** the table exists in migration 1, but the MVP importer does **not** read or advance checkpoints. Every import reads the full conversation and relies on `content_hash` idempotency instead. Incremental refresh is M1 completion work.
 
 ## 15. SourceArtifact / provenance
 
@@ -381,45 +471,75 @@ source_version
 import_run_id
 ```
 
-Provenance is not the primary downstream analysis interface but must support reprocessing and diagnostics.
+All of these exist as columns on `messages`. Provenance is not the primary downstream analysis interface but must support reprocessing and diagnostics.
 
 ## 16. Identity strategy
 
-Archive IDs should be deterministic where practical.
-
-Recommended approach:
+Archive IDs are deterministic. Every stable ID is a namespace prefix plus the first **16 hex
+characters (64 bits)** of `SHA-256` over the length-prefixed, concatenated namespace parts.
 
 ```text
-namespace + stable source identifiers -> deterministic UUID/hash
+a_<16 hex>   account      SHA-256("account", adapter_name, source_profile_id)
+u_<16 hex>   participant  SHA-256("user", account_id, source_user_id)
+g_<16 hex>   group        SHA-256("group", account_id, source_room_id)
+m_<16 hex>   message      SHA-256("message", conversation_id, source_message_id)
 ```
 
-Example logical inputs:
+A direct conversation's stable ID **is** its peer's `u_...` ID — the same peer in the same
+account always yields the same ID whether it is addressed as a conversation or as a person.
 
-- Account: adapter + source profile ID;
-- Conversation: account + source conversation ID;
-- Participant: account + source participant ID;
-- Message: account + conversation + stable source message ID.
+Mutable human names (remarks, nicknames, group titles) are never inputs, which is what makes
+physical export paths survive renames.
 
-When no stable source message ID exists, adapters must define a documented composite identity strategy and collision behavior.
+### 16.1 Why 16 hex characters, not 8
+
+Earlier illustrative examples in these documents showed 8-character prefixes. The
+implementation uses 16 because a 32-bit prefix collides measurably at archive scale: the
+birthday bound puts a 50% collision probability at roughly 77,000 ids, which a single large
+message archive exceeds. 64 bits moves that bound far beyond any personal archive while
+keeping IDs short enough to read and to use as folder names.
+
+### 16.2 Composite upstream message identity
+
+When upstream has no stable message id, the adapter supplies a documented composite instead of
+a content hash, because repeated identical messages are valid data:
+
+```text
+server id present -> s:<server_id>
+otherwise         -> l:<partition>:<local_id>
+```
+
+`partition` identifies the upstream shard the record came from, so the composite stays unique
+across a multi-shard timeline.
 
 ## 17. Deduplication
 
-Deduplication must prefer stable source identity over content heuristics.
+Deduplication prefers stable source identity over content heuristics.
 
-Fallback content-based deduplication, if ever used, must be explicit and conservative because repeated identical messages are valid data.
+The archive's idempotency mechanism is the primary key together with `content_hash`: an upsert
+whose semantic hash is unchanged is a no-op, while a real semantic change is recorded as an
+update. Fallback content-based deduplication is not used, because repeated identical messages
+are valid data.
 
 ## 18. Schema evolution
 
 - Use numbered database migrations.
+- Every applied migration is recorded in `schema_migrations (version, description, applied_at)`.
+- The current schema version is also mirrored into SQLite's `user_version` pragma.
+- Migrations are forward-only and idempotent: a re-open of an up-to-date archive applies nothing.
 - Never mutate production archives without migration records.
 - Backward-incompatible archive changes require a documented migration path.
 - Export and message schemas are independently versioned in `manifest.json`.
+
+Migration 1 (`initial canonical archive schema`) is the current version.
 
 ## 19. Search indexing
 
 Full-text search is a derived index, not the canonical store.
 
 The FTS index should be rebuildable from normalized `semantic_text` and selected structured payload fields such as filenames, link titles and descriptions.
+
+No FTS index exists in migration 1; search is M3 work.
 
 ## 20. Raw source retention
 
