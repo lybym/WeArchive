@@ -2,15 +2,19 @@
 
 ## 1. Architecture goals
 
-The architecture is optimized for long-term maintainability rather than one-off extraction.
+WeArchive is optimized for long-term maintainability and machine-oriented analysis rather than human-facing chat rendering.
 
 Key constraints:
 
-- Upstream client formats may change frequently.
-- The personal archive must remain stable across those changes.
-- Source-specific behavior must not leak into export/search/business logic.
-- Import runs must be observable, restartable and auditable.
-- The initial product is CLI-first and local-first.
+- upstream client formats may change frequently;
+- the normalized archive must remain stable across those changes;
+- source-specific behavior must not leak into search/export/business logic;
+- import runs must be observable, restartable and auditable;
+- Phase 1 is CLI-first, local-first and read-only toward the source;
+- Phase 1 does not preserve binary image/audio/video/file payloads;
+- exported chat data is a plain-text dataset for scripts, LLMs and Harness workflows.
+
+Normative message semantics are defined in [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md). Normative export packaging is defined in [EXPORT_PRD.md](EXPORT_PRD.md).
 
 ## 2. Logical architecture
 
@@ -23,10 +27,9 @@ flowchart LR
     N[Normalizer]
     V[Validation & Diagnostics]
     S[(Archive SQLite)]
-    M[(Media Archive)]
     Q[Search / Query]
-    E[Exporters]
-    X[JSON / Markdown / HTML]
+    E[Machine Exporter]
+    X[JSONL + YAML/JSON Catalogs]
 
     U --> C
     C --> O
@@ -34,13 +37,13 @@ flowchart LR
     A --> N
     N --> V
     V --> S
-    V --> M
     S --> Q
     S --> E
-    M --> E
     Q --> C
     E --> X
 ```
+
+There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
 ## 3. Layering
 
@@ -48,24 +51,21 @@ flowchart LR
 
 Responsibilities:
 
-- Parse user intent.
-- Display progress and warnings.
-- Never contain source-format logic.
-
-Planned module:
-
-```text
-src/wearchive/cli.py
-```
+- parse user intent;
+- select source/account/conversations/time ranges;
+- display progress and diagnostics;
+- expose export-by-conversation/alias/collection workflows;
+- never contain source-format logic.
 
 ### 3.2 Application / orchestration
 
 Responsibilities:
 
-- Coordinate source adapter, normalization, archive transaction and checkpoint update.
-- Create import-run records.
-- Enforce dry-run/read-only boundaries.
-- Aggregate metrics and warnings.
+- coordinate source adapter, normalization, archive transaction and checkpoint update;
+- create import-run records;
+- enforce read-only source boundaries;
+- aggregate metrics and warnings;
+- invoke machine-oriented exports from normalized archive data only.
 
 Planned modules:
 
@@ -78,11 +78,12 @@ src/wearchive/services/
 
 Responsibilities:
 
-- Detect source profile/account.
-- Enumerate conversations.
-- Stream source messages and attachment metadata.
-- Expose source/client version and freshness metadata.
-- Translate source-specific failures into typed diagnostics.
+- detect source profile/account;
+- enumerate conversations;
+- stream source messages/events;
+- expose source/client version and freshness metadata;
+- expose locally available semantic fields needed by the canonical schema;
+- translate source-specific failures into typed diagnostics.
 
 Interface sketch:
 
@@ -90,8 +91,11 @@ Interface sketch:
 class SourceAdapter(Protocol):
     def describe_source(self) -> SourceDescriptor: ...
     def list_conversations(self) -> Iterable[SourceConversation]: ...
-    def iter_messages(self, conversation_id: str, checkpoint: SourceCheckpoint | None = None) -> Iterable[SourceMessage]: ...
-    def resolve_attachments(self, message: SourceMessage) -> Iterable[SourceAttachment]: ...
+    def iter_messages(
+        self,
+        conversation_id: str,
+        checkpoint: SourceCheckpoint | None = None,
+    ) -> Iterable[SourceMessage]: ...
 ```
 
 This layer is the only place where upstream client/version assumptions may exist.
@@ -100,15 +104,17 @@ This layer is the only place where upstream client/version assumptions may exist
 
 Responsibilities:
 
-- Map source records into stable domain models.
-- Preserve stable IDs and mutable display names separately.
-- Normalize timestamps, message types and participant identities.
-- Attach provenance.
+- map source records into stable domain models;
+- preserve stable IDs and mutable names separately;
+- normalize timestamps and participant identities;
+- map upstream types into canonical semantic message types;
+- build `text`, `payload`, `reply_to` and `source` according to `MESSAGE_SCHEMA.md`;
+- preserve unknown records instead of silently dropping them.
 
 Planned modules:
 
 ```text
-src/wearchive/model/
+src/wearchive/domain/
 src/wearchive/normalize/
 ```
 
@@ -116,48 +122,47 @@ src/wearchive/normalize/
 
 Responsibilities:
 
-- Detect missing source partitions.
-- Detect unsupported message types.
-- Detect timestamp/order anomalies.
-- Detect duplicate logical records.
-- Produce machine-readable warnings rather than silently dropping data.
+- detect missing source partitions;
+- detect unsupported or unknown message types;
+- detect timestamp/order anomalies;
+- detect duplicate logical records;
+- detect unresolved reply targets;
+- report partial link/app-share parsing;
+- produce machine-readable warnings rather than silently losing data.
 
 ### 3.6 Archive persistence
 
-SQLite is the system of record for normalized archive metadata and message text.
+SQLite is the system of record for normalized archive data.
 
 Responsibilities:
 
-- Migrations.
-- Idempotent upserts.
-- Checkpoints.
-- Import-run audit trail.
-- Search indexes.
-- Integrity checks.
+- migrations;
+- idempotent upserts;
+- checkpoints;
+- import-run audit trail;
+- canonical message semantics;
+- identity/conversation metadata;
+- search indexes;
+- integrity checks.
 
-### 3.7 Media archive
+Phase 1 archive storage is text/metadata oriented. Binary media copies are outside scope.
 
-Media is stored outside the SQLite database by content-addressed or stable archive paths.
+### 3.7 Query and export
 
-Suggested layout:
+Search and exporters consume normalized archive models only, never upstream source files directly.
+
+The Phase 1 exporter produces:
 
 ```text
-archive/
-├─ archive.db
-└─ media/
-   ├─ image/
-   ├─ voice/
-   ├─ video/
-   └─ file/
+manifest.json
+identities.yaml
+conversations.yaml
+collections.yaml
+chats/direct/<stable-id>/<year>/<month>.jsonl
+chats/groups/<stable-id>/<year>/<month>.jsonl
 ```
 
-SQLite stores metadata, digest, size, provenance and archive path.
-
-### 3.8 Query and export
-
-Exporters operate only on normalized archive data, never directly on source files.
-
-This guarantees that Markdown/HTML/JSON behavior is independent from upstream client changes.
+This guarantees that downstream LLM/Harness workflows remain stable when the upstream client format changes.
 
 ## 4. Data flow
 
@@ -169,6 +174,7 @@ sequenceDiagram
     participant Adapter
     participant Normalizer
     participant Archive
+    participant Exporter
 
     User->>CLI: wearchive sync
     CLI->>Importer: start import
@@ -178,13 +184,17 @@ sequenceDiagram
     loop each source record
         Adapter-->>Importer: SourceMessage
         Importer->>Normalizer: normalize
-        Normalizer-->>Importer: Message + provenance
+        Normalizer-->>Importer: canonical Message + provenance
         Importer->>Archive: idempotent upsert
     end
     Importer->>Archive: validate and update checkpoint
     Importer->>Archive: finish ImportRun
     Importer-->>CLI: counters + warnings
-    CLI-->>User: summary
+
+    User->>CLI: export selected conversations/collection
+    CLI->>Exporter: export from archive
+    Exporter->>Archive: query normalized data
+    Exporter-->>CLI: JSONL + catalogs + manifest
 ```
 
 ## 5. Repository structure target
@@ -196,8 +206,8 @@ src/wearchive/
 ├─ domain/
 │  ├─ account.py
 │  ├─ conversation.py
+│  ├─ participant.py
 │  ├─ message.py
-│  ├─ attachment.py
 │  └─ provenance.py
 ├─ adapters/
 │  ├─ base.py
@@ -210,9 +220,9 @@ src/wearchive/
 │  └─ repository.py
 ├─ search/
 ├─ export/
-│  ├─ json_exporter.py
-│  ├─ markdown_exporter.py
-│  └─ html_exporter.py
+│  ├─ dataset_exporter.py
+│  ├─ catalogs.py
+│  └─ manifest.py
 └─ diagnostics/
 ```
 
@@ -220,82 +230,115 @@ src/wearchive/
 
 Every adapter must provide:
 
-- `adapter_name`
-- `adapter_version`
-- `source_version`
-- `source_profile_id`
-- stable conversation IDs
-- stable message/source IDs where available
-- source timestamp
-- source partition reference where applicable
-- explicit completeness/freshness diagnostics
+- `adapter_name`;
+- `adapter_version`;
+- `source_version`;
+- `source_profile_id`;
+- stable conversation IDs;
+- stable participant IDs where available;
+- stable message/source IDs where available;
+- source timestamps;
+- source partition references where applicable;
+- explicit completeness/freshness diagnostics;
+- locally obtainable semantic data for supported message types.
 
 An adapter must not:
 
-- Write normalized data directly into export files.
-- Bypass the archive model for convenience.
-- Hide unsupported source records.
-- Store credentials or private data in repository-controlled paths.
+- write exports directly;
+- bypass the archive model for convenience;
+- hide unsupported source records;
+- fabricate identities, URLs, amounts or message content;
+- require binary-media preservation for Phase 1 correctness.
 
-## 7. Provenance model
+## 7. Canonical message boundary
 
-A normalized message should be traceable through:
+The normalizer emits the semantic contract defined by `MESSAGE_SCHEMA.md`:
 
 ```text
 Message
-  -> source_profile_id
-  -> source_conversation_id
-  -> source_message_id
-  -> source_partition
-  -> import_run_id
-  -> adapter_name/version
-  -> source_version
+├─ common envelope
+│  ├─ id
+│  ├─ conversation_id
+│  ├─ sender_id
+│  ├─ time
+│  └─ type
+├─ text
+├─ payload
+├─ reply_to
+└─ source
 ```
 
-Provenance is a first-class product requirement, not debugging metadata.
+Downstream search/export logic must not depend on upstream numeric message types or raw XML layouts.
 
-## 8. Incremental synchronization
+## 8. Identity model
 
-Checkpoint design must be adapter-owned but archive-stored.
+Stable identity and human naming are separate.
 
-A checkpoint can contain opaque adapter state such as:
+```text
+stable user id (u_...)
+    ├─ source user id
+    ├─ latest remark
+    ├─ nickname
+    └─ user-maintained display_name
+```
 
-- last stable sequence identifier
-- last imported timestamp
-- per-partition cursors
-- source snapshot fingerprints
+Default exported `display_name` uses the latest available remark. If no remark exists, it remains blank; nickname is metadata only.
 
-The application layer treats checkpoint payloads as versioned opaque data.
+Conversation physical paths use stable IDs, never mutable names.
+
+## 9. Link/app-share normalization
+
+The normalizer should preserve locally obtainable semantic metadata including:
+
+- title;
+- description;
+- source application;
+- original URL;
+- wrapper/fallback URL;
+- app ID;
+- page path.
+
+The architecture does not require remote webpage crawling for canonical Phase 1 export.
+
+## 10. Incremental synchronization
+
+Checkpoint design is adapter-owned but archive-stored.
+
+A checkpoint may contain opaque versioned state such as:
+
+- last stable sequence identifier;
+- last imported timestamp;
+- per-partition cursors;
+- source snapshot fingerprints.
 
 Rules:
 
-1. Checkpoints advance only after the corresponding archive transaction is durable.
-2. Re-running from an older checkpoint must remain idempotent.
-3. Adapter-version changes may invalidate checkpoints explicitly.
+1. checkpoints advance only after the corresponding archive transaction is durable;
+2. replay from an older checkpoint remains idempotent;
+3. adapter-version changes may explicitly invalidate checkpoints.
 
-## 9. Error model
-
-Errors are divided into three categories:
+## 11. Error model
 
 ### Fatal
 
-Import cannot safely continue.
+Import/export cannot safely continue.
 
 Examples:
 
-- Archive schema unavailable.
-- Unsupported archive migration state.
-- Source profile cannot be initialized.
+- archive schema unavailable;
+- unsupported migration state;
+- source profile cannot be initialized.
 
 ### Partial
 
-Import can continue but completeness is uncertain.
+Operation can continue but completeness is uncertain.
 
 Examples:
 
-- One source partition unavailable.
-- One message type unsupported.
-- Attachment unavailable locally.
+- one source partition unavailable;
+- one message type is unknown;
+- a reply target cannot be resolved;
+- app-share metadata lacks a confirmed original URL.
 
 ### Informational
 
@@ -303,63 +346,53 @@ No correctness impact.
 
 Examples:
 
-- No new records.
-- Optional metadata unavailable.
+- no new records;
+- optional metadata unavailable;
+- selected collection contains no records for a requested month.
 
-Every import run stores structured diagnostics.
+All import runs retain structured diagnostics.
 
-## 10. Security architecture
-
-Trust boundary:
+## 12. Security architecture
 
 ```mermaid
 flowchart TB
     subgraph LocalMachine[User local machine]
         SRC[Local source data]
         APP[WeArchive]
-        ARC[(Archive)]
-        EXP[Exports]
+        ARC[(Normalized Archive)]
+        EXP[Plain-text exports]
     end
 
-    EXT[Optional external analysis provider]
+    EXT[Optional future external analysis provider]
 
-    SRC --> APP --> ARC
-    ARC --> EXP
-    ARC -. explicit opt-in only .-> EXT
+    SRC --> APP --> ARC --> EXP
+    EXP -. explicit user-selected use only .-> EXT
 ```
 
-Default behavior never requires external network access.
+Core archive/export workflows do not require external network access.
 
-## 11. Architecture decisions
+## 13. Architecture decisions
 
-Major design changes must be recorded under:
+Major design changes must be recorded under `docs/adr/`.
 
-```text
-docs/adr/
-```
+Changes that require ADR consideration include:
 
-ADR format:
+- changing the canonical message envelope;
+- changing stable identity/path strategy;
+- adding binary-media persistence;
+- adding remote content crawling to canonical export;
+- adding a derived LLM/chunk layer;
+- changing the archive system of record.
 
-- Context
-- Decision
-- Alternatives considered
-- Consequences
-- Status
-
-Initial ADRs should cover:
-
-- SQLite as archive system of record.
-- Adapter/normalizer separation.
-- CLI-first before GUI.
-- Source read-only boundary.
-
-## 12. Definition of architectural compliance
+## 14. Definition of architectural compliance
 
 A code change is architecture-compliant when:
 
-1. Its behavior maps to a documented requirement.
-2. Source-specific logic stays in the adapter/compatibility boundary.
-3. Export/search consume normalized archive models only.
-4. New persistent fields include migration and provenance implications.
-5. New failure cases are represented in diagnostics.
-6. Documentation is updated when product behavior or architecture changes.
+1. its behavior maps to a documented requirement;
+2. source-specific logic stays inside adapter/compatibility boundaries;
+3. normalizer output follows `MESSAGE_SCHEMA.md`;
+4. search/export consume normalized archive models only;
+5. mutable names never define stable identity or physical paths;
+6. new failure/unknown cases appear in diagnostics rather than disappearing;
+7. new persistent fields include migration/provenance implications;
+8. documentation is updated whenever behavior or architecture changes.
