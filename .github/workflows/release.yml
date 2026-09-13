@@ -85,7 +85,11 @@ jobs:
       - name: Download previous Velopack release
         continue-on-error: true
         shell: pwsh
-        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          vpk download github
+          --repoUrl https://github.com/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --outputDir artifacts/velopack
 
       - name: Pack Velopack release
         shell: pwsh
@@ -107,6 +111,10 @@ jobs:
             'upload', 'github',
             '--repoUrl', 'https://github.com/${{ github.repository }}',
             '--token', '${{ secrets.GITHUB_TOKEN }}',
+            # Must match the --outputDir and --channel used by `vpk pack`, otherwise vpk
+            # looks for assets.win.json in the default 'Releases' directory and fails.
+            '--outputDir', 'artifacts/velopack',
+            '--channel', 'win',
             '--publish',
             '--releaseName', "WeArchive $version",
             '--tag', "v$version"
