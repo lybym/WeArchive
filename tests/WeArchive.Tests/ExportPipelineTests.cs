@@ -645,6 +645,29 @@ public sealed class ExportPipelineTests
               || Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void TheProductionDurabilityBarrierSurfacesANativeCreateFileFailure()
+    {
+        // Regression for the review finding on commit c7fc954: the durability barrier must
+        // surface a real native failure rather than swallowing it, so CommitConversation's
+        // catch can discard the not-yet-durable replacement and restore the prior-good backup.
+        // This drives the real (non-overridden) DurableCommit -> NativeMethods.FsyncDirectory
+        // path with an actual CreateFileW failure on a directory that does not exist, instead
+        // of the override that the existing boundary test relies on.
+        using var temp = new TempDirectory();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), new FixedClock());
+        var exporter = new ProductionBarrierJsonlDatasetExporter(store);
+        var missing = temp.Combine("does-not-exist-" + Guid.NewGuid().ToString("N"));
+
+        var ex = Assert.Throws<System.ComponentModel.Win32Exception>(
+            () => exporter.InvokeDurableCommit(missing));
+
+        // A real Win32 error code was surfaced via Marshal.GetLastWin32Error (2 =
+        // ERROR_FILE_NOT_FOUND or 3 = ERROR_PATH_NOT_FOUND on Windows), proving the barrier no
+        // longer swallows native failures. FlushFileBuffers uses the same surface pattern.
+        Assert.NotEqual(0, ex.NativeErrorCode);
+    }
+
     /// <summary>
     /// Reports synchronously so a test can cancel the token exactly when the exporter
     /// reports progress, rather than through the async <see cref="Progress{T}"/> post.
@@ -670,6 +693,16 @@ public sealed class ExportPipelineTests
                 throw new InvalidOperationException("simulated power loss at the durability boundary");
             }
         }
+    }
+
+    /// <summary>
+    /// Exposes the production DurableCommit unchanged (it does not override it) so a test can
+    /// prove the real NativeMethods.FsyncDirectory path surfaces a native failure instead of
+    /// swallowing it.
+    /// </summary>
+    private sealed class ProductionBarrierJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
+    {
+        public void InvokeDurableCommit(string directory) => DurableCommit(directory);
     }
 
     private static Dictionary<string, string> Snapshot(string root)

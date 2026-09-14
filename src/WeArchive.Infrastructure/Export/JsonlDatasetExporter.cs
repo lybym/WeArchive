@@ -677,8 +677,10 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     /// <summary>
     /// The durability barrier of the export commit: ensures the new conversation tree's file
     /// contents and directory metadata are on media before the prior-good backup is deleted.
-    /// Override (e.g. to throw) in tests to fault-inject the boundary after the replacement
-    /// move and before backup deletion. docs/EXPORT_PRD.md sections 3.2 and 15.
+    /// A native flush failure is surfaced (not swallowed) so <see cref="CommitConversation"/>'s
+    /// catch discards the not-yet-durable replacement and restores the prior-good backup. Override
+    /// (e.g. to throw) in tests to fault-inject the boundary after the replacement move and before
+    /// backup deletion. docs/EXPORT_PRD.md sections 3.2 and 15.
     /// </summary>
     protected internal virtual void DurableCommit(string directory)
     {

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
@@ -39,10 +40,13 @@ internal static class NativeMethods
     private static extern bool CloseHandle(IntPtr hObject);
 
     /// <summary>
-    /// Flushes the metadata of <paramref name="directoryPath"/> to media. Best-effort: a
-    /// failure (missing directory, access denied, unsupported filesystem) is swallowed and
-    /// the caller proceeds; on NTFS the rename/file-entry metadata is also made durable by
-    /// the journal, so this is the explicit belt-and-suspenders barrier.
+    /// Flushes the metadata of <paramref name="directoryPath"/> to media (the Windows equivalent
+    /// of <c>fsync()</c> on a directory). A native failure — the directory is missing, access is
+    /// denied, or the filesystem cannot flush — is surfaced as a <see cref="Win32Exception"/>
+    /// carrying <see cref="Marshal.GetLastWin32Error"/>, so the export commit's durability barrier
+    /// can fail the commit and restore the prior-good backup instead of deleting it after a barrier
+    /// that persisted nothing. Treating the flush as best-effort would contradict the
+    /// docs/EXPORT_PRD.md §§3.2/15 contract that a failed barrier restores the last good dataset.
     /// </summary>
     internal static void FsyncDirectory(string directoryPath)
     {
@@ -57,12 +61,20 @@ internal static class NativeMethods
 
         if (handle == IntPtr.Zero || handle == InvalidHandleValue)
         {
-            return;
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                $"Failed to open the directory for a durability flush: {directoryPath}");
         }
 
         try
         {
-            FlushFileBuffers(handle);
+            var flushed = FlushFileBuffers(handle);
+            if (!flushed)
+            {
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    $"Failed to flush directory metadata to media: {directoryPath}");
+            }
         }
         finally
         {
