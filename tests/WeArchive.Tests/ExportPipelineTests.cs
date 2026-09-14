@@ -569,7 +569,7 @@ public sealed class ExportPipelineTests
     }
 
     [Fact]
-    public async Task ALeftoverBackupFromACompletedCommitIsSweptOnTheNextExport()
+    public async Task ALeftoverBackupIsRestoredOverThePossiblyNotDurableFinalOnTheNextExport()
     {
         using var temp = new TempDirectory();
         var harness = CreateHarness(temp);
@@ -578,26 +578,71 @@ public sealed class ExportPipelineTests
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
         var groupsBucket = Path.Combine(output, "chats", "groups");
 
-        // Simulate a crash AFTER the move but BEFORE the backup delete: the new final is in
-        // place, but an orphan backup from the prior dataset remains.
-        const string convId = "g_completed_fake_conv";
+        // Simulate a crash after the replacement move but before the backup delete: a new
+        // final is in place, but the prior-good backup remains. Since the new final's
+        // durability cannot be confirmed post-hoc, the next export must restore the backup
+        // (the last good dataset) rather than sweeping it.
+        const string convId = "g_crashed_fake_conv";
         var final = Path.Combine(groupsBucket, convId);
-        var orphanBackup = Path.Combine(groupsBucket, convId + ".wearchive-backup-deadbeef");
+        var leftoverBackup = Path.Combine(groupsBucket, convId + ".wearchive-backup-deadbeef");
         Directory.CreateDirectory(Path.Combine(final, "2026"));
         File.WriteAllText(Path.Combine(final, "2026", "2026-01.jsonl"), "{\"id\":\"m_new\"}\n");
-        Directory.CreateDirectory(Path.Combine(orphanBackup, "2026"));
-        File.WriteAllText(Path.Combine(orphanBackup, "2026", "2026-01.jsonl"), "{\"id\":\"m_old\"}\n");
+        Directory.CreateDirectory(Path.Combine(leftoverBackup, "2026"));
+        File.WriteAllText(Path.Combine(leftoverBackup, "2026", "2026-01.jsonl"), "{\"id\":\"m_old\"}\n");
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
 
-        // The completed final is untouched; the orphan backup was swept.
+        // The prior-good backup was restored over the new final; the new (possibly not
+        // durable) final was discarded.
         Assert.True(Directory.Exists(final));
-        Assert.Equal("{\"id\":\"m_new\"}\n", await File.ReadAllTextAsync(
+        Assert.Equal("{\"id\":\"m_old\"}\n", await File.ReadAllTextAsync(
             Path.Combine(final, "2026", "2026-01.jsonl")));
-        Assert.False(Directory.Exists(orphanBackup));
+        Assert.False(Directory.Exists(leftoverBackup));
         Assert.DoesNotContain(
             Directory.EnumerateDirectories(groupsBucket),
             d => Path.GetFileName(d).Contains(".wearchive-backup-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AFailureAtTheDurabilityBoundaryRestoresTheLastGoodDataset()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new FixtureSourceAdapter();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+        var exporter = new FaultingJsonlDatasetExporter(store);
+        var catalog = new SourceCatalogService(adapter);
+        var importer = new ImportService(adapter, store, clock);
+        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        var output = temp.Combine("export");
+
+        // First export: the durability barrier (DurableCommit call #1) succeeds; the old
+        // dataset is established and driven through the real rename/move/durable-commit/
+        // delete sequence.
+        var first = await workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var conversationId = first.ConversationIds.Single();
+        var final = Path.Combine(output, "chats", "groups", conversationId);
+
+        // Mark the established good dataset so the restore is observable: the re-export's new
+        // staging will not contain this marker.
+        await File.WriteAllTextAsync(Path.Combine(final, "BOUNDARY-MARKER"), "old", CancellationToken.None);
+
+        // Re-export: the durability barrier throws on the second commit, simulating a power
+        // loss at the boundary after the replacement move and before backup deletion.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None));
+
+        // The not-yet-durable new final was discarded and the prior-good backup restored, so
+        // the marker (present only in the old data) survives.
+        Assert.True(File.Exists(Path.Combine(final, "BOUNDARY-MARKER")));
+        Assert.Equal("old", await File.ReadAllTextAsync(Path.Combine(final, "BOUNDARY-MARKER")));
+
+        // No crash artifacts remain.
+        var groupsBucket = Path.Combine(output, "chats", "groups");
+        Assert.DoesNotContain(
+            Directory.EnumerateDirectories(groupsBucket),
+            d => Path.GetFileName(d).Contains(".wearchive-backup-", StringComparison.Ordinal)
+              || Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -607,6 +652,24 @@ public sealed class ExportPipelineTests
     private sealed class CancelOnFirstReport<T>(CancellationTokenSource cts) : IProgress<T>
     {
         public void Report(T value) => cts.Cancel();
+    }
+
+    /// <summary>
+    /// Throws on the second <see cref="JsonlDatasetExporter.DurableCommit"/> call to
+    /// fault-inject the durability boundary (after the replacement move, before backup
+    /// deletion) that the production commit must survive.
+    /// </summary>
+    private sealed class FaultingJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
+    {
+        private int _commits;
+
+        protected internal override void DurableCommit(string directory)
+        {
+            if (++_commits == 2)
+            {
+                throw new InvalidOperationException("simulated power loss at the durability boundary");
+            }
+        }
     }
 
     private static Dictionary<string, string> Snapshot(string root)

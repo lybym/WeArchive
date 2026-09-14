@@ -30,7 +30,7 @@ namespace WeArchive.Infrastructure.Export;
 /// docs/EXPORT_PRD.md section 3.2 and section 15.
 /// </para>
 /// </summary>
-public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
+public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
 {
     public const string ExportSchemaVersion = "1.0";
     public const string MessageSchemaVersion = "1.0";
@@ -226,17 +226,17 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
 
             var manifestPath = Path.Combine(root, "manifest.json");
             var manifestTemp = manifestPath + RootFileStagingSuffix;
-            await File.WriteAllTextAsync(
+            await DurableWriteFileAsync(
                 manifestTemp,
                 JsonSerializer.Serialize(manifest, ManifestOptions),
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 cancellationToken).ConfigureAwait(false);
             stagedRootFiles.Add((manifestTemp, manifestPath));
 
-            // Everything is durable. Commit: swap the staged conversation directories in,
-            // then rename the staged root files over their originals. The manifest is
-            // renamed last so a consumer that loads it never sees references to files that
-            // have not yet been swapped.
+            // Everything is durable. Commit: swap the staged conversation directories in
+            // (each establishes its own durability barrier before deleting its backup), then
+            // rename the staged root files over their originals. The manifest is renamed
+            // last so a consumer that loads it never sees references to files that have not
+            // yet been swapped.
             foreach (var (staging, final) in stagedConversations)
             {
                 CommitConversation(staging, final);
@@ -246,6 +246,9 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
             {
                 File.Move(temp, final, overwrite: true);
             }
+
+            // Make the root catalog/manifest rename metadata durable too.
+            NativeMethods.FsyncDirectory(root);
         }
         catch (Exception)
         {
@@ -342,6 +345,10 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
                     first = first is null || message.OccurredAt < first ? message.OccurredAt : first;
                     last = last is null || message.OccurredAt > last ? message.OccurredAt : last;
                 }
+
+                // fsync the partition contents to media so the staged tree is durable before
+                // the commit moves it into place and deletes the prior-good backup.
+                stream.Flush(true);
             }
 
             files.Add(new ExportedFile
@@ -531,10 +538,9 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
             document.Users[id] = entry;
         }
 
-        await File.WriteAllTextAsync(
+        await DurableWriteFileAsync(
             temp,
             YamlCatalogs.Serialize(document),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken).ConfigureAwait(false);
         staged.Add((temp, final));
     }
@@ -571,10 +577,9 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
             };
         }
 
-        await File.WriteAllTextAsync(
+        await DurableWriteFileAsync(
             temp,
             YamlCatalogs.Serialize(document),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken).ConfigureAwait(false);
         staged.Add((temp, final));
     }
@@ -589,10 +594,7 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
         }
 
         var temp = final + RootFileStagingSuffix;
-        File.WriteAllText(
-            temp,
-            YamlCatalogs.Serialize(new CollectionDocument()),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        DurableWriteFile(temp, YamlCatalogs.Serialize(new CollectionDocument()));
         staged.Add((temp, final));
     }
 
@@ -610,20 +612,23 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
     }
 
     /// <summary>
-    /// Swaps a staged conversation directory into its final path using a recoverable
-    /// protocol so a crash, power loss or move failure can never destroy the last good
-    /// dataset:
+    /// Swaps a staged conversation directory into its final path using a durable, recoverable
+    /// protocol so a crash, power loss or move failure can never destroy the last good dataset:
     /// <list type="number">
-    /// <item>rename the prior <paramref name="final"/> directory to a uniquely named
-    /// backup (an atomic directory rename, never a recursive delete);</item>
+    /// <item>rename the prior <paramref name="final"/> directory to a uniquely named backup
+    /// (an atomic directory rename, never a recursive delete);</item>
     /// <item>move <paramref name="staging"/> into <paramref name="final"/>;</item>
-    /// <item>delete the backup only after the new final is in place.</item>
+    /// <item><see cref="DurableCommit"/> — flush the new tree's file contents (already flushed
+    /// at write time) and its directory metadata to media, establishing that the replacement
+    /// is durable;</item>
+    /// <item>delete the backup only after that durability barrier succeeds.</item>
     /// </list>
-    /// If the move fails, the catch restores the prior data from the backup. A crash
-    /// between steps leaves the backup on disk, which <see cref="RecoverAndSweepStaging"/>
-    /// recovers (when final is absent) or sweeps (when final is present) on the next run.
+    /// If the move or the durability barrier fails, the catch discards the not-yet-durable new
+    /// final and restores the prior dataset from the backup. A crash between steps leaves the
+    /// backup on disk; <see cref="RecoverAndSweepStaging"/> restores it on the next run.
+    /// docs/EXPORT_PRD.md sections 3.2 and 15.
     /// </summary>
-    private static void CommitConversation(string staging, string final)
+    private void CommitConversation(string staging, string final)
     {
         var backup = final + ConversationBackupInfix + Guid.NewGuid().ToString("N");
         var movedToBackup = false;
@@ -631,40 +636,38 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
         {
             if (Directory.Exists(final))
             {
-                // Preserve the prior dataset in a sibling backup instead of deleting it,
-                // so the window below cannot lose it.
+                // Preserve the prior dataset in a sibling backup instead of deleting it.
                 Directory.Move(final, backup);
                 movedToBackup = true;
             }
 
             Directory.Move(staging, final);
+
+            // The replacement is in place but not yet durable. Establish that the new data and
+            // directory metadata are on media before deleting the prior-good backup, so a power
+            // loss after this point cannot leave incomplete new data with no old data left.
+            DurableCommit(final);
         }
         catch (Exception)
         {
-            // The move failed. If we moved the prior data aside, restore it so the last
-            // good dataset survives; the staged directory is discarded by the caller's
-            // catch. (If the move partly failed and final exists, leave the backup for the
-            // next run to sweep.)
-            if (movedToBackup && Directory.Exists(backup) && !Directory.Exists(final))
+            // The replacement is not durably committed. Restore the last good dataset from the
+            // backup: discard the (possibly not-yet-durable) new final, then rename the backup
+            // back into place. The staged directory is discarded by the caller's catch.
+            if (movedToBackup && Directory.Exists(backup))
             {
-                try
+                if (Directory.Exists(final))
                 {
-                    Directory.Move(backup, final);
+                    TryDeleteDirectory(final);
                 }
-                catch (IOException)
-                {
-                    // Leave the backup; RecoverAndSweepStaging restores it next run.
-                }
-                catch (UnauthorizedAccessException)
-                {
-                }
+
+                TryMoveDirectory(backup, final);
             }
 
             throw;
         }
 
-        // The new final is in place. Delete the prior backup (best-effort); a leftover is
-        // swept on the next run.
+        // The new final is durably committed. Safe to delete the prior backup (best-effort; a
+        // leftover is swept on the next run).
         if (movedToBackup)
         {
             TryDeleteDirectory(backup);
@@ -672,12 +675,46 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
     }
 
     /// <summary>
-    /// Sweeps leftover staging directories and recovers or sweeps leftover backups from a
-    /// previously crashed export. Only the immediate children of the two conversation
-    /// buckets are scanned, so this is bounded by the number of conversations, not the
-    /// whole export tree. A backup whose final directory is absent is recovered (renamed
-    /// back to the final path); a backup whose final is present is an orphan from a run
-    /// that completed but could not clean up, and is deleted.
+    /// The durability barrier of the export commit: ensures the new conversation tree's file
+    /// contents and directory metadata are on media before the prior-good backup is deleted.
+    /// Override (e.g. to throw) in tests to fault-inject the boundary after the replacement
+    /// move and before backup deletion. docs/EXPORT_PRD.md sections 3.2 and 15.
+    /// </summary>
+    protected internal virtual void DurableCommit(string directory)
+    {
+        // File contents were fsynced at write time (WriteTimeline / DurableWriteFile); this
+        // flushes the directory metadata (the rename and file entries) to media.
+        NativeMethods.FsyncDirectory(directory);
+    }
+
+    /// <summary>
+    /// Writes a catalog/manifest file and flushes its data to media (the file-content half of
+    /// the durability barrier) so a later atomic rename over durable data.
+    /// </summary>
+    private static async Task DurableWriteFileAsync(string path, string content, CancellationToken cancellationToken)
+    {
+        var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        stream.Flush(true); // fsync the file contents to media
+    }
+
+    private static void DurableWriteFile(string path, string content)
+    {
+        var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        stream.Write(bytes, 0, bytes.Length);
+        stream.Flush(true); // fsync the file contents to media
+    }
+
+    /// <summary>
+    /// Sweeps leftover staging directories and recovers leftover backups from a previously
+    /// crashed export. Only the immediate children of the two conversation buckets are scanned,
+    /// so this is bounded by the number of conversations, not the whole export tree. A backup
+    /// whose final directory is absent is recovered (renamed back to the final path). A backup
+    /// whose final is also present means a commit crashed after the replacement move but before
+    /// the backup was deleted; since the new final's durability cannot be confirmed post-hoc,
+    /// the last good dataset is restored from the backup (the new final is discarded).
     /// </summary>
     private static void RecoverAndSweepStaging(string root)
     {
@@ -712,9 +749,11 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
                 var final = Path.Combine(bucket, finalName);
                 if (Directory.Exists(final))
                 {
-                    // The new final is in place; the backup is a leftover from a completed
-                    // run. Sweep it.
-                    TryDeleteDirectory(dir);
+                    // A commit crashed after the replacement move. The new final may not be
+                    // durably committed, so restore the last good dataset from the backup:
+                    // discard the new final, then rename the backup back into place.
+                    TryDeleteDirectory(final);
+                    TryMoveDirectory(dir, final);
                 }
                 else
                 {
