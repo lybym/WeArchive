@@ -525,7 +525,7 @@ public sealed class ExportPipelineTests
     }
 
     [Fact]
-    public async Task ACrashedCommitIsRecoveredOnTheNextExportNotLost()
+    public async Task AStaleExporterBackupRestoresItsFixedFinalWhenFinalIsAbsent()
     {
         using var temp = new TempDirectory();
         var harness = CreateHarness(temp);
@@ -536,30 +536,26 @@ public sealed class ExportPipelineTests
         var realConversationId = first.ConversationIds.Single();
         var groupsBucket = Path.Combine(output, "chats", "groups");
 
-        // Simulate a crash mid-commit of an UNRELATED conversation: its final directory is
-        // absent (the prior data was renamed to a backup), and a partial staging directory
-        // remains. This is exactly the dangerous interval the recoverable swap must
-        // survive.
+        // A fixed-name exporter backup is the only candidate for its final, alongside stale
+        // exporter staging. This is conservative best-effort cleanup, not crash-state recovery.
         const string crashedId = "g_crashed_fake_conv";
         var crashedFinal = Path.Combine(groupsBucket, crashedId);
-        var crashedBackup = Path.Combine(groupsBucket, crashedId + ".wearchive-backup-deadbeef");
-        var crashedStaging = Path.Combine(groupsBucket, "wearchive-export-staging-deadbeef");
+        var crashedBackup = Path.Combine(groupsBucket, crashedId + ".wearchive-backup-11111111111111111111111111111111");
+        var crashedStaging = Path.Combine(groupsBucket, "wearchive-export-staging-22222222222222222222222222222222");
         Directory.CreateDirectory(Path.Combine(crashedBackup, "2026"));
         File.WriteAllText(
             Path.Combine(crashedBackup, "2026", "2026-01.jsonl"),
             "{\"id\":\"m_old\"}\n"); // the last known-good timeline
         Directory.CreateDirectory(crashedStaging);
 
-        // A fresh export must recover the backup (rename it back to final) rather than
-        // deleting it, and sweep the orphaned staging.
+        // A fresh export may restore this backup because final is absent, and sweeps staging.
         var second = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
 
-        // The crashed conversation's last good dataset was recovered into its final path.
-        Assert.True(Directory.Exists(crashedFinal), "the crashed conversation's backup must be recovered, not lost");
+        Assert.True(Directory.Exists(crashedFinal), "the backup is restored only because final is absent");
         Assert.Equal("{\"id\":\"m_old\"}\n", await File.ReadAllTextAsync(
             Path.Combine(crashedFinal, "2026", "2026-01.jsonl")));
 
-        // The real conversation exported normally, and no crash artifacts remain.
+        // The real conversation exported normally, and stale exporter artifacts are gone.
         Assert.True(second.Succeeded);
         Assert.True(Directory.Exists(Path.Combine(groupsBucket, realConversationId)));
         Assert.DoesNotContain(
@@ -569,7 +565,7 @@ public sealed class ExportPipelineTests
     }
 
     [Fact]
-    public async Task ALeftoverBackupIsRestoredOverThePossiblyNotDurableFinalOnTheNextExport()
+    public async Task AStaleBackupNeverReplacesAnExistingFinal()
     {
         using var temp = new TempDirectory();
         var harness = CreateHarness(temp);
@@ -578,12 +574,11 @@ public sealed class ExportPipelineTests
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
         var groupsBucket = Path.Combine(output, "chats", "groups");
 
-        // Simulate an interrupted commit (no commit marker): a new final is in place, but the
-        // prior-good backup remains. With no marker the prior commit did not complete, so the
-        // next export must restore the backup (the last good dataset) rather than sweeping it.
+        // Both fixed-name final and an exporter-owned backup exist. Phase 1 makes no inference
+        // about a prior process; final must win and the backup is best-effort cleanup.
         const string convId = "g_crashed_fake_conv";
         var final = Path.Combine(groupsBucket, convId);
-        var leftoverBackup = Path.Combine(groupsBucket, convId + ".wearchive-backup-deadbeef");
+        var leftoverBackup = Path.Combine(groupsBucket, convId + ".wearchive-backup-33333333333333333333333333333333");
         Directory.CreateDirectory(Path.Combine(final, "2026"));
         File.WriteAllText(Path.Combine(final, "2026", "2026-01.jsonl"), "{\"id\":\"m_new\"}\n");
         Directory.CreateDirectory(Path.Combine(leftoverBackup, "2026"));
@@ -591,10 +586,9 @@ public sealed class ExportPipelineTests
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
 
-        // The prior-good backup was restored over the new final; the new (possibly not
-        // durable) final was discarded.
+        // The existing final is retained; no crash-state rollback protocol is attempted.
         Assert.True(Directory.Exists(final));
-        Assert.Equal("{\"id\":\"m_old\"}\n", await File.ReadAllTextAsync(
+        Assert.Equal("{\"id\":\"m_new\"}\n", await File.ReadAllTextAsync(
             Path.Combine(final, "2026", "2026-01.jsonl")));
         Assert.False(Directory.Exists(leftoverBackup));
         Assert.DoesNotContain(
@@ -646,8 +640,7 @@ public sealed class ExportPipelineTests
     [Fact]
     public async Task ARootFilesPublicationFailureRestoresTheEntirePriorPackage()
     {
-        // Regression for the review finding on commit 959792e: a failure after the root-file
-        // publication (before the commit marker) must roll back the whole export, restoring the
+        // A failure after the root-file publication must roll back the whole export, restoring the
         // prior conversations AND the prior root files (manifest last), so the prior package
         // stays usable. A different conversation is exported for the failing run so the
         // rolled-back root files (group manifest) are observably distinct from the replacement
@@ -689,7 +682,7 @@ public sealed class ExportPipelineTests
         // The new direct conversation was discarded on rollback; its bucket is left empty.
         Assert.Empty(Directory.EnumerateDirectories(Path.Combine(output, "chats", "direct")));
 
-        // No crash artifacts remain: no conversation/root backups, staging, or marker.
+        // No exporter cleanup artifacts remain.
         var groupsBucket = Path.Combine(output, "chats", "groups");
         Assert.DoesNotContain(
             Directory.EnumerateDirectories(groupsBucket),
@@ -697,19 +690,13 @@ public sealed class ExportPipelineTests
               || Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
         Assert.DoesNotContain(
             Directory.EnumerateFiles(output),
-            f => Path.GetFileName(f).Contains(".wearchive-rootbackup-", StringComparison.Ordinal)
-              || Path.GetFileName(f) == ".wearchive-commit-complete");
+            f => Path.GetFileName(f).Contains(".wearchive-rootbackup-", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task ALeftoverBackupAfterACommittedExportIsSweptNotRestored()
     {
-        // Regression for the review finding on commit 959792e: a leftover backup left by a
-        // post-commit cleanup failure must NOT be restored over the durable new timeline on the
-        // next run. The commit marker proves the prior export completed, so the leftover is swept
-        // (the committed data is kept) rather than restored. Simulate the committed +
-        // cleanup-failed state directly, then export a different conversation and verify the
-        // first timeline is retained.
+        // A leftover exporter backup must not replace an existing final on a later export.
         using var temp = new TempDirectory();
         var harness = CreateHarness(temp);
         var output = temp.Combine("export");
@@ -720,18 +707,14 @@ public sealed class ExportPipelineTests
         var final = Path.Combine(groupsBucket, conversationId);
         var committedTimeline = await File.ReadAllTextAsync(Path.Combine(final, "2026", "2026-01.jsonl"));
 
-        // Simulate a successful commit whose backup cleanup failed: the marker is present and a
-        // leftover backup (old data) lingers next to the durable new final.
-        var leftoverBackup = final + ".wearchive-backup-deadbeef";
+        // Simulate a successful commit whose backup cleanup failed.
+        var leftoverBackup = final + ".wearchive-backup-44444444444444444444444444444444";
         Directory.CreateDirectory(Path.Combine(leftoverBackup, "2026"));
         await File.WriteAllTextAsync(
             Path.Combine(leftoverBackup, "2026", "2026-01.jsonl"),
             "{\"id\":\"m_old\"}\n",
             CancellationToken.None);
-        await File.WriteAllTextAsync(Path.Combine(output, ".wearchive-commit-complete"), "1", CancellationToken.None);
-
-        // A later export of a DIFFERENT conversation must sweep the leftover (committed), not
-        // restore it over the durable group timeline.
+        // A later export of a DIFFERENT conversation must sweep the leftover, not restore it.
         var second = await harness.Workflow.ExportConversationAsync(
             new ExportConversationRequest
             {
@@ -748,49 +731,31 @@ public sealed class ExportPipelineTests
         // The committed group timeline is retained, not rolled back to the simulated old backup.
         Assert.Equal(committedTimeline, await File.ReadAllTextAsync(Path.Combine(final, "2026", "2026-01.jsonl")));
         Assert.False(Directory.Exists(leftoverBackup));
-        Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
     }
 
     [Fact]
-    public async Task AnUncommittedNewConversationIsRemovedOnCrashRecovery()
+    public async Task AJournalLikeFileIsIgnoredAndCannotDeleteOutsideTheExportRoot()
     {
-        // Regression for the review finding on commit ed029b7d: a newly introduced conversation
-        // (no prior backup) published before a crash must be removed by marker-absent recovery,
-        // so the export converges to the prior complete dataset rather than leaving a partial
-        // package (an old manifest plus a new conversation it does not describe).
         using var temp = new TempDirectory();
         var harness = CreateHarness(temp);
         var output = temp.Combine("export");
 
-        // Prior package: a complete group export.
-        var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
-        var priorManifest = await File.ReadAllTextAsync(Path.Combine(output, "manifest.json"));
+        var sentinel = temp.Combine("sentinel.txt");
+        await File.WriteAllTextAsync(sentinel, "keep", CancellationToken.None);
 
-        // Simulate a crash after a NEW direct conversation was published (moved into place, no
-        // prior backup) but before the commit marker: the new conversation is on disk, the
-        // transaction journal records it, and there is no marker.
-        const string newDirectId = "u_new_fake_conv";
-        var newDirectFinal = Path.Combine(output, "chats", "direct", newDirectId);
-        Directory.CreateDirectory(Path.Combine(newDirectFinal, "2026"));
-        await File.WriteAllTextAsync(
-            Path.Combine(newDirectFinal, "2026", "2026-01.jsonl"),
-            "{\"id\":\"m_new\"}\n",
-            CancellationToken.None);
+        // These are untrusted user files. The exporter has no journal reader and therefore no
+        // path traversal or rooted-path deletion authority to exercise.
+        Directory.CreateDirectory(output);
         await File.WriteAllTextAsync(
             Path.Combine(output, ".wearchive-transaction"),
-            Path.GetRelativePath(output, newDirectFinal) + Environment.NewLine,
+            "..\\sentinel.txt" + Environment.NewLine + sentinel,
             CancellationToken.None);
-        Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
 
-        // The next export recovers: no marker means the prior publication did not complete, so the
-        // journaled new conversation is removed and the prior package alone remains.
-        var second = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
 
-        Assert.True(second.Succeeded);
-        Assert.False(Directory.Exists(newDirectFinal), "the new conversation must be removed on crash recovery");
-        Assert.Equal(priorManifest, await File.ReadAllTextAsync(Path.Combine(output, "manifest.json")));
-        Assert.False(File.Exists(Path.Combine(output, ".wearchive-transaction")));
-        Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
+        Assert.True(result.Succeeded);
+        Assert.Equal("keep", await File.ReadAllTextAsync(sentinel));
+        Assert.True(File.Exists(Path.Combine(output, ".wearchive-transaction")));
     }
 
     /// <summary>
@@ -823,8 +788,7 @@ public sealed class ExportPipelineTests
     /// <summary>
     /// Throws on the second <see cref="JsonlDatasetExporter.DurableCommitRoot"/> call to
     /// fault-inject a failure after the conversations and root files are published and before the
-    /// commit marker, proving the in-process rollback restores the entire prior package. Phase 1
-    /// does not require a global root durability barrier (see docs/EXPORT_PRD.md 3.2).
+    /// replacement sequence, proving the in-process rollback restores the entire prior package.
     /// </summary>
     private sealed class RootFaultingJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
     {
@@ -863,4 +827,3 @@ public sealed class ExportPipelineTests
         return string.Join('|', properties);
     }
 }
-
