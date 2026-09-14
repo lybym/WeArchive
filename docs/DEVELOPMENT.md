@@ -153,6 +153,7 @@ For complete import and export flows without requiring a live upstream client. T
 ```text
 ExportPipelineTests      fixture import -> archive -> JSONL package, manifest and catalogs
 SqliteArchiveStoreTests  upsert idempotency, timeline ordering, reply resolution, provenance
+SourceCoverageTests      source-coverage failure -> failing run, and no partial archive publication
 ```
 
 ### Adapter compatibility tests
@@ -180,8 +181,8 @@ The JSONL/YAML exporters have deterministic fixtures and snapshots. `ExportReque
 is injectable precisely so that export output can be byte-compared; it is the only
 non-reproducible field in an export package.
 
-Current status: 82 tests pass, including five real-WeChat integration tests that skip when no
-usable WeChat installation is present.
+Current status: 101 tests, of which 96 pass and five are real-WeChat integration tests that skip
+when no usable WeChat installation is present.
 
 ## 8. Fixture strategy
 

@@ -18,6 +18,7 @@ The canonical message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEM
 6. Binary media is not required for the Phase 1 export product.
 7. Source-specific fields belong in provenance/metadata, not in core domain columns unless they have product meaning.
 8. Unknown records are retained rather than silently discarded.
+9. An import publishes atomically: one conversation's records become part of the archive in a single transaction, and a run that could not read the source completely leaves the archive unchanged instead of storing the records it happened to read.
 
 ## 3. Entity relationship overview
 
@@ -437,6 +438,14 @@ Required fields:
 
 This entity is required for operational trust.
 
+`records_scanned` counts the records the run read; the inserted/updated/skipped counters describe
+what the run published. A run that was rolled back because source coverage failed publishes
+nothing, so it reports zero inserted/updated/skipped while `records_scanned` still shows how far
+it read and its Fatal diagnostic says why. Section 2 principle 9, docs/ARCHITECTURE.md section 3.2.1.
+
+Every conversation a run publishes is committed in one transaction together with its messages, so
+the conversation row and its aggregates never describe records the archive does not hold.
+
 ## 14. SourceCheckpoint
 
 Stores adapter-owned incremental state.
@@ -520,7 +529,8 @@ across a multi-shard timeline.
 
 A record for which the adapter can provide neither form of identity is a source-coverage
 failure. The importer records a Fatal diagnostic and the workflow does not export a reduced
-dataset; it never skips that record or invents an identity.
+dataset; it never skips that record or invents an identity, and the run publishes nothing to the
+archive (section 2 principle 9).
 
 ## 17. Deduplication
 

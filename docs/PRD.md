@@ -177,6 +177,8 @@ Every archived message shall retain source account, conversation, source record 
 
 The system shall surface partial-read, stale-source, unknown-type and parsing warnings instead of silently dropping uncertain data.
 
+A run that cannot read a source completely shall not publish a partial result: it records a Fatal diagnostic and leaves the archive exactly as it was before the run, so an incomplete source can never become usable archive data. Cancelling a run is not a coverage failure and keeps the records written so far; see section 9.1.
+
 ### FR-15 Link/app-share normalization
 
 When a message contains a link, third-party shared content or mini-program/card content, the system shall preserve all locally obtainable semantic metadata and expose the best locally obtainable original URL when available.

@@ -100,25 +100,6 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
         var run = await _archive.BeginImportRunAsync(accountId, descriptor, cancellationToken)
             .ConfigureAwait(false);
 
-        // The conversation row must exist before any message references it: messages carry a
-        // foreign key to their conversation. Aggregates and timestamps are filled in after
-        // the messages are archived.
-        await _archive.UpsertConversationsAsync(
-            [
-                new ArchiveConversation
-                {
-                    Id = conversationId,
-                    AccountId = accountId,
-                    SourceConversationId = request.SourceConversationId,
-                    Kind = request.Kind,
-                    Title = request.ConversationTitle,
-                    PeerParticipantId = request.Kind == ConversationKind.Direct && request.PeerSourceUserId is { Length: > 0 } peer
-                        ? StableIds.Participant(accountId, peer)
-                        : null,
-                },
-            ],
-            cancellationToken).ConfigureAwait(false);
-
         var diagnostics = new DiagnosticBag();
         var counters = new UpsertCounters();
         var total = request.TotalHint ?? 0;
@@ -140,119 +121,143 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
 
         var batch = new List<CanonicalMessage>(BatchSize);
         var status = ImportRunStatus.Completed;
+        var published = false;
+
+        // The conversation and its records are staged in one archive transaction
+        // (docs/ARCHITECTURE.md section 3.2.1). The conversation row is created inside it and is
+        // only published on commit: the archive is the system of record, so a run that cannot
+        // read the source completely must leave the archive exactly as it found it instead of
+        // publishing a partial conversation that looks complete (FR-14,
+        // docs/ARCHITECTURE.md section 11).
+        var session = await _archive.BeginConversationImportAsync(
+            new ArchiveConversation
+            {
+                Id = conversationId,
+                AccountId = accountId,
+                SourceConversationId = request.SourceConversationId,
+                Kind = request.Kind,
+                Title = request.ConversationTitle,
+                PeerParticipantId = request.Kind == ConversationKind.Direct && request.PeerSourceUserId is { Length: > 0 } peer
+                    ? StableIds.Participant(accountId, peer)
+                    : null,
+            },
+            cancellationToken).ConfigureAwait(false);
 
         try
         {
-            await foreach (var source in _adapter
-                .ReadMessagesAsync(request.SourceProfileId, request.SourceConversationId, cancellationToken)
-                .WithCancellation(cancellationToken)
-                .ConfigureAwait(false))
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                await foreach (var source in _adapter
+                    .ReadMessagesAsync(request.SourceProfileId, request.SourceConversationId, cancellationToken)
+                    .WithCancellation(cancellationToken)
+                    .ConfigureAwait(false))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                CanonicalMessage message;
-                try
-                {
-                    message = MessageNormalizer.Normalize(source, context);
-                }
-                catch (ArgumentException ex)
-                {
-                    // A record without a stable identity cannot be represented as an
-                    // unknown canonical message: doing so would fabricate an id, while
-                    // skipping it would make a reduced source look complete. Treat the
-                    // adapter-contract breach as source-coverage failure so the workflow
-                    // records a Fatal diagnostic and does not export a partial dataset.
-                    throw new SourceCoverageException(
-                        DiagnosticCodes.SourceMessageIdUnavailable,
-                        ex.Message);
+                    CanonicalMessage message;
+                    try
+                    {
+                        message = MessageNormalizer.Normalize(source, context);
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        // A record without a stable identity cannot be represented as an
+                        // unknown canonical message: doing so would fabricate an id, while
+                        // skipping it would make a reduced source look complete. Treat the
+                        // adapter-contract breach as source-coverage failure so the workflow
+                        // records a Fatal diagnostic and does not export a partial dataset.
+                        throw new SourceCoverageException(
+                            DiagnosticCodes.SourceMessageIdUnavailable,
+                            ex.Message);
+                    }
+
+                    if (message.Type == CanonicalMessageType.Unknown)
+                    {
+                        diagnostics.Partial(
+                            DiagnosticCodes.UnknownMessageType,
+                            "Source record could not be normalized to a canonical type and was archived as 'unknown'.",
+                            source.SourceType,
+                            source.SourceSubtype);
+                    }
+                    else if (message.IsPartial)
+                    {
+                        diagnostics.Partial(
+                            DiagnosticCodes.PartialAppMessage,
+                            "Source record was only partially parsed; missing fields were left null.",
+                            source.SourceType,
+                            source.SourceSubtype);
+                    }
+
+                    if (message.ReplyTo is not null && message.ReplyTo.Text is null)
+                    {
+                        diagnostics.Partial(
+                            DiagnosticCodes.UnresolvedReplyTarget,
+                            "Reply target has no locally available quote snapshot.",
+                            source.SourceType,
+                            source.SourceSubtype);
+                    }
+
+                    batch.Add(message);
+                    processed++;
+                    first = first is null || message.OccurredAt < first ? message.OccurredAt : first;
+                    last = last is null || message.OccurredAt > last ? message.OccurredAt : last;
+
+                    if (batch.Count >= BatchSize)
+                    {
+                        counters = Add(counters, await FlushAsync(session, batch, cancellationToken).ConfigureAwait(false));
+                        Report(progress, OperationStages.Archiving, processed, total, conversationId);
+                    }
+                    else if (processed % 256 == 0)
+                    {
+                        Report(progress, OperationStages.ReadingMessages, processed, total, conversationId);
+                    }
                 }
 
-                if (message.Type == CanonicalMessageType.Unknown)
+                if (batch.Count > 0)
                 {
-                    diagnostics.Partial(
-                        DiagnosticCodes.UnknownMessageType,
-                        "Source record could not be normalized to a canonical type and was archived as 'unknown'.",
-                        source.SourceType,
-                        source.SourceSubtype);
-                }
-                else if (message.IsPartial)
-                {
-                    diagnostics.Partial(
-                        DiagnosticCodes.PartialAppMessage,
-                        "Source record was only partially parsed; missing fields were left null.",
-                        source.SourceType,
-                        source.SourceSubtype);
+                    counters = Add(counters, await FlushAsync(session, batch, cancellationToken).ConfigureAwait(false));
                 }
 
-                if (message.ReplyTo is not null && message.ReplyTo.Text is null)
-                {
-                    diagnostics.Partial(
-                        DiagnosticCodes.UnresolvedReplyTarget,
-                        "Reply target has no locally available quote snapshot.",
-                        source.SourceType,
-                        source.SourceSubtype);
-                }
-
-                batch.Add(message);
-                processed++;
-                first = first is null || message.OccurredAt < first ? message.OccurredAt : first;
-                last = last is null || message.OccurredAt > last ? message.OccurredAt : last;
-
-                if (batch.Count >= BatchSize)
-                {
-                    counters = Add(counters, await FlushAsync(batch, cancellationToken).ConfigureAwait(false));
-                    Report(progress, OperationStages.Archiving, processed, total, conversationId);
-                }
-                else if (processed % 256 == 0)
-                {
-                    Report(progress, OperationStages.ReadingMessages, processed, total, conversationId);
-                }
+                // The source was read to the end, so the staged conversation may become the
+                // archive's record of it.
+                await session.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+                published = true;
             }
-
-            if (batch.Count > 0)
+            catch (OperationCanceledException)
             {
-                counters = Add(counters, await FlushAsync(batch, cancellationToken).ConfigureAwait(false));
+                // A deliberate stop keeps what was already read: archive writes are idempotent
+                // by stable ID, so a later full re-read completes the conversation without
+                // producing duplicates. That promise is what the UI shows on cancellation.
+                status = ImportRunStatus.Cancelled;
+                await session.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+                published = true;
+                throw;
             }
-        }
-        catch (OperationCanceledException)
-        {
-            status = ImportRunStatus.Cancelled;
-            throw;
-        }
-        catch (SourceCoverageException ex)
-        {
-            // The source could not provide complete coverage for this conversation (a
-            // missing or unreadable message shard). Surface a typed Fatal diagnostic
-            // instead of completing as a misleading empty import (FR-14). The run is
-            // recorded as Failed so the workflow will not export an empty dataset.
-            status = ImportRunStatus.Failed;
-            diagnostics.Fatal(ex.Code, ex.Message);
-        }
-        catch (Exception)
-        {
-            status = ImportRunStatus.Failed;
-            throw;
+            catch (SourceCoverageException ex)
+            {
+                // The source could not provide complete coverage for this conversation (a
+                // missing or unreadable message shard, or a record without identity). Surface a
+                // typed Fatal diagnostic instead of completing as a misleading empty import
+                // (FR-14). Nothing this run read is published, so the archive keeps no partial
+                // conversation.
+                status = ImportRunStatus.Failed;
+                diagnostics.Fatal(ex.Code, ex.Message);
+                await session.RollbackAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                status = ImportRunStatus.Failed;
+                await session.RollbackAsync().ConfigureAwait(false);
+                throw;
+            }
         }
         finally
         {
+            // The session must release the database before the import-run audit row is written.
+            await session.DisposeAsync().ConfigureAwait(false);
+
             if (status == ImportRunStatus.Completed)
             {
-                await _archive.UpsertConversationsAsync(
-                    [
-                        new ArchiveConversation
-                        {
-                            Id = conversationId,
-                            AccountId = accountId,
-                            SourceConversationId = request.SourceConversationId,
-                            Kind = request.Kind,
-                            Title = request.ConversationTitle,
-                            FirstMessageAt = first,
-                            LastMessageAt = last,
-                            MessageCount = processed,
-                        },
-                    ],
-                    CancellationToken.None).ConfigureAwait(false);
-
                 var resolved = await _archive
                     .ResolveReplyTargetsAsync(conversationId, CancellationToken.None)
                     .ConfigureAwait(false);
@@ -279,9 +284,12 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
                 FinishedAt = _clock.UtcNow,
                 Status = status,
                 RecordsScanned = processed,
-                RecordsInserted = counters.Inserted,
-                RecordsUpdated = counters.Updated,
-                RecordsSkipped = counters.Unchanged,
+                // The counters describe what this run left in the archive. A rolled-back run
+                // published nothing, so it must not claim inserted or updated records; what it
+                // read is still visible through RecordsScanned and the Fatal diagnostic.
+                RecordsInserted = published ? counters.Inserted : 0,
+                RecordsUpdated = published ? counters.Updated : 0,
+                RecordsSkipped = published ? counters.Unchanged : 0,
                 UnknownCount = counters.Unknown,
                 PartialCount = counters.Partial,
                 WarningCount = rolled.Count(d => d.Severity == DiagnosticSeverity.Partial),
@@ -315,11 +323,12 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
         return StableIds.DirectConversation(accountId, peer);
     }
 
-    private async Task<UpsertCounters> FlushAsync(
+    private static async Task<UpsertCounters> FlushAsync(
+        IConversationImportSession session,
         List<CanonicalMessage> batch,
         CancellationToken cancellationToken)
     {
-        var result = await _archive.UpsertMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
+        var result = await session.UpsertMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
         batch.Clear();
         return result;
     }

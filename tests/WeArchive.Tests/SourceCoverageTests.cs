@@ -151,6 +151,133 @@ public sealed class SourceCoverageTests
         }
     }
 
+    /// <summary>How a long synthetic source stream ends.</summary>
+    private enum StreamFault
+    {
+        /// <summary>The stream ends normally after its valid records.</summary>
+        None,
+
+        /// <summary>A final record with no upstream and no composite identity.</summary>
+        MissingIdentity,
+
+        /// <summary>A typed source-coverage failure after records were already read.</summary>
+        CoverageException,
+
+        /// <summary>An unexpected adapter failure after records were already read.</summary>
+        UnexpectedException,
+    }
+
+    /// <summary>
+    /// Emits a stream long enough to cross <c>ImportService</c>'s 2,048-record batch boundary
+    /// before it faults, which is the state the shorter stubs above cannot reach. The records
+    /// reuse the fixture's composite identity scheme, so the same ids can be re-imported with
+    /// different text. All content is synthetic.
+    /// </summary>
+    private sealed class LongStreamAdapter(int validRecords, StreamFault fault, string textPrefix)
+        : ISourceAdapter
+    {
+        private readonly FixtureSourceAdapter _fixture = new();
+
+        public string AdapterName => _fixture.AdapterName;
+
+        public string AdapterVersion => _fixture.AdapterVersion;
+
+        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
+            _fixture.DescribeSourceAsync(cancellationToken);
+
+        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
+            _fixture.ListAccountsAsync(cancellationToken);
+
+        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            _fixture.ListConversationsAsync(sourceProfileId, cancellationToken);
+
+        public Task<SourceConversationDetail> DescribeConversationAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            _fixture.DescribeConversationAsync(sourceProfileId, sourceConversationId, cancellationToken);
+
+        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            _fixture.ListParticipantsAsync(sourceProfileId, cancellationToken);
+
+        public async IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+            string sourceProfileId,
+            string sourceConversationId,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            for (var index = 1; index <= validRecords; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return Record(index);
+                await Task.Yield();
+            }
+
+            switch (fault)
+            {
+                case StreamFault.MissingIdentity:
+                    yield return Record(validRecords + 1) with { SourceMessageId = null };
+                    break;
+                case StreamFault.CoverageException:
+                    throw new SourceCoverageException(
+                        DiagnosticCodes.PartitionUnreadable,
+                        "The message shard became unreadable after earlier records were read.");
+                case StreamFault.UnexpectedException:
+                    throw new InvalidOperationException("The message shard failed mid-read.");
+                case StreamFault.None:
+                default:
+                    break;
+            }
+        }
+
+        private SourceMessage Record(int index) => new()
+        {
+            SourceConversationId = FixtureSourceAdapter.GroupConversation,
+            SenderSourceUserId = index % 2 == 0 ? FixtureSourceAdapter.Bob : FixtureSourceAdapter.Alice,
+            OccurredAt = FixtureSourceAdapter.Base.AddSeconds(index),
+            SourceType = "1",
+            SourcePartition = "fixture_0",
+            SourceMessageId = $"l:fixture_0:{index}",
+            SourceOrderKey = index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Content = SourceMessageContent.PlainText($"{textPrefix} {index}"),
+        };
+    }
+
+    /// <summary>Cancels the import as soon as the first batch has been written.</summary>
+    private sealed class CancelOnArchiving(CancellationTokenSource cts) : IProgress<OperationProgress>
+    {
+        public void Report(OperationProgress value)
+        {
+            if (value.Stage == OperationStages.Archiving)
+            {
+                cts.Cancel();
+            }
+        }
+    }
+
+    private static ImportRequest GroupImportRequest() => new()
+    {
+        SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+        SourceConversationId = FixtureSourceAdapter.GroupConversation,
+        Kind = ConversationKind.Group,
+        ConversationTitle = "华东产品创新中心工作群",
+    };
+
+    /// <summary>
+    /// The archive must hold no trace of a conversation whose import did not publish: no
+    /// messages, no conversation row, and no aggregates that count records it does not have.
+    /// </summary>
+    private static async Task AssertNothingWasPublishedAsync(
+        SqliteArchiveStore store,
+        string conversationId)
+    {
+        Assert.Empty(await store.ReadMessagesAsync(conversationId, CancellationToken.None));
+        Assert.Null(await store.GetConversationAsync(conversationId, CancellationToken.None));
+
+        var stats = await store.GetArchiveStatsAsync(CancellationToken.None);
+        Assert.Equal(0, stats.ConversationCount);
+        Assert.Equal(0, stats.MessageCount);
+    }
+
     [Fact]
     public async Task AnUnreadableShardSurfacesAFatalDiagnosticAndAFailedRunNotAnEmptyImport()
     {
@@ -244,5 +371,139 @@ public sealed class SourceCoverageTests
         Assert.Contains("stable SourceMessageId", ex.Message, StringComparison.Ordinal);
         Assert.False(Directory.Exists(output),
             "a source record without an identity must not yield a silently reduced export");
+    }
+
+    [Fact]
+    public async Task ARunFailingAfterAFlushedBatchPublishesNoPartialConversation()
+    {
+        // 3,000 valid records means at least one full 2,048-record batch is written before the
+        // record without identity fails the run, which is the case the smaller stub cannot
+        // reach.
+        const int validRecords = 3_000;
+
+        using var temp = new TempDirectory();
+        var clock = new FixedClock();
+        var archivePath = temp.Combine("archive.db");
+        var store = new SqliteArchiveStore(archivePath, clock);
+        var importer = new ImportService(
+            new LongStreamAdapter(validRecords, StreamFault.MissingIdentity, "batch record"),
+            store,
+            clock);
+
+        var outcome = await importer.ImportConversationAsync(
+            GroupImportRequest(),
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(ImportRunStatus.Failed, outcome.Run.Status);
+        var fatal = Assert.Single(outcome.Diagnostics, d => d.Severity == DiagnosticSeverity.Fatal);
+        Assert.Equal(DiagnosticCodes.SourceMessageIdUnavailable, fatal.Code);
+
+        // The run read those records; it published none of them, so it must not claim them.
+        // The record that failed normalization is not counted as scanned — it is reported
+        // through the Fatal diagnostic instead.
+        Assert.Equal(validRecords, outcome.Run.RecordsScanned);
+        Assert.Equal(0, outcome.Run.RecordsInserted);
+        Assert.Equal(0, outcome.Run.RecordsUpdated);
+        Assert.Equal(0, outcome.Run.RecordsSkipped);
+
+        await AssertNothingWasPublishedAsync(store, outcome.ConversationId);
+
+        // The rollback must be durable, not merely invisible inside the live store.
+        var reopened = new SqliteArchiveStore(archivePath, clock);
+        await AssertNothingWasPublishedAsync(reopened, outcome.ConversationId);
+    }
+
+    [Fact]
+    public async Task AShardFailingAfterAFlushedBatchPublishesNoPartialConversation()
+    {
+        const int validRecords = 2_500;
+
+        using var temp = new TempDirectory();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+        var importer = new ImportService(
+            new LongStreamAdapter(validRecords, StreamFault.CoverageException, "batch record"),
+            store,
+            clock);
+
+        var outcome = await importer.ImportConversationAsync(
+            GroupImportRequest(),
+            null,
+            CancellationToken.None);
+
+        Assert.Equal(ImportRunStatus.Failed, outcome.Run.Status);
+        var fatal = Assert.Single(outcome.Diagnostics, d => d.Severity == DiagnosticSeverity.Fatal);
+        Assert.Equal(DiagnosticCodes.PartitionUnreadable, fatal.Code);
+        Assert.Equal(0, outcome.Run.RecordsInserted);
+
+        await AssertNothingWasPublishedAsync(store, outcome.ConversationId);
+    }
+
+    [Fact]
+    public async Task AFailedReImportLeavesThePreviouslyArchivedConversationUntouched()
+    {
+        using var temp = new TempDirectory();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+
+        // A first, complete import archives the fixture conversation.
+        var first = await new ImportService(new FixtureSourceAdapter(), store, clock)
+            .ImportConversationAsync(GroupImportRequest(), null, CancellationToken.None);
+        Assert.Equal(ImportRunStatus.Completed, first.Run.Status);
+
+        var beforeMessages = await store.ReadMessagesAsync(first.ConversationId, CancellationToken.None);
+        var beforeConversation = await store.GetConversationAsync(first.ConversationId, CancellationToken.None);
+        Assert.NotEmpty(beforeMessages);
+        Assert.NotNull(beforeConversation);
+
+        // A later run re-reads those records with different text and then fails: the updates it
+        // staged must be rolled back rather than left half-applied over good archived data.
+        var failing = new ImportService(
+            new LongStreamAdapter(2_500, StreamFault.UnexpectedException, "rewritten record"),
+            store,
+            clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            failing.ImportConversationAsync(GroupImportRequest(), null, CancellationToken.None));
+
+        var afterMessages = await store.ReadMessagesAsync(first.ConversationId, CancellationToken.None);
+        Assert.Equal(
+            beforeMessages.Select(m => (m.Id, m.Text)),
+            afterMessages.Select(m => (m.Id, m.Text)));
+        Assert.Equal(
+            beforeConversation,
+            await store.GetConversationAsync(first.ConversationId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ACancelledImportKeepsTheRecordsItAlreadyRead()
+    {
+        // Cancellation is the one deliberate exception to "an incomplete read publishes
+        // nothing": the user stopped the run, and the UI promises that already-written archive
+        // records are kept because archive writes are idempotent by stable ID.
+        using var temp = new TempDirectory();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+        var importer = new ImportService(
+            new LongStreamAdapter(3_000, StreamFault.None, "batch record"),
+            store,
+            clock);
+
+        using var cts = new CancellationTokenSource();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            importer.ImportConversationAsync(GroupImportRequest(), new CancelOnArchiving(cts), cts.Token));
+
+        var conversationId = StableIds.GroupConversation(
+            StableIds.Account(new FixtureSourceAdapter().AdapterName, FixtureSourceAdapter.FixtureAccountId),
+            FixtureSourceAdapter.GroupConversation);
+
+        var conversation = await store.GetConversationAsync(conversationId, CancellationToken.None);
+        Assert.NotNull(conversation);
+
+        var messages = await store.ReadMessagesAsync(conversationId, CancellationToken.None);
+        Assert.Equal(2048, messages.Count);
+        Assert.Equal(messages.Count, conversation.MessageCount);
     }
 }

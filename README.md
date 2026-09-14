@@ -208,7 +208,7 @@ Publish and package (both scripts do their own self-contained `win-x64` publish)
 `artifacts/velopack/WeArchive-win-Setup.exe` (plus a `WeArchive-Setup.exe` copy added by the
 release workflow) together with the Velopack update assets (`*.nupkg`, `releases.win.json`).
 
-82 tests pass, including five real-WeChat integration tests that skip automatically when no usable WeChat installation is present.
+101 tests, of which 96 pass and five are real-WeChat integration tests that skip automatically when no usable WeChat installation is present.
 
 See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) and [`AGENTS.md`](AGENTS.md).
 

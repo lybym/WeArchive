@@ -193,6 +193,21 @@ public sealed class SqliteArchiveStore : IArchiveStore
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
+        UpsertConversationsCore(connection, transaction, conversations, cancellationToken);
+        transaction.Commit();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Inserts or refreshes conversation rows on a caller-owned transaction so that a staged
+    /// import can create its conversation inside the import transaction.
+    /// </summary>
+    private static void UpsertConversationsCore(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IEnumerable<ArchiveConversation> conversations,
+        CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         // Conversation titles are mutable metadata: they may be refreshed, but they never
@@ -233,9 +248,34 @@ public sealed class SqliteArchiveStore : IArchiveStore
             pLast.Value = (object?)FormatOrNull(conversation.LastMessageAt) ?? DBNull.Value;
             command.ExecuteNonQuery();
         }
+    }
 
-        transaction.Commit();
-        return Task.CompletedTask;
+    /// <summary>
+    /// Opens the archive transaction that stages one conversation import. The conversation row
+    /// is created inside it and only becomes visible when the session commits, so a run that
+    /// cannot read the source completely never publishes a partial conversation.
+    /// docs/ARCHITECTURE.md sections 3.2.1 and 11.
+    /// </summary>
+    public Task<IConversationImportSession> BeginConversationImportAsync(
+        ArchiveConversation conversation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+
+        var connection = Open();
+        try
+        {
+            var transaction = connection.BeginTransaction();
+            UpsertConversationsCore(connection, transaction, [conversation], cancellationToken);
+            IConversationImportSession session =
+                new ConversationImportSession(connection, transaction, conversation.Id);
+            return Task.FromResult(session);
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
     }
 
     public Task<UpsertCounters> UpsertMessagesAsync(
@@ -248,14 +288,36 @@ public sealed class SqliteArchiveStore : IArchiveStore
             return Task.FromResult(new UpsertCounters());
         }
 
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+
+        var counters = UpsertMessagesCore(connection, transaction, messages, cancellationToken);
+
+        RefreshConversationAggregates(
+            connection,
+            transaction,
+            messages.Select(message => message.ConversationId));
+
+        transaction.Commit();
+        return Task.FromResult(counters);
+    }
+
+    /// <summary>
+    /// The idempotent message upsert itself, on a caller-owned transaction and without
+    /// publishing conversation aggregates, so a staged import transaction reuses exactly the
+    /// same write path. docs/DATA_MODEL.md section 8.2.
+    /// </summary>
+    private static UpsertCounters UpsertMessagesCore(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<CanonicalMessage> messages,
+        CancellationToken cancellationToken)
+    {
         var inserted = 0;
         var updated = 0;
         var unchanged = 0;
         var unknown = 0;
         var partial = 0;
-
-        using var connection = Open();
-        using var transaction = connection.BeginTransaction();
 
         using var exists = connection.CreateCommand();
         exists.Transaction = transaction;
@@ -395,34 +457,127 @@ public sealed class SqliteArchiveStore : IArchiveStore
             }
         }
 
-        using (var aggregate = connection.CreateCommand())
-        {
-            aggregate.Transaction = transaction;
-            aggregate.CommandText =
-                """
-                UPDATE conversations SET
-                    first_message_at = (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = conversations.id ORDER BY m.occurred_utc ASC LIMIT 1),
-                    last_message_at  = (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = conversations.id ORDER BY m.occurred_utc DESC LIMIT 1),
-                    message_count    = (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = conversations.id)
-                WHERE id IN (SELECT DISTINCT conversation_id FROM messages WHERE id IN (
-                    SELECT value FROM json_each($ids)));
-                """;
-            aggregate.Parameters.AddWithValue(
-                "$ids",
-                JsonSerializer.Serialize(messages.Select(m => m.Id).Distinct(StringComparer.Ordinal).ToArray()));
-            aggregate.ExecuteNonQuery();
-        }
-
-        transaction.Commit();
-
-        return Task.FromResult(new UpsertCounters
+        return new UpsertCounters
         {
             Inserted = inserted,
             Updated = updated,
             Unchanged = unchanged,
             Unknown = unknown,
             Partial = partial,
-        });
+        };
+    }
+
+    /// <summary>
+    /// Recomputes first/last message timestamps and the message count from the archive itself
+    /// rather than trusting a caller, inside the caller's transaction.
+    /// docs/DATA_MODEL.md section 8.1.
+    /// </summary>
+    private static void RefreshConversationAggregates(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IEnumerable<string> conversationIds)
+    {
+        var ids = conversationIds
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (ids.Length == 0)
+        {
+            return;
+        }
+
+        using var aggregate = connection.CreateCommand();
+        aggregate.Transaction = transaction;
+        aggregate.CommandText =
+            """
+            UPDATE conversations SET
+                first_message_at = (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = conversations.id ORDER BY m.occurred_utc ASC LIMIT 1),
+                last_message_at  = (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = conversations.id ORDER BY m.occurred_utc DESC LIMIT 1),
+                message_count    = (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = conversations.id)
+            WHERE id IN (SELECT value FROM json_each($ids));
+            """;
+        aggregate.Parameters.AddWithValue("$ids", JsonSerializer.Serialize(ids));
+        aggregate.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// One conversation import's staged transaction. Disposing a session that was neither
+    /// committed nor rolled back discards it, so an abandoned import cannot leave partial
+    /// archive records behind.
+    /// </summary>
+    private sealed class ConversationImportSession(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string conversationId) : IConversationImportSession
+    {
+        private bool _finished;
+
+        public Task<UpsertCounters> UpsertMessagesAsync(
+            IReadOnlyList<CanonicalMessage> messages,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(messages);
+            EnsureStaged();
+
+            return Task.FromResult(messages.Count == 0
+                ? new UpsertCounters()
+                : UpsertMessagesCore(connection, transaction, messages, cancellationToken));
+        }
+
+        public Task CommitAsync(CancellationToken cancellationToken)
+        {
+            EnsureStaged();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // The aggregates are published together with the records they describe, so a
+            // committed conversation can never advertise a message count the archive does not
+            // hold.
+            RefreshConversationAggregates(connection, transaction, [conversationId]);
+            transaction.Commit();
+            _finished = true;
+            return Task.CompletedTask;
+        }
+
+        public Task RollbackAsync()
+        {
+            if (!_finished)
+            {
+                _finished = true;
+                transaction.Rollback();
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (!_finished)
+            {
+                _finished = true;
+                try
+                {
+                    transaction.Rollback();
+                }
+                catch (InvalidOperationException)
+                {
+                    // The provider already finished the transaction; there is nothing to undo.
+                }
+            }
+
+            transaction.Dispose();
+            connection.Dispose();
+            return ValueTask.CompletedTask;
+        }
+
+        private void EnsureStaged()
+        {
+            if (_finished)
+            {
+                throw new InvalidOperationException(
+                    "The conversation import session was already committed or rolled back.");
+            }
+        }
     }
 
     public Task<IReadOnlyList<ArchiveAccount>> ListAccountsAsync(CancellationToken cancellationToken)

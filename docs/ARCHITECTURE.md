@@ -80,6 +80,8 @@ The single screen of the MVP is `MainWindow.xaml` with `MainViewModel`. The obse
 Responsibilities:
 
 - coordinate source adapter, normalization, archive transaction and checkpoint update;
+- stage one conversation's records in a single archive transaction and publish them only once
+  the source was read to the end (section 3.2.1);
 - create import-run records;
 - enforce read-only source boundaries;
 - aggregate metrics and warnings;
@@ -92,6 +94,27 @@ SourceCatalogService   # describe source, list accounts, list conversations, des
 ImportService          # adapter -> normalizer -> archive, with diagnostics
 ArchiveWorkflow        # user-facing export/import coordination and archive statistics
 ```
+
+#### 3.2.1 Import publication
+
+One import stages exactly one conversation — its conversation row and every message batch —
+inside a single archive transaction (`IArchiveStore.BeginConversationImportAsync`). The
+transaction is committed when the source was read to the end, or when the user deliberately
+cancelled the run; a run that fails source coverage is rolled back instead.
+
+The rule exists because the archive is the system of record. Committing whatever a failed run
+happened to read before the failure would leave a partial conversation that cannot be told apart
+from a complete one. A rolled-back run therefore records zero inserted/updated/skipped records in
+`import_runs`; `records_scanned` still shows what it read, so the audit trail never claims
+archived records the archive does not hold.
+
+Cancellation is the deliberate exception, and the only one: the user stopped the run, archive
+writes are idempotent by stable ID, and the application tells the user the records written so far
+are kept (docs/PRD.md section 9.1).
+
+Account and participant rows are not part of this transaction. They are account-level identity
+metadata refreshed by every import rather than per-conversation coverage data, and they carry no
+message timeline that could be mistaken for a complete conversation.
 
 ### 3.3 Source adapter layer — `src/WeArchive.Core/Abstractions`
 
@@ -202,6 +225,7 @@ Responsibilities:
 
 - migrations;
 - idempotent upserts;
+- single-transaction publication of one imported conversation (section 3.2.1);
 - checkpoints;
 - import-run audit trail;
 - canonical message semantics;
@@ -331,7 +355,8 @@ otherwise         -> l:<partition>:<local_id>
 
 If an adapter cannot provide either a native or documented composite message identity for
 a source record, it is a source-coverage failure: the import records a Fatal diagnostic and
-the workflow does not export a dataset. It must not skip the record or fabricate an identity.
+the workflow does not export a dataset. It must not skip the record or fabricate an identity,
+and it publishes nothing to the archive (section 3.2.1).
 
 The adapter hands this string to `StableIds.Message(conversationId, sourceMessageId)`. Reply
 references are addressed the same way so the archive can resolve them.
@@ -421,7 +446,13 @@ Examples:
 - WeChat keys cannot be recovered (`key_acquisition_failed`);
 - the imported conversation's message shard is missing or unreadable, so no records can be
   archived and the import fails rather than completing as an empty dataset
-  (`partition_missing`, `partition_unreadable`).
+  (`partition_missing`, `partition_unreadable`);
+- a record the adapter could not give a native or documented composite identity
+  (`source_message_id_unavailable`).
+
+A Fatal source-coverage failure publishes nothing: the import transaction is rolled back, so the
+archive keeps the exact state it had before the run (section 3.2.1). A failed run must not leave
+records that a later reader could mistake for a complete conversation.
 
 ### Partial
 
