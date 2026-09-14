@@ -265,8 +265,10 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                     File.Move(final, backup);
                 }
 
-                File.Move(temp, final);
+                // Register immediately after moving the old file aside. A replacement move can
+                // fail independently; the outer catch must then know to restore this backup.
                 rootBackups.Add((backup, final));
+                MoveRootFile(temp, final);
             }
 
             DurableCommitRoot(root);
@@ -741,6 +743,14 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     {
         // Phase 1 does not require a global root durability barrier.
     }
+
+    /// <summary>
+    /// Moves one fully written staged root file into place. Kept as a narrow fault-injection seam
+    /// so the current-process rollback path is tested for a replacement-move failure after the
+    /// prior root file was moved aside.
+    /// </summary>
+    protected internal virtual void MoveRootFile(string temporaryPath, string finalPath) =>
+        File.Move(temporaryPath, finalPath);
 
     /// <summary>
     /// Writes a catalog/manifest file, flushes the writer's buffer and closes it, so the staged

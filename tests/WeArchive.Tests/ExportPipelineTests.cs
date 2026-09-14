@@ -694,6 +694,42 @@ public sealed class ExportPipelineTests
     }
 
     [Fact]
+    public async Task ARootReplacementMoveFailureRestoresThePriorPackageImmediately()
+    {
+        // Regression for the root-file window: existing identities.yaml is moved to its backup,
+        // then the staged replacement move fails. Rollback registration must already exist, so
+        // ExportAsync restores the complete prior package before it returns/throws.
+        using var temp = new TempDirectory();
+        var adapter = new FixtureSourceAdapter();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+        var exporter = new RootMoveFaultingJsonlDatasetExporter(store);
+        var catalog = new SourceCatalogService(adapter);
+        var importer = new ImportService(adapter, store, clock);
+        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        var output = temp.Combine("export");
+
+        await workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var priorPackage = Snapshot(output);
+
+        exporter.FailNextRootReplacement = true;
+        await Assert.ThrowsAsync<IOException>(() =>
+            workflow.ExportConversationAsync(new ExportConversationRequest
+            {
+                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+                SourceConversationId = FixtureSourceAdapter.DirectConversation,
+                Kind = ConversationKind.Direct,
+                PeerSourceUserId = FixtureSourceAdapter.Alice,
+                OutputDirectory = output,
+            }, null, CancellationToken.None));
+
+        Assert.Equal(priorPackage, Snapshot(output));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(output),
+            f => Path.GetFileName(f).Contains(".wearchive-rootbackup-", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ALeftoverBackupAfterACommittedExportIsSweptNotRestored()
     {
         // A leftover exporter backup must not replace an existing final on a later export.
@@ -800,6 +836,22 @@ public sealed class ExportPipelineTests
             {
                 throw new InvalidOperationException("simulated post-publication failure");
             }
+        }
+    }
+
+    private sealed class RootMoveFaultingJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
+    {
+        public bool FailNextRootReplacement { get; set; }
+
+        protected internal override void MoveRootFile(string temporaryPath, string finalPath)
+        {
+            if (FailNextRootReplacement)
+            {
+                FailNextRootReplacement = false;
+                throw new IOException("simulated root replacement move failure");
+            }
+
+            base.MoveRootFile(temporaryPath, finalPath);
         }
     }
 
