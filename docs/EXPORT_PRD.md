@@ -120,17 +120,20 @@ outside the conversation's own folder is touched, so duplicate temporal partitio
 months are structurally impossible, and the export of one conversation can never damage
 another conversation's output.
 
-The rewrite is crash-safe and recoverable: each conversation's new timelines are written to
-a sibling staging directory, and the root catalogs and `manifest.json` are written to sibling
-temp files. The prior conversation directory is **renamed to a sibling backup** (not deleted)
-and the staged replacement is moved into place. Before the backup is deleted, the new tree's
-file contents are flushed to media and a directory-metadata barrier is established, so the
-backup is only removed once the replacement is **durably committed**. If that durability
-barrier fails, the not-yet-durable new final is discarded and the backup is restored. A
-cancellation, I/O failure, process crash or power loss therefore cannot destroy the last good
-dataset — a leftover backup is **recovered** at the start of the next export (renamed back to
-the final path when final is absent, or restored over a possibly-not-durable final when both
-are present), and leftover staging is discarded.
+The rewrite is a single crash-safe, recoverable transaction. Each conversation's new timelines
+are written to a sibling staging directory and the root catalogs and `manifest.json` to sibling
+temp files. The commit then swaps everything in order: each conversation's prior directory is
+**renamed to a sibling backup** (not deleted) and the staged replacement moved into place and
+made durable; the prior root files are likewise renamed to sibling backups and their
+replacements moved over them (`manifest.json` last). Backups are kept until a **global root
+durability barrier** flushes the root metadata to media and a commit marker is durable; only
+then are they deleted. If that global barrier fails, every conversation and root backup is
+restored, so a cancellation, I/O failure, process crash or power loss cannot destroy the last
+good dataset. At the start of the next run the commit marker distinguishes the two crash states:
+when it is present the prior commit completed, so a leftover backup is **swept** (the durable
+new data is kept); when it is absent the prior commit did not complete, so a leftover backup is
+**restored** (renamed back to the final path when final is absent, or restored over a
+possibly-not-durable final when both are present). Leftover staging is always discarded.
 
 `collections.yaml` is written only when it does not already exist; a user-maintained file is
 never overwritten.
@@ -555,14 +558,17 @@ Re-exporting shall:
 Shipped behaviour:
 
 - The conversation's directory is **deleted and rewritten**, which is what makes duplicate
-  partitions structurally impossible. The rewrite is staged, durable and recoverable: new
-  timelines and catalogs are written (and fsynced) to sibling temp paths first, the prior
-  conversation directory is renamed to a sibling backup, and the replacement is moved into
-  place; the new tree's file contents and directory metadata are flushed to media, and only
-  then is the backup deleted. If that durability barrier fails the new final is discarded and
-  the backup restored. A failed, cancelled or crashed re-export cannot destroy the last good
-  dataset — a leftover backup is recovered (or restored over a possibly-not-durable final) on
-  the next run.
+  partitions structurally impossible. The rewrite is a single staged, durable and recoverable
+  transaction: new timelines and catalogs are written (and fsynced) to sibling temp paths
+  first; the prior conversation directory is renamed to a sibling backup and the replacement
+  moved into place, and the prior root files are renamed to sibling backups and their
+  replacements moved over them (`manifest.json` last); a global root durability barrier flushes
+  the root metadata to media and a commit marker is written, and only then are the backups
+  deleted. If that global barrier fails every conversation and root backup is restored. A
+  failed, cancelled or crashed re-export cannot destroy the last good dataset: at the start of
+  the next run the commit marker distinguishes a completed commit (a leftover backup is swept,
+  the durable new data is kept) from an interrupted one (the backup is restored over a
+  possibly-not-durable final).
 - `conversations.yaml` reuses the existing `alias`.
 - `identities.yaml` reuses `display_name_override` per the section 5.4 merge policy.
 - `collections.yaml` is left untouched when it exists.

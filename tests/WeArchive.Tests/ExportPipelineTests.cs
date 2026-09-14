@@ -578,10 +578,9 @@ public sealed class ExportPipelineTests
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
         var groupsBucket = Path.Combine(output, "chats", "groups");
 
-        // Simulate a crash after the replacement move but before the backup delete: a new
-        // final is in place, but the prior-good backup remains. Since the new final's
-        // durability cannot be confirmed post-hoc, the next export must restore the backup
-        // (the last good dataset) rather than sweeping it.
+        // Simulate an interrupted commit (no commit marker): a new final is in place, but the
+        // prior-good backup remains. With no marker the prior commit did not complete, so the
+        // next export must restore the backup (the last good dataset) rather than sweeping it.
         const string convId = "g_crashed_fake_conv";
         var final = Path.Combine(groupsBucket, convId);
         var leftoverBackup = Path.Combine(groupsBucket, convId + ".wearchive-backup-deadbeef");
@@ -668,6 +667,111 @@ public sealed class ExportPipelineTests
         Assert.NotEqual(0, ex.NativeErrorCode);
     }
 
+    [Fact]
+    public async Task ARootDurabilityBarrierFailureRestoresTheEntirePriorPackage()
+    {
+        // Regression for the review finding on commit 959792e: a root durability barrier failure
+        // after the root-file replacements must roll back the whole export, restoring the prior
+        // conversations AND the prior root files (manifest last), so the prior package stays
+        // usable. A different conversation is exported for the failing run so the rolled-back
+        // root files (group manifest) are observably distinct from the replacement (direct).
+        using var temp = new TempDirectory();
+        var adapter = new FixtureSourceAdapter();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+        var exporter = new RootFaultingJsonlDatasetExporter(store);
+        var catalog = new SourceCatalogService(adapter);
+        var importer = new ImportService(adapter, store, clock);
+        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        var output = temp.Combine("export");
+
+        // First export: the prior package (group conversation + group manifest/catalogs).
+        var first = await workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var groupConversationId = first.ConversationIds.Single();
+        var groupFinal = Path.Combine(output, "chats", "groups", groupConversationId);
+        var priorManifest = await File.ReadAllTextAsync(Path.Combine(output, "manifest.json"));
+        var priorGroupTimeline = await File.ReadAllTextAsync(Path.Combine(groupFinal, "2026", "2026-01.jsonl"));
+
+        // Second export of a DIFFERENT (direct) conversation: the root barrier faults after the
+        // root files are replaced, so the export must roll back to the prior package.
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            workflow.ExportConversationAsync(new ExportConversationRequest
+            {
+                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+                SourceConversationId = FixtureSourceAdapter.DirectConversation,
+                Kind = ConversationKind.Direct,
+                PeerSourceUserId = FixtureSourceAdapter.Alice,
+                OutputDirectory = output,
+            }, null, CancellationToken.None));
+
+        // The prior package is fully restored: group conversation intact, group manifest restored
+        // (not the direct replacement), and the new direct conversation discarded.
+        Assert.Equal(priorManifest, await File.ReadAllTextAsync(Path.Combine(output, "manifest.json")));
+        Assert.Equal(priorGroupTimeline, await File.ReadAllTextAsync(Path.Combine(groupFinal, "2026", "2026-01.jsonl")));
+        Assert.False(Directory.Exists(Path.Combine(output, "chats", "direct")));
+
+        // No crash artifacts remain: no conversation/root backups, staging, or marker.
+        var groupsBucket = Path.Combine(output, "chats", "groups");
+        Assert.DoesNotContain(
+            Directory.EnumerateDirectories(groupsBucket),
+            d => Path.GetFileName(d).Contains(".wearchive-backup-", StringComparison.Ordinal)
+              || Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(output),
+            f => Path.GetFileName(f).Contains(".wearchive-rootbackup-", StringComparison.Ordinal)
+              || Path.GetFileName(f) == ".wearchive-commit-complete");
+    }
+
+    [Fact]
+    public async Task ALeftoverBackupAfterACommittedExportIsSweptNotRestored()
+    {
+        // Regression for the review finding on commit 959792e: a leftover backup left by a
+        // post-commit cleanup failure must NOT be restored over the durable new timeline on the
+        // next run. The commit marker proves the prior export completed, so the leftover is swept
+        // (the committed data is kept) rather than restored. Simulate the committed +
+        // cleanup-failed state directly, then export a different conversation and verify the
+        // first timeline is retained.
+        using var temp = new TempDirectory();
+        var harness = CreateHarness(temp);
+        var output = temp.Combine("export");
+
+        var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var conversationId = first.ConversationIds.Single();
+        var groupsBucket = Path.Combine(output, "chats", "groups");
+        var final = Path.Combine(groupsBucket, conversationId);
+        var committedTimeline = await File.ReadAllTextAsync(Path.Combine(final, "2026", "2026-01.jsonl"));
+
+        // Simulate a successful commit whose backup cleanup failed: the marker is present and a
+        // leftover backup (old data) lingers next to the durable new final.
+        var leftoverBackup = final + ".wearchive-backup-deadbeef";
+        Directory.CreateDirectory(Path.Combine(leftoverBackup, "2026"));
+        await File.WriteAllTextAsync(
+            Path.Combine(leftoverBackup, "2026", "2026-01.jsonl"),
+            "{\"id\":\"m_old\"}\n",
+            CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(output, ".wearchive-commit-complete"), "1", CancellationToken.None);
+
+        // A later export of a DIFFERENT conversation must sweep the leftover (committed), not
+        // restore it over the durable group timeline.
+        var second = await harness.Workflow.ExportConversationAsync(
+            new ExportConversationRequest
+            {
+                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+                SourceConversationId = FixtureSourceAdapter.DirectConversation,
+                Kind = ConversationKind.Direct,
+                PeerSourceUserId = FixtureSourceAdapter.Alice,
+                OutputDirectory = output,
+            },
+            null,
+            CancellationToken.None);
+
+        Assert.True(second.Succeeded);
+        // The committed group timeline is retained, not rolled back to the simulated old backup.
+        Assert.Equal(committedTimeline, await File.ReadAllTextAsync(Path.Combine(final, "2026", "2026-01.jsonl")));
+        Assert.False(Directory.Exists(leftoverBackup));
+        Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
+    }
+
     /// <summary>
     /// Reports synchronously so a test can cancel the token exactly when the exporter
     /// reports progress, rather than through the async <see cref="Progress{T}"/> post.
@@ -703,6 +807,24 @@ public sealed class ExportPipelineTests
     private sealed class ProductionBarrierJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
     {
         public void InvokeDurableCommit(string directory) => DurableCommit(directory);
+    }
+
+    /// <summary>
+    /// Throws on the second <see cref="JsonlDatasetExporter.DurableCommitRoot"/> call to
+    /// fault-inject the global root durability barrier (after the conversations and root files are
+    /// replaced, before the backups are deleted) that the production commit must roll back from.
+    /// </summary>
+    private sealed class RootFaultingJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
+    {
+        private int _rootCommits;
+
+        protected internal override void DurableCommitRoot(string root)
+        {
+            if (++_rootCommits == 2)
+            {
+                throw new InvalidOperationException("simulated root durability barrier failure");
+            }
+        }
     }
 
     private static Dictionary<string, string> Snapshot(string root)

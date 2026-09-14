@@ -50,6 +50,18 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     // Root catalogs and the manifest stage under a sibling temp file with this suffix.
     private const string RootFileStagingSuffix = ".wearchive-export-staging";
 
+    // During a commit the prior root catalog/manifest file is renamed to a sibling backup with
+    // this infix (plus a unique suffix) rather than overwritten, so a root-barrier failure can
+    // restore the prior package; the backup is restored or swept on the next run.
+    private const string RootFileBackupInfix = ".wearchive-rootbackup-";
+
+    // A durable marker written only after the global root durability barrier succeeds. Its
+    // presence proves the prior export's commit completed, so a leftover backup is swept (the
+    // durable new data is kept) rather than restored; its absence means the commit did not
+    // complete, so leftovers are restored to the last good dataset. It is deleted once every
+    // backup has been cleaned up.
+    private const string CommitMarkerName = ".wearchive-commit-complete";
+
     private static readonly JsonWriterOptions WriterOptions = new()
     {
         Indented = false,
@@ -118,6 +130,11 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
         // the previously-exported package is left untouched.
         var stagedConversations = new List<(string Staging, string Final)>();
         var stagedRootFiles = new List<(string Temp, string Final)>();
+        // Backups created during the commit (null when the prior did not exist, e.g. a new
+        // conversation or a first-export root file). Declared here so the catch can roll them
+        // back to the prior package even when the failure is inside the commit phase.
+        var conversationBackups = new List<(string? Backup, string Final)>();
+        var rootBackups = new List<(string? Backup, string Final)>();
 
         try
         {
@@ -232,30 +249,55 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 cancellationToken).ConfigureAwait(false);
             stagedRootFiles.Add((manifestTemp, manifestPath));
 
-            // Everything is durable. Commit: swap the staged conversation directories in
-            // (each establishes its own durability barrier before deleting its backup), then
-            // rename the staged root files over their originals. The manifest is renamed
-            // last so a consumer that loads it never sees references to files that have not
-            // yet been swapped.
+            // Everything is durable. Commit as a single transaction: swap each conversation
+            // directory in (its prior is renamed to a sibling backup, the replacement moved
+            // into place and made durable; the backup survives until the global barrier
+            // succeeds), then swap the root files in (prior renamed to sibling backups, the
+            // replacement moved over; manifest last). A global root durability barrier is the
+            // commit point: only after it succeeds (and a commit marker is durable) are the
+            // backups deleted. On any failure before that, every conversation and root backup is
+            // restored, so the previously-exported package is left untouched.
             foreach (var (staging, final) in stagedConversations)
             {
-                CommitConversation(staging, final);
+                var backup = CommitConversation(staging, final);
+                conversationBackups.Add((backup, final));
             }
 
             foreach (var (temp, final) in stagedRootFiles)
             {
-                File.Move(temp, final, overwrite: true);
+                string? backup = null;
+                if (File.Exists(final))
+                {
+                    backup = final + RootFileBackupInfix + Guid.NewGuid().ToString("N");
+                    File.Move(final, backup);
+                }
+
+                File.Move(temp, final);
+                rootBackups.Add((backup, final));
             }
 
-            // Make the root catalog/manifest rename metadata durable too.
-            NativeMethods.FsyncDirectory(root);
+            // The global commit point: the root directory metadata (the root-file renames and
+            // the chats subtree) is on media. A failure here rolls back the whole export.
+            DurableCommitRoot(root);
+
+            // A durable marker proves the global barrier succeeded, so a leftover backup on the
+            // next run is swept (committed) rather than restored (interrupted).
+            WriteCommitMarker(root);
         }
         catch (Exception)
         {
-            // Discard every staging artifact. The previously-exported package was never
-            // touched (its conversation directories are only deleted inside
-            // CommitConversation, which runs last, and its root files are only overwritten
-            // by the moves above).
+            // Roll back to the prior package: restore every committed conversation and root
+            // backup, and discard a new conversation/root file whose prior did not exist.
+            foreach (var (backup, final) in conversationBackups)
+            {
+                RestoreConversationBackup(backup, final);
+            }
+
+            foreach (var (backup, final) in rootBackups)
+            {
+                RestoreRootFileBackup(backup, final);
+            }
+
             foreach (var (staging, _) in stagedConversations)
             {
                 TryDeleteDirectory(staging);
@@ -266,7 +308,45 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 TryDeleteFile(temp);
             }
 
+            TryDeleteFile(CommitMarkerPath(root));
             throw;
+        }
+
+        // The global commit succeeded. Delete the backups (best-effort). The marker is kept
+        // only while any backup lingers so the next run sweeps it (committed) rather than
+        // restoring it; once everything is clean the marker is removed too.
+        var allBackupsCleaned = true;
+        foreach (var (backup, _) in conversationBackups)
+        {
+            if (backup is null)
+            {
+                continue;
+            }
+
+            TryDeleteDirectory(backup);
+            if (Directory.Exists(backup))
+            {
+                allBackupsCleaned = false;
+            }
+        }
+
+        foreach (var (backup, _) in rootBackups)
+        {
+            if (backup is null)
+            {
+                continue;
+            }
+
+            TryDeleteFile(backup);
+            if (File.Exists(backup))
+            {
+                allBackupsCleaned = false;
+            }
+        }
+
+        if (allBackupsCleaned)
+        {
+            TryDeleteFile(CommitMarkerPath(root));
         }
 
         return new ExportResult
@@ -628,7 +708,7 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     /// backup on disk; <see cref="RecoverAndSweepStaging"/> restores it on the next run.
     /// docs/EXPORT_PRD.md sections 3.2 and 15.
     /// </summary>
-    private void CommitConversation(string staging, string final)
+    private string? CommitConversation(string staging, string final)
     {
         var backup = final + ConversationBackupInfix + Guid.NewGuid().ToString("N");
         var movedToBackup = false;
@@ -644,8 +724,9 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
             Directory.Move(staging, final);
 
             // The replacement is in place but not yet durable. Establish that the new data and
-            // directory metadata are on media before deleting the prior-good backup, so a power
-            // loss after this point cannot leave incomplete new data with no old data left.
+            // directory metadata are on media. The backup is NOT deleted here: it survives until
+            // the global root barrier (DurableCommitRoot) succeeds, so a later failure in the
+            // same export can still roll this conversation back to the prior dataset.
             DurableCommit(final);
         }
         catch (Exception)
@@ -666,17 +747,14 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
             throw;
         }
 
-        // The new final is durably committed. Safe to delete the prior backup (best-effort; a
-        // leftover is swept on the next run).
-        if (movedToBackup)
-        {
-            TryDeleteDirectory(backup);
-        }
+        // The new final is durable. The backup persists until the caller's global root barrier
+        // succeeds; it is deleted on success or restored on a later failure by the caller.
+        return movedToBackup ? backup : null;
     }
 
     /// <summary>
     /// The durability barrier of the export commit: ensures the new conversation tree's file
-    /// contents and directory metadata are on media before the prior-good backup is deleted.
+    /// contents and directory metadata are on media as the per-conversation barrier; the backup is deleted only after the global root barrier (DurableCommitRoot) succeeds.
     /// A native flush failure is surfaced (not swallowed) so <see cref="CommitConversation"/>'s
     /// catch discards the not-yet-durable replacement and restores the prior-good backup. Override
     /// (e.g. to throw) in tests to fault-inject the boundary after the replacement move and before
@@ -687,6 +765,37 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
         // File contents were fsynced at write time (WriteTimeline / DurableWriteFile); this
         // flushes the directory metadata (the rename and file entries) to media.
         NativeMethods.FsyncDirectory(directory);
+    }
+
+    /// <summary>
+    /// The global durability barrier of the export: flushes the root directory metadata (the
+    /// root-file renames, the chats subtree and the conversation/root backups) to media. This is
+    /// the commit point of the whole export. A failure here (or in <see cref="WriteCommitMarker"/>)
+    /// rolls back every conversation and root backup to the prior package. Override (e.g. to
+    /// throw) in tests to fault-inject the global boundary after the replacements and before the
+    /// backups are deleted. docs/EXPORT_PRD.md sections 3.2 and 15.
+    /// </summary>
+    protected internal virtual void DurableCommitRoot(string root)
+    {
+        NativeMethods.FsyncDirectory(root);
+    }
+
+    /// <summary>
+    /// The durable commit marker path under <paramref name="root"/>.
+    /// </summary>
+    private static string CommitMarkerPath(string root) => Path.Combine(root, CommitMarkerName);
+
+    /// <summary>
+    /// Writes a tiny durable marker whose presence proves the global root barrier
+    /// (<see cref="DurableCommitRoot"/>) succeeded, so a leftover backup on the next run is
+    /// swept (the prior commit completed) rather than restored (interrupted). Its directory
+    /// entry is flushed too, so a crash cannot lose the marker and mask a committed export as
+    /// interrupted. The marker is removed once every backup has been cleaned up.
+    /// </summary>
+    private static void WriteCommitMarker(string root)
+    {
+        DurableWriteFile(CommitMarkerPath(root), string.Empty);
+        NativeMethods.FsyncDirectory(root);
     }
 
     /// <summary>
@@ -710,16 +819,21 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     }
 
     /// <summary>
-    /// Sweeps leftover staging directories and recovers leftover backups from a previously
-    /// crashed export. Only the immediate children of the two conversation buckets are scanned,
-    /// so this is bounded by the number of conversations, not the whole export tree. A backup
-    /// whose final directory is absent is recovered (renamed back to the final path). A backup
-    /// whose final is also present means a commit crashed after the replacement move but before
-    /// the backup was deleted; since the new final's durability cannot be confirmed post-hoc,
-    /// the last good dataset is restored from the backup (the new final is discarded).
+    /// Sweeps leftover staging and recovers leftover backups from a previously crashed export.
+    /// The commit marker distinguishes the two crash states: if it is present, the prior
+    /// export's global root barrier succeeded, so a leftover backup is a post-commit cleanup
+    /// leftover and is swept (the durable new data is kept); if it is absent, the prior commit
+    /// did not complete, so a leftover backup is restored over its (possibly not-yet-durable)
+    /// final. Conversation backups live in the two conversation buckets; root-file backups live
+    /// in the export root. Orphaned staging directories are always discarded. The marker is
+    /// removed once it has been used and every committed leftover has been swept, so a crash in
+    /// this export is not masked as a completed prior commit.
     /// </summary>
     private static void RecoverAndSweepStaging(string root)
     {
+        var committed = File.Exists(CommitMarkerPath(root));
+        var allCommittedBackupsSwept = true;
+
         foreach (var bucket in new[]
         {
             Path.Combine(root, "chats", "direct"),
@@ -749,21 +863,72 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
 
                 var finalName = name[..backupIndex];
                 var final = Path.Combine(bucket, finalName);
-                if (Directory.Exists(final))
+                if (committed && Directory.Exists(final))
                 {
-                    // A commit crashed after the replacement move. The new final may not be
-                    // durably committed, so restore the last good dataset from the backup:
-                    // discard the new final, then rename the backup back into place.
+                    // The prior commit completed; this leftover backup is a post-commit cleanup
+                    // leftover. The durable new final is the committed timeline, so sweep it.
+                    TryDeleteDirectory(dir);
+                    if (Directory.Exists(dir))
+                    {
+                        allCommittedBackupsSwept = false;
+                    }
+                }
+                else if (Directory.Exists(final))
+                {
+                    // The prior commit did not complete; the replacement may not be durable.
+                    // Restore the last good dataset from the backup.
                     TryDeleteDirectory(final);
                     TryMoveDirectory(dir, final);
                 }
                 else
                 {
-                    // A crash left final absent but the prior data is in the backup:
-                    // recover it so the last good dataset is not lost.
+                    // A crash left final absent but the prior data is in the backup: recover it.
                     TryMoveDirectory(dir, final);
                 }
             }
+        }
+
+        if (Directory.Exists(root))
+        {
+            foreach (var file in Directory.EnumerateFiles(root))
+            {
+                var name = Path.GetFileName(file);
+                var backupIndex = name.IndexOf(RootFileBackupInfix, StringComparison.Ordinal);
+                if (backupIndex <= 0)
+                {
+                    continue;
+                }
+
+                var finalName = name[..backupIndex];
+                var final = Path.Combine(root, finalName);
+                if (committed && File.Exists(final))
+                {
+                    // Post-commit cleanup leftover; the durable new root file is kept.
+                    TryDeleteFile(file);
+                    if (File.Exists(file))
+                    {
+                        allCommittedBackupsSwept = false;
+                    }
+                }
+                else if (File.Exists(final))
+                {
+                    TryDeleteFile(final);
+                    TryMoveFile(file, final);
+                }
+                else
+                {
+                    TryMoveFile(file, final);
+                }
+            }
+        }
+
+        // The marker belongs to the previous export. Remove it once it has been used and every
+        // committed leftover has been swept, so a crash in this export is not masked as a
+        // completed prior commit; keep it while a committed leftover lingers so the next run
+        // retries the sweep instead of restoring over a durable commit.
+        if (!committed || allCommittedBackupsSwept)
+        {
+            TryDeleteFile(CommitMarkerPath(root));
         }
     }
 
@@ -815,6 +980,69 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
         }
         catch (IOException)
         {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Restores one conversation backup on a failed global commit. If a prior existed (a backup
+    /// is present), the not-yet-globally-committed new final is discarded and the backup renamed
+    /// back into place; if the conversation was new (no backup), the new final is discarded to
+    /// restore prior absence. Best-effort: a leftover is reconciled by
+    /// <see cref="RecoverAndSweepStaging"/>.
+    /// </summary>
+    private static void RestoreConversationBackup(string? backup, string final)
+    {
+        if (backup is null)
+        {
+            TryDeleteDirectory(final);
+            return;
+        }
+
+        if (!Directory.Exists(backup))
+        {
+            return;
+        }
+
+        TryDeleteDirectory(final);
+        TryMoveDirectory(backup, final);
+    }
+
+    /// <summary>
+    /// Restores one root-file backup on a failed global commit, mirroring
+    /// <see cref="RestoreConversationBackup"/> for a single file.
+    /// </summary>
+    private static void RestoreRootFileBackup(string? backup, string final)
+    {
+        if (backup is null)
+        {
+            TryDeleteFile(final);
+            return;
+        }
+
+        if (!File.Exists(backup))
+        {
+            return;
+        }
+
+        TryDeleteFile(final);
+        TryMoveFile(backup, final);
+    }
+
+    private static void TryMoveFile(string source, string destination)
+    {
+        try
+        {
+            if (File.Exists(source) && !File.Exists(destination))
+            {
+                File.Move(source, destination);
+            }
+        }
+        catch (IOException)
+        {
+            // Leave it; tried again on the next run.
         }
         catch (UnauthorizedAccessException)
         {
