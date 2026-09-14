@@ -146,9 +146,9 @@ public sealed class SourceCoverageTests
 
         Assert.Contains(UnreadableShardAdapter.ConversationId, ex.Message, StringComparison.Ordinal);
 
-        // No dataset package may be produced for a conversation whose source is unavailable.
-        Assert.False(
-            Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any(),
+        // No dataset package may be produced for a conversation whose source is
+        // unavailable: the exporter is never reached.
+        Assert.False(Directory.Exists(output),
             "an empty export package must not be produced for an unreadable shard");
     }
 }

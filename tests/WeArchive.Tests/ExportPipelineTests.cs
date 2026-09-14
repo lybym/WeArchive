@@ -478,8 +478,9 @@ public sealed class ExportPipelineTests
             .EnumerateFiles(timelineFolder, "*.jsonl", SearchOption.AllDirectories)
             .Select(File.ReadAllText)
             .ToList());
-        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(output, "chats", "groups"))
-            .Where(d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal)));
+        Assert.DoesNotContain(
+            Directory.EnumerateDirectories(Path.Combine(output, "chats", "groups")),
+            d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -518,8 +519,9 @@ public sealed class ExportPipelineTests
             .EnumerateFiles(timelineFolder, "*.jsonl", SearchOption.AllDirectories)
             .Select(File.ReadAllText)
             .ToList());
-        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(output, "chats", "groups"))
-            .Where(d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal)));
+        Assert.DoesNotContain(
+            Directory.EnumerateDirectories(Path.Combine(output, "chats", "groups")),
+            d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
     }
 
     /// <summary>
