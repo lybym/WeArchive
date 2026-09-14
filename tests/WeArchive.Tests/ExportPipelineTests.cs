@@ -708,7 +708,8 @@ public sealed class ExportPipelineTests
         // (not the direct replacement), and the new direct conversation discarded.
         Assert.Equal(priorManifest, await File.ReadAllTextAsync(Path.Combine(output, "manifest.json")));
         Assert.Equal(priorGroupTimeline, await File.ReadAllTextAsync(Path.Combine(groupFinal, "2026", "2026-01.jsonl")));
-        Assert.False(Directory.Exists(Path.Combine(output, "chats", "direct")));
+        // The new direct conversation was discarded on rollback; its bucket is left empty.
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(output, "chats", "direct")));
 
         // No crash artifacts remain: no conversation/root backups, staging, or marker.
         var groupsBucket = Path.Combine(output, "chats", "groups");
