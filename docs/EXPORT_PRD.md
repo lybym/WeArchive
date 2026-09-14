@@ -120,20 +120,31 @@ outside the conversation's own folder is touched, so duplicate temporal partitio
 months are structurally impossible, and the export of one conversation can never damage
 another conversation's output.
 
-The rewrite is a single crash-safe, recoverable transaction. Each conversation's new timelines
-are written to a sibling staging directory and the root catalogs and `manifest.json` to sibling
-temp files. The commit then swaps everything in order: each conversation's prior directory is
-**renamed to a sibling backup** (not deleted) and the staged replacement moved into place and
-made durable; the prior root files are likewise renamed to sibling backups and their
-replacements moved over them (`manifest.json` last). Backups are kept until a **global root
-durability barrier** flushes the root metadata to media and a commit marker is durable; only
-then are they deleted. If that global barrier fails, every conversation and root backup is
-restored, so a cancellation, I/O failure, process crash or power loss cannot destroy the last
-good dataset. At the start of the next run the commit marker distinguishes the two crash states:
-when it is present the prior commit completed, so a leftover backup is **swept** (the durable
-new data is kept); when it is absent the prior commit did not complete, so a leftover backup is
-**restored** (renamed back to the final path when final is absent, or restored over a
-possibly-not-durable final when both are present). Leftover staging is always discarded.
+The SQLite archive is the system of record; the JSONL/YAML/JSON export is a derived dataset
+that can be regenerated from it. Phase 1 export therefore guarantees **application-level
+transactional publication** and **process-crash recovery**. It does not promise filesystem,
+storage-device or sudden power-loss durability: Phase 1 does not guarantee persistence against
+arbitrary OS, filesystem, storage-device, or sudden power-loss failure after writes have been
+acknowledged by the application, and a global root durability barrier is not a Phase 1
+requirement.
+
+Within that boundary the rewrite is transactional and crash-recoverable. Each conversation's new
+timelines are written to a sibling staging directory and the root catalogs and `manifest.json` to
+sibling temp files; the staged output is fully written and its writer closed before publication.
+The commit then publishes in order: each conversation's prior directory is **renamed to a
+sibling backup** (not deleted) and the staged replacement moved into place; the prior root files
+are likewise renamed to sibling backups and their replacements moved over them (`manifest.json`
+last, so a reader never sees a manifest referencing files that are not yet in place). Backups
+are kept until a commit marker records that publication completed; only then are they deleted.
+A cancellation, handled exception or I/O failure does not actively delete the last successfully
+published dataset: the in-progress backups are restored and any newly introduced path (one with
+no prior backup, recorded in a transaction journal) is removed, so the export converges to the
+prior complete dataset. After a process crash, the next run cleans leftover staging and uses the
+commit marker to converge: when the marker is present the prior publication completed, so a
+leftover backup is **swept** (the new data is kept); when it is absent the prior publication did
+not complete, so a leftover backup is **restored** and any newly introduced path recorded in the
+journal is removed, converging to the prior complete dataset. A published dataset never exposes
+half-written JSONL or a half-complete catalog. Leftover staging is always discarded.
 
 `collections.yaml` is written only when it does not already exist; a user-maintained file is
 never overwritten.
@@ -558,17 +569,19 @@ Re-exporting shall:
 Shipped behaviour:
 
 - The conversation's directory is **deleted and rewritten**, which is what makes duplicate
-  partitions structurally impossible. The rewrite is a single staged, durable and recoverable
-  transaction: new timelines and catalogs are written (and fsynced) to sibling temp paths
-  first; the prior conversation directory is renamed to a sibling backup and the replacement
-  moved into place, and the prior root files are renamed to sibling backups and their
-  replacements moved over them (`manifest.json` last); a global root durability barrier flushes
-  the root metadata to media and a commit marker is written, and only then are the backups
-  deleted. If that global barrier fails every conversation and root backup is restored. A
-  failed, cancelled or crashed re-export cannot destroy the last good dataset: at the start of
-  the next run the commit marker distinguishes a completed commit (a leftover backup is swept,
-  the durable new data is kept) from an interrupted one (the backup is restored over a
-  possibly-not-durable final).
+  partitions structurally impossible. The export is a derived dataset regenerated from the
+  SQLite archive (the system of record), so Phase 1 guarantees application-level transactional
+  publication and process-crash recovery, not filesystem/storage/power-loss durability. The
+  rewrite is a single staged, recoverable transaction: new timelines and catalogs are written
+  to sibling temp paths first; the prior conversation directory is renamed to a sibling backup
+  and the replacement moved into place, and the prior root files are renamed to sibling backups
+  and their replacements moved over them (`manifest.json` last); a commit marker records that
+  publication completed, and only then are the backups deleted. A failed, cancelled or crashed
+  re-export does not destroy the last successfully published dataset: the in-progress backups
+  are restored and newly introduced paths (no prior backup, journaled) are removed, and at the
+  start of the next run the commit marker distinguishes a completed commit (a leftover backup
+  is swept, the new data is kept) from an interrupted one (the backup is restored and journaled
+  new paths are removed).
 - `conversations.yaml` reuses the existing `alias`.
 - `identities.yaml` reuses `display_name_override` per the section 5.4 merge policy.
 - `collections.yaml` is left untouched when it exists.

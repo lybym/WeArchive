@@ -20,14 +20,19 @@ namespace WeArchive.Infrastructure.Export;
 /// makes duplicate logical records structurally impossible.
 /// </para>
 /// <para>
-/// A re-export is crash-safe and recoverable: each conversation's timeline is written to a
-/// sibling staging directory, and the root catalogs and manifest are written to sibling
-/// temp files. The prior conversation directory is renamed to a sibling backup (not
-/// deleted) and the staged replacement is moved into place; the backup is deleted only
-/// once the new final is durable. A cancellation, I/O failure, process crash or power loss
-/// therefore cannot destroy the last good dataset — a leftover backup is recovered (when
-/// final is absent) or swept (when final is present) at the start of the next run.
-/// docs/EXPORT_PRD.md section 3.2 and section 15.
+/// A re-export is transactional and process-crash recoverable (the SQLite archive is the
+/// system of record; the export is a derived, regenerable dataset). Each conversation's
+/// timeline is staged to a sibling directory and the root catalogs and manifest to sibling
+/// temp files, fully written before publication. The prior conversation directory is renamed
+/// to a sibling backup (not deleted) and the staged replacement moved into place; the prior
+/// root files are likewise backed up and their replacements moved over them (manifest last).
+/// Backups are kept until a commit marker records that publication completed. A cancellation,
+/// handled exception or I/O failure restores the in-progress backups and removes any newly
+/// introduced path, so it does not destroy the last successfully published dataset. After a
+/// process crash, the next run cleans staging and uses the marker to converge: a leftover
+/// backup is swept (the new data is kept) when the marker is present, or restored (and
+/// journaled new paths removed) when it is absent. Phase 1 does not guarantee power-loss or
+/// storage-device durability. docs/EXPORT_PRD.md section 3.2 and section 15.
 /// </para>
 /// </summary>
 public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
@@ -51,16 +56,24 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     private const string RootFileStagingSuffix = ".wearchive-export-staging";
 
     // During a commit the prior root catalog/manifest file is renamed to a sibling backup with
-    // this infix (plus a unique suffix) rather than overwritten, so a root-barrier failure can
-    // restore the prior package; the backup is restored or swept on the next run.
+    // this infix (plus a unique suffix) rather than overwritten, so a commit failure can restore
+    // the prior package; the backup is restored or swept on the next run.
     private const string RootFileBackupInfix = ".wearchive-rootbackup-";
 
-    // A durable marker written only after the global root durability barrier succeeds. Its
-    // presence proves the prior export's commit completed, so a leftover backup is swept (the
-    // durable new data is kept) rather than restored; its absence means the commit did not
-    // complete, so leftovers are restored to the last good dataset. It is deleted once every
-    // backup has been cleaned up.
+    // A marker written once publication completes (all conversations and root files are in place,
+    // manifest last). Its presence proves the prior export's publication completed, so a leftover
+    // backup is swept (the new data is kept) rather than restored; its absence means publication
+    // did not complete, so leftovers are restored and journaled new paths removed, converging to
+    // the last successfully published dataset. It is deleted once every backup has been cleaned
+    // up. Phase 1 does not require a global root durability barrier (see docs/EXPORT_PRD.md 3.2):
+    // the marker is an application-level transaction-completion signal.
     private const string CommitMarkerName = ".wearchive-commit-complete";
+
+    // A journal of paths newly introduced by an in-progress publication (a conversation or root
+    // file whose prior state was absence, so it has no sibling backup). Written before the
+    // publication moves; on marker-absent crash recovery the listed paths are removed so the
+    // export converges to the prior complete dataset. Deleted on success.
+    private const string TransactionJournalName = ".wearchive-transaction";
 
     private static readonly JsonWriterOptions WriterOptions = new()
     {
@@ -125,9 +138,9 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
 
         var ledger = new Dictionary<string, IdentityEntry>(StringComparer.Ordinal);
 
-        // Everything is staged first and committed only once every timeline, catalog and
-        // the manifest are durable. On any failure the staging artifacts are discarded and
-        // the previously-exported package is left untouched.
+        // Everything is staged first and published only once every timeline, catalog and the
+        // manifest are fully written. On any failure the staging artifacts are discarded and the
+        // previously-published package is left untouched.
         var stagedConversations = new List<(string Staging, string Final)>();
         var stagedRootFiles = new List<(string Temp, string Final)>();
         // Backups created during the commit (null when the prior did not exist, e.g. a new
@@ -249,14 +262,16 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 cancellationToken).ConfigureAwait(false);
             stagedRootFiles.Add((manifestTemp, manifestPath));
 
-            // Everything is durable. Commit as a single transaction: swap each conversation
-            // directory in (its prior is renamed to a sibling backup, the replacement moved
-            // into place and made durable; the backup survives until the global barrier
-            // succeeds), then swap the root files in (prior renamed to sibling backups, the
-            // replacement moved over; manifest last). A global root durability barrier is the
-            // commit point: only after it succeeds (and a commit marker is durable) are the
-            // backups deleted. On any failure before that, every conversation and root backup is
-            // restored, so the previously-exported package is left untouched.
+            // Everything is staged. Publish as a single transaction: swap each conversation
+            // directory in (its prior is renamed to a sibling backup, the replacement moved into
+            // place; the backup survives until publication completes), then swap the root files
+            // in (prior renamed to sibling backups, the replacement moved over; manifest last).
+            // A commit marker records publication completion; only then are the backups deleted.
+            // On any failure before the marker, every conversation and root backup is restored
+            // and any newly introduced path (recorded in the transaction journal) is removed, so
+            // the previously-published dataset is left untouched. Phase 1 does not require a
+            // global root durability barrier (see docs/EXPORT_PRD.md 3.2).
+            WriteTransactionJournal(root, stagedConversations, stagedRootFiles);
             foreach (var (staging, final) in stagedConversations)
             {
                 var backup = CommitConversation(staging, final);
@@ -276,12 +291,9 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 rootBackups.Add((backup, final));
             }
 
-            // The global commit point: the root directory metadata (the root-file renames and
-            // the chats subtree) is on media. A failure here rolls back the whole export.
+            // Publication is complete. The marker is the application-level transaction-completion
+            // signal used by crash recovery (no global root durability barrier is required).
             DurableCommitRoot(root);
-
-            // A durable marker proves the global barrier succeeded, so a leftover backup on the
-            // next run is swept (committed) rather than restored (interrupted).
             WriteCommitMarker(root);
         }
         catch (Exception)
@@ -309,12 +321,14 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
             }
 
             TryDeleteFile(CommitMarkerPath(root));
+            TryDeleteFile(TransactionJournalPath(root));
             throw;
         }
 
-        // The global commit succeeded. Delete the backups (best-effort). The marker is kept
-        // only while any backup lingers so the next run sweeps it (committed) rather than
-        // restoring it; once everything is clean the marker is removed too.
+        // Publication completed. Delete the backups (best-effort). The transaction journal is
+        // no longer needed; the marker is kept only while any backup lingers so the next run
+        // sweeps it (committed) rather than restoring it, and is removed once everything is clean.
+        TryDeleteFile(TransactionJournalPath(root));
         var allBackupsCleaned = true;
         foreach (var (backup, _) in conversationBackups)
         {
@@ -426,8 +440,8 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                     last = last is null || message.OccurredAt > last ? message.OccurredAt : last;
                 }
 
-                // fsync the partition contents to media so the staged tree is durable before
-                // the commit moves it into place and deletes the prior-good backup.
+                // Drain the writer so the staged partition is fully written before the commit
+                // moves it into place. Phase 1 does not guarantee power-loss durability.
                 stream.Flush(true);
             }
 
@@ -692,21 +706,22 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
     }
 
     /// <summary>
-    /// Swaps a staged conversation directory into its final path using a durable, recoverable
-    /// protocol so a crash, power loss or move failure can never destroy the last good dataset:
+    /// Swaps a staged conversation directory into its final path using a recoverable protocol so
+    /// a move failure or process crash does not destroy the last successfully published dataset:
     /// <list type="number">
     /// <item>rename the prior <paramref name="final"/> directory to a uniquely named backup
     /// (an atomic directory rename, never a recursive delete);</item>
     /// <item>move <paramref name="staging"/> into <paramref name="final"/>;</item>
-    /// <item><see cref="DurableCommit"/> — flush the new tree's file contents (already flushed
-    /// at write time) and its directory metadata to media, establishing that the replacement
-    /// is durable;</item>
-    /// <item>delete the backup only after that durability barrier succeeds.</item>
+    /// <item>keep the backup until publication completes (the commit marker), not just until the
+    /// per-conversation move, so a later failure in the same export can still roll this
+    /// conversation back;</item>
+    /// <item>delete the backup only after the transaction completes.</item>
     /// </list>
-    /// If the move or the durability barrier fails, the catch discards the not-yet-durable new
-    /// final and restores the prior dataset from the backup. A crash between steps leaves the
-    /// backup on disk; <see cref="RecoverAndSweepStaging"/> restores it on the next run.
-    /// docs/EXPORT_PRD.md sections 3.2 and 15.
+    /// If the move fails, the catch discards the not-yet-published new final and restores the
+    /// prior dataset from the backup. A crash between steps leaves the backup on disk;
+    /// <see cref="RecoverAndSweepStaging"/> restores it (or sweeps it, when the marker shows the
+    /// publication completed) on the next run. Phase 1 does not guarantee power-loss or
+    /// storage-device durability (see docs/EXPORT_PRD.md 3.2 and 15).
     /// </summary>
     private string? CommitConversation(string staging, string final)
     {
@@ -723,17 +738,16 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
 
             Directory.Move(staging, final);
 
-            // The replacement is in place but not yet durable. Establish that the new data and
-            // directory metadata are on media. The backup is NOT deleted here: it survives until
-            // the global root barrier (DurableCommitRoot) succeeds, so a later failure in the
-            // same export can still roll this conversation back to the prior dataset.
+            // The replacement is in place. The backup is NOT deleted here: it survives until the
+            // caller's transaction completes (the commit marker), so a later failure in the same
+            // export can still roll this conversation back to the prior dataset.
             DurableCommit(final);
         }
         catch (Exception)
         {
-            // The replacement is not durably committed. Restore the last good dataset from the
-            // backup: discard the (possibly not-yet-durable) new final, then rename the backup
-            // back into place. The staged directory is discarded by the caller's catch.
+            // The replacement is not yet published. Restore the last good dataset from the
+            // backup: discard the not-yet-published new final, then rename the backup back into
+            // place. The staged directory is discarded by the caller's catch.
             if (movedToBackup && Directory.Exists(backup))
             {
                 if (Directory.Exists(final))
@@ -747,67 +761,120 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
             throw;
         }
 
-        // The new final is durable. The backup persists until the caller's global root barrier
-        // succeeds; it is deleted on success or restored on a later failure by the caller.
+        // The replacement is published. The backup persists until the caller's transaction
+        // completes (the commit marker); it is deleted on success or restored on a later failure.
         return movedToBackup ? backup : null;
     }
 
     /// <summary>
-    /// The durability barrier of the export commit: ensures the new conversation tree's file
-    /// contents and directory metadata are on media as the per-conversation barrier; the backup is deleted only after the global root barrier (DurableCommitRoot) succeeds.
-    /// A native flush failure is surfaced (not swallowed) so <see cref="CommitConversation"/>'s
-    /// catch discards the not-yet-durable replacement and restores the prior-good backup. Override
-    /// (e.g. to throw) in tests to fault-inject the boundary after the replacement move and before
-    /// backup deletion. docs/EXPORT_PRD.md sections 3.2 and 15.
+    /// A post-move checkpoint for one conversation's publication, and the fault-injection seam for
+    /// it. Phase 1 does not fsync directory metadata or guarantee power-loss durability (see
+    /// docs/EXPORT_PRD.md 3.2); the conversation's file contents are flushed at write time and
+    /// the move is the application-level publication. Override (e.g. to throw) in tests to
+    /// fault-inject a failure after the replacement move and before the transaction completes,
+    /// proving the in-process rollback restores the prior-good backup.
     /// </summary>
     protected internal virtual void DurableCommit(string directory)
     {
-        // File contents were fsynced at write time (WriteTimeline / DurableWriteFile); this
-        // flushes the directory metadata (the rename and file entries) to media.
-        NativeMethods.FsyncDirectory(directory);
+        // Phase 1 does not require a directory-metadata durability barrier.
     }
 
     /// <summary>
-    /// The global durability barrier of the export: flushes the root directory metadata (the
-    /// root-file renames, the chats subtree and the conversation/root backups) to media. This is
-    /// the commit point of the whole export. A failure here (or in <see cref="WriteCommitMarker"/>)
-    /// rolls back every conversation and root backup to the prior package. Override (e.g. to
-    /// throw) in tests to fault-inject the global boundary after the replacements and before the
-    /// backups are deleted. docs/EXPORT_PRD.md sections 3.2 and 15.
+    /// A post-publication checkpoint (after the conversations and root files are in place, before
+    /// the commit marker) and the fault-injection seam for the whole transaction. Phase 1 does not
+    /// fsync the root directory or guarantee power-loss durability (see docs/EXPORT_PRD.md 3.2).
+    /// Override (e.g. to throw) in tests to fault-inject a failure after the replacements and before
+    /// the marker, proving the in-process rollback restores the entire prior package.
     /// </summary>
     protected internal virtual void DurableCommitRoot(string root)
     {
-        NativeMethods.FsyncDirectory(root);
+        // Phase 1 does not require a global root durability barrier.
     }
 
     /// <summary>
-    /// The durable commit marker path under <paramref name="root"/>.
+    /// The commit marker path under <paramref name="root"/>.
     /// </summary>
     private static string CommitMarkerPath(string root) => Path.Combine(root, CommitMarkerName);
 
     /// <summary>
-    /// Writes a tiny durable marker whose presence proves the global root barrier
-    /// (<see cref="DurableCommitRoot"/>) succeeded, so a leftover backup on the next run is
-    /// swept (the prior commit completed) rather than restored (interrupted). Its directory
-    /// entry is flushed too, so a crash cannot lose the marker and mask a committed export as
-    /// interrupted. The marker is removed once every backup has been cleaned up.
+    /// Writes the commit marker whose presence records that publication completed, so a leftover
+    /// backup on the next run is swept (the new data is kept) rather than restored (interrupted).
+    /// Phase 1 does not fsync the marker or guarantee power-loss durability (see
+    /// docs/EXPORT_PRD.md 3.2); the marker is an application-level transaction-completion signal
+    /// read by process-crash recovery. It is removed once every backup has been cleaned up.
     /// </summary>
     private static void WriteCommitMarker(string root)
     {
         DurableWriteFile(CommitMarkerPath(root), string.Empty);
-        NativeMethods.FsyncDirectory(root);
     }
 
     /// <summary>
-    /// Writes a catalog/manifest file and flushes its data to media (the file-content half of
-    /// the durability barrier) so a later atomic rename over durable data.
+    /// The transaction journal path under <paramref name="root"/> (lists newly introduced paths
+    /// so marker-absent crash recovery can remove them).
+    /// </summary>
+    private static string TransactionJournalPath(string root) =>
+        Path.Combine(root, TransactionJournalName);
+
+    /// <summary>
+    /// Writes the transaction journal before any publication move: the relative paths of
+    /// conversations and root files whose prior state was absence (no sibling backup). On a
+    /// marker-absent crash recovery these paths are removed so the export converges to the prior
+    /// complete dataset.
+    /// </summary>
+    private static void WriteTransactionJournal(
+        string root,
+        List<(string Staging, string Final)> stagedConversations,
+        List<(string Temp, string Final)> stagedRootFiles)
+    {
+        var newFinals = new List<string>();
+        foreach (var (_, final) in stagedConversations)
+        {
+            if (!Directory.Exists(final))
+            {
+                newFinals.Add(Path.GetRelativePath(root, final));
+            }
+        }
+
+        foreach (var (_, final) in stagedRootFiles)
+        {
+            if (!File.Exists(final))
+            {
+                newFinals.Add(Path.GetRelativePath(root, final));
+            }
+        }
+
+        File.WriteAllLines(TransactionJournalPath(root), newFinals);
+    }
+
+    /// <summary>
+    /// Reads the transaction journal paths (relative to <paramref name="root"/>), or an empty
+    /// list when no journal exists.
+    /// </summary>
+    private static List<string> ReadTransactionJournal(string root)
+    {
+        var path = TransactionJournalPath(root);
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        return File.ReadAllLines(path)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => line.Trim())
+            .ToList();
+    }
+
+    /// <summary>
+    /// Writes a catalog/manifest file, flushes the writer's buffer and closes it, so the staged
+    /// output is fully written before publication (Phase 1 does not guarantee power-loss
+    /// durability; see docs/EXPORT_PRD.md 3.2).
     /// </summary>
     private static async Task DurableWriteFileAsync(string path, string content, CancellationToken cancellationToken)
     {
         var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
         using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        stream.Flush(true); // fsync the file contents to media
+        stream.Flush(true); // drain the buffer so the staged output is fully written
     }
 
     private static void DurableWriteFile(string path, string content)
@@ -815,19 +882,21 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
         var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
         using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         stream.Write(bytes, 0, bytes.Length);
-        stream.Flush(true); // fsync the file contents to media
+        stream.Flush(true); // drain the buffer so the staged output is fully written
     }
 
     /// <summary>
     /// Sweeps leftover staging and recovers leftover backups from a previously crashed export.
     /// The commit marker distinguishes the two crash states: if it is present, the prior
-    /// export's global root barrier succeeded, so a leftover backup is a post-commit cleanup
-    /// leftover and is swept (the durable new data is kept); if it is absent, the prior commit
-    /// did not complete, so a leftover backup is restored over its (possibly not-yet-durable)
-    /// final. Conversation backups live in the two conversation buckets; root-file backups live
-    /// in the export root. Orphaned staging directories are always discarded. The marker is
-    /// removed once it has been used and every committed leftover has been swept, so a crash in
-    /// this export is not masked as a completed prior commit.
+    /// publication completed, so a leftover backup is a post-publication cleanup leftover and is
+    /// swept (the new data is kept); if it is absent, the prior publication did not complete, so a
+    /// leftover backup is restored over its replacement, and any newly introduced path recorded in
+    /// the transaction journal (one with no prior backup) is removed. Conversation backups live in
+    /// the two conversation buckets; root-file backups live in the export root. Orphaned staging
+    /// directories are always discarded. Phase 1 does not require a global root durability barrier
+    /// (see docs/EXPORT_PRD.md 3.2). The marker and journal are removed once they have been used
+    /// and every committed leftover has been swept, so a crash in this export is not masked as a
+    /// completed prior publication.
     /// </summary>
     private static void RecoverAndSweepStaging(string root)
     {
@@ -865,8 +934,8 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 var final = Path.Combine(bucket, finalName);
                 if (committed && Directory.Exists(final))
                 {
-                    // The prior commit completed; this leftover backup is a post-commit cleanup
-                    // leftover. The durable new final is the committed timeline, so sweep it.
+                    // The prior publication completed; this leftover backup is a post-publication
+                    // cleanup leftover. The new final is the committed timeline, so sweep it.
                     TryDeleteDirectory(dir);
                     if (Directory.Exists(dir))
                     {
@@ -903,7 +972,7 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 var final = Path.Combine(root, finalName);
                 if (committed && File.Exists(final))
                 {
-                    // Post-commit cleanup leftover; the durable new root file is kept.
+                    // Post-publication cleanup leftover; the new root file is kept.
                     TryDeleteFile(file);
                     if (File.Exists(file))
                     {
@@ -922,10 +991,29 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
             }
         }
 
-        // The marker belongs to the previous export. Remove it once it has been used and every
-        // committed leftover has been swept, so a crash in this export is not masked as a
-        // completed prior commit; keep it while a committed leftover lingers so the next run
-        // retries the sweep instead of restoring over a durable commit.
+        // Remove newly introduced paths (no prior backup, journaled) when the prior publication
+        // did not complete, so the export converges to the prior complete dataset instead of
+        // leaving a partial package (an old manifest plus a new conversation it does not describe).
+        if (!committed)
+        {
+            foreach (var relative in ReadTransactionJournal(root))
+            {
+                var absolute = Path.Combine(root, relative);
+                if (Directory.Exists(absolute))
+                {
+                    TryDeleteDirectory(absolute);
+                }
+                else if (File.Exists(absolute))
+                {
+                    TryDeleteFile(absolute);
+                }
+            }
+        }
+
+        // The transaction journal belongs to the previous export; remove it whether or not it
+        // was used. The marker is removed once it has been used and every committed leftover has
+        // been swept (kept while a committed leftover lingers so the next run retries the sweep).
+        TryDeleteFile(TransactionJournalPath(root));
         if (!committed || allCommittedBackupsSwept)
         {
             TryDeleteFile(CommitMarkerPath(root));

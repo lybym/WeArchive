@@ -603,7 +603,7 @@ public sealed class ExportPipelineTests
     }
 
     [Fact]
-    public async Task AFailureAtTheDurabilityBoundaryRestoresTheLastGoodDataset()
+    public async Task ACommitCheckpointFailureRestoresTheLastGoodDataset()
     {
         using var temp = new TempDirectory();
         var adapter = new FixtureSourceAdapter();
@@ -615,9 +615,8 @@ public sealed class ExportPipelineTests
         var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
         var output = temp.Combine("export");
 
-        // First export: the durability barrier (DurableCommit call #1) succeeds; the old
-        // dataset is established and driven through the real rename/move/durable-commit/
-        // delete sequence.
+        // First export: the commit checkpoint (DurableCommit call #1) succeeds; the old dataset
+        // is established and driven through the real rename/move/checkpoint/delete sequence.
         var first = await workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
         var conversationId = first.ConversationIds.Single();
         var final = Path.Combine(output, "chats", "groups", conversationId);
@@ -626,12 +625,12 @@ public sealed class ExportPipelineTests
         // staging will not contain this marker.
         await File.WriteAllTextAsync(Path.Combine(final, "BOUNDARY-MARKER"), "old", CancellationToken.None);
 
-        // Re-export: the durability barrier throws on the second commit, simulating a power
-        // loss at the boundary after the replacement move and before backup deletion.
+        // Re-export: the commit checkpoint throws on the second commit, simulating a failure
+        // after the replacement move and before the transaction completes.
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None));
 
-        // The not-yet-durable new final was discarded and the prior-good backup restored, so
+        // The not-yet-published new final was discarded and the prior-good backup restored, so
         // the marker (present only in the old data) survives.
         Assert.True(File.Exists(Path.Combine(final, "BOUNDARY-MARKER")));
         Assert.Equal("old", await File.ReadAllTextAsync(Path.Combine(final, "BOUNDARY-MARKER")));
@@ -645,36 +644,15 @@ public sealed class ExportPipelineTests
     }
 
     [Fact]
-    public void TheProductionDurabilityBarrierSurfacesANativeCreateFileFailure()
+    public async Task ARootFilesPublicationFailureRestoresTheEntirePriorPackage()
     {
-        // Regression for the review finding on commit c7fc954: the durability barrier must
-        // surface a real native failure rather than swallowing it, so CommitConversation's
-        // catch can discard the not-yet-durable replacement and restore the prior-good backup.
-        // This drives the real (non-overridden) DurableCommit -> NativeMethods.FsyncDirectory
-        // path with an actual CreateFileW failure on a directory that does not exist, instead
-        // of the override that the existing boundary test relies on.
-        using var temp = new TempDirectory();
-        var store = new SqliteArchiveStore(temp.Combine("archive.db"), new FixedClock());
-        var exporter = new ProductionBarrierJsonlDatasetExporter(store);
-        var missing = temp.Combine("does-not-exist-" + Guid.NewGuid().ToString("N"));
-
-        var ex = Assert.Throws<System.ComponentModel.Win32Exception>(
-            () => exporter.InvokeDurableCommit(missing));
-
-        // A real Win32 error code was surfaced via Marshal.GetLastWin32Error (2 =
-        // ERROR_FILE_NOT_FOUND or 3 = ERROR_PATH_NOT_FOUND on Windows), proving the barrier no
-        // longer swallows native failures. FlushFileBuffers uses the same surface pattern.
-        Assert.NotEqual(0, ex.NativeErrorCode);
-    }
-
-    [Fact]
-    public async Task ARootDurabilityBarrierFailureRestoresTheEntirePriorPackage()
-    {
-        // Regression for the review finding on commit 959792e: a root durability barrier failure
-        // after the root-file replacements must roll back the whole export, restoring the prior
-        // conversations AND the prior root files (manifest last), so the prior package stays
-        // usable. A different conversation is exported for the failing run so the rolled-back
-        // root files (group manifest) are observably distinct from the replacement (direct).
+        // Regression for the review finding on commit 959792e: a failure after the root-file
+        // publication (before the commit marker) must roll back the whole export, restoring the
+        // prior conversations AND the prior root files (manifest last), so the prior package
+        // stays usable. A different conversation is exported for the failing run so the
+        // rolled-back root files (group manifest) are observably distinct from the replacement
+        // (direct). Phase 1 does not require a global root durability barrier (see
+        // docs/EXPORT_PRD.md 3.2).
         using var temp = new TempDirectory();
         var adapter = new FixtureSourceAdapter();
         var clock = new FixedClock();
@@ -773,6 +751,48 @@ public sealed class ExportPipelineTests
         Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
     }
 
+    [Fact]
+    public async Task AnUncommittedNewConversationIsRemovedOnCrashRecovery()
+    {
+        // Regression for the review finding on commit ed029b7d: a newly introduced conversation
+        // (no prior backup) published before a crash must be removed by marker-absent recovery,
+        // so the export converges to the prior complete dataset rather than leaving a partial
+        // package (an old manifest plus a new conversation it does not describe).
+        using var temp = new TempDirectory();
+        var harness = CreateHarness(temp);
+        var output = temp.Combine("export");
+
+        // Prior package: a complete group export.
+        var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var priorManifest = await File.ReadAllTextAsync(Path.Combine(output, "manifest.json"));
+
+        // Simulate a crash after a NEW direct conversation was published (moved into place, no
+        // prior backup) but before the commit marker: the new conversation is on disk, the
+        // transaction journal records it, and there is no marker.
+        const string newDirectId = "u_new_fake_conv";
+        var newDirectFinal = Path.Combine(output, "chats", "direct", newDirectId);
+        Directory.CreateDirectory(Path.Combine(newDirectFinal, "2026"));
+        await File.WriteAllTextAsync(
+            Path.Combine(newDirectFinal, "2026", "2026-01.jsonl"),
+            "{\"id\":\"m_new\"}\n",
+            CancellationToken.None);
+        await File.WriteAllTextAsync(
+            Path.Combine(output, ".wearchive-transaction"),
+            Path.GetRelativePath(output, newDirectFinal) + Environment.NewLine,
+            CancellationToken.None);
+        Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
+
+        // The next export recovers: no marker means the prior publication did not complete, so the
+        // journaled new conversation is removed and the prior package alone remains.
+        var second = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+
+        Assert.True(second.Succeeded);
+        Assert.False(Directory.Exists(newDirectFinal), "the new conversation must be removed on crash recovery");
+        Assert.Equal(priorManifest, await File.ReadAllTextAsync(Path.Combine(output, "manifest.json")));
+        Assert.False(File.Exists(Path.Combine(output, ".wearchive-transaction")));
+        Assert.False(File.Exists(Path.Combine(output, ".wearchive-commit-complete")));
+    }
+
     /// <summary>
     /// Reports synchronously so a test can cancel the token exactly when the exporter
     /// reports progress, rather than through the async <see cref="Progress{T}"/> post.
@@ -783,9 +803,9 @@ public sealed class ExportPipelineTests
     }
 
     /// <summary>
-    /// Throws on the second <see cref="JsonlDatasetExporter.DurableCommit"/> call to
-    /// fault-inject the durability boundary (after the replacement move, before backup
-    /// deletion) that the production commit must survive.
+    /// Throws on the second <see cref="JsonlDatasetExporter.DurableCommit"/> call to fault-inject
+    /// a commit-checkpoint failure (after the replacement move, before the transaction completes)
+    /// that the production commit must roll back from.
     /// </summary>
     private sealed class FaultingJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
     {
@@ -795,25 +815,16 @@ public sealed class ExportPipelineTests
         {
             if (++_commits == 2)
             {
-                throw new InvalidOperationException("simulated power loss at the durability boundary");
+                throw new InvalidOperationException("simulated commit checkpoint failure");
             }
         }
     }
 
     /// <summary>
-    /// Exposes the production DurableCommit unchanged (it does not override it) so a test can
-    /// prove the real NativeMethods.FsyncDirectory path surfaces a native failure instead of
-    /// swallowing it.
-    /// </summary>
-    private sealed class ProductionBarrierJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
-    {
-        public void InvokeDurableCommit(string directory) => DurableCommit(directory);
-    }
-
-    /// <summary>
     /// Throws on the second <see cref="JsonlDatasetExporter.DurableCommitRoot"/> call to
-    /// fault-inject the global root durability barrier (after the conversations and root files are
-    /// replaced, before the backups are deleted) that the production commit must roll back from.
+    /// fault-inject a failure after the conversations and root files are published and before the
+    /// commit marker, proving the in-process rollback restores the entire prior package. Phase 1
+    /// does not require a global root durability barrier (see docs/EXPORT_PRD.md 3.2).
     /// </summary>
     private sealed class RootFaultingJsonlDatasetExporter(IArchiveStore archive) : JsonlDatasetExporter(archive)
     {
@@ -823,7 +834,7 @@ public sealed class ExportPipelineTests
         {
             if (++_rootCommits == 2)
             {
-                throw new InvalidOperationException("simulated root durability barrier failure");
+                throw new InvalidOperationException("simulated post-publication failure");
             }
         }
     }
