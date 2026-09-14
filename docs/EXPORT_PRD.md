@@ -120,12 +120,14 @@ outside the conversation's own folder is touched, so duplicate temporal partitio
 months are structurally impossible, and the export of one conversation can never damage
 another conversation's output.
 
-The rewrite is crash-safe: each conversation's new timelines are written to a sibling staging
-directory, and the root catalogs and `manifest.json` are written to sibling temp files. The
-previously-exported directory and files are only replaced once every replacement is durable,
-so a cancellation, I/O failure or process termination leaves the last good dataset intact
-rather than a half-written package. Leftover staging artifacts from a crashed run are swept
-at the start of the next export.
+The rewrite is crash-safe and recoverable: each conversation's new timelines are written to
+a sibling staging directory, and the root catalogs and `manifest.json` are written to sibling
+temp files. The prior conversation directory is **renamed to a sibling backup** (not deleted)
+and the staged replacement is moved into place; the backup is deleted only once the new final
+is durable. A cancellation, I/O failure, process crash or power loss therefore cannot destroy
+the last good dataset — a leftover backup is **recovered** (renamed back to the final path
+when final is absent) or swept (when final is present) at the start of the next export, and
+leftover staging is discarded.
 
 `collections.yaml` is written only when it does not already exist; a user-maintained file is
 never overwritten.
@@ -550,10 +552,12 @@ Re-exporting shall:
 Shipped behaviour:
 
 - The conversation's directory is **deleted and rewritten**, which is what makes duplicate
-  partitions structurally impossible. The rewrite is staged: new timelines and catalogs are
-  written to sibling temp paths first, and the prior package is only replaced once every
-  replacement file is durable, so a failed or cancelled re-export cannot destroy the last
-  good dataset.
+  partitions structurally impossible. The rewrite is staged and recoverable: new timelines
+  and catalogs are written to sibling temp paths first, the prior conversation directory is
+  renamed to a sibling backup, and the replacement is moved into place; the backup is
+  deleted only once the new final is durable. A failed, cancelled or crashed re-export
+  cannot destroy the last good dataset — a leftover backup is recovered or swept on the
+  next run.
 - `conversations.yaml` reuses the existing `alias`.
 - `identities.yaml` reuses `display_name_override` per the section 5.4 merge policy.
 - `collections.yaml` is left untouched when it exists.

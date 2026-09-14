@@ -20,12 +20,14 @@ namespace WeArchive.Infrastructure.Export;
 /// makes duplicate logical records structurally impossible.
 /// </para>
 /// <para>
-/// A re-export is crash-safe: each conversation's timeline is written to a sibling
-/// staging directory, and the root catalogs and manifest are written to sibling temp
-/// files. Nothing in the previously-exported package is deleted until every replacement
-/// file is durable, so a cancellation, I/O failure or process termination leaves the
-/// last good dataset intact rather than a half-written one. docs/EXPORT_PRD.md section
-/// 3.2 and section 15.
+/// A re-export is crash-safe and recoverable: each conversation's timeline is written to a
+/// sibling staging directory, and the root catalogs and manifest are written to sibling
+/// temp files. The prior conversation directory is renamed to a sibling backup (not
+/// deleted) and the staged replacement is moved into place; the backup is deleted only
+/// once the new final is durable. A cancellation, I/O failure, process crash or power loss
+/// therefore cannot destroy the last good dataset — a leftover backup is recovered (when
+/// final is absent) or swept (when final is present) at the start of the next run.
+/// docs/EXPORT_PRD.md section 3.2 and section 15.
 /// </para>
 /// </summary>
 public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
@@ -38,6 +40,12 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
     // leftover staging directories from a crashed run can be swept at the start of the
     // next export.
     private const string ConversationStagingPrefix = "wearchive-export-staging-";
+
+    // During a commit the prior conversation directory is renamed to a sibling backup with
+    // this infix (plus a unique suffix) rather than deleted, so a crash between the rename
+    // and the move never loses the last good dataset; the backup is recovered or swept on
+    // the next run.
+    private const string ConversationBackupInfix = ".wearchive-backup-";
 
     // Root catalogs and the manifest stage under a sibling temp file with this suffix.
     private const string RootFileStagingSuffix = ".wearchive-export-staging";
@@ -85,7 +93,7 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
 
         Directory.CreateDirectory(root);
         Directory.CreateDirectory(Path.Combine(root, "chats"));
-        RemoveStaleStaging(root);
+        RecoverAndSweepStaging(root);
 
         // Identity resolution is centralized here. Only the participants referenced by the
         // exported conversations are published, so the catalog stays small enough for a
@@ -602,28 +610,76 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
     }
 
     /// <summary>
-    /// Swaps a staged conversation directory into its final path. The previous directory is
-    /// only deleted after the staged replacement is fully written, so a failed or cancelled
-    /// export never leaves the conversation without a complete dataset.
+    /// Swaps a staged conversation directory into its final path using a recoverable
+    /// protocol so a crash, power loss or move failure can never destroy the last good
+    /// dataset:
+    /// <list type="number">
+    /// <item>rename the prior <paramref name="final"/> directory to a uniquely named
+    /// backup (an atomic directory rename, never a recursive delete);</item>
+    /// <item>move <paramref name="staging"/> into <paramref name="final"/>;</item>
+    /// <item>delete the backup only after the new final is in place.</item>
+    /// </list>
+    /// If the move fails, the catch restores the prior data from the backup. A crash
+    /// between steps leaves the backup on disk, which <see cref="RecoverAndSweepStaging"/>
+    /// recovers (when final is absent) or sweeps (when final is present) on the next run.
     /// </summary>
     private static void CommitConversation(string staging, string final)
     {
-        if (Directory.Exists(final))
+        var backup = final + ConversationBackupInfix + Guid.NewGuid().ToString("N");
+        var movedToBackup = false;
+        try
         {
-            // Guarantees no stale or duplicated partitions survive a re-export, but only
-            // once the replacement is durable.
-            Directory.Delete(final, recursive: true);
+            if (Directory.Exists(final))
+            {
+                // Preserve the prior dataset in a sibling backup instead of deleting it,
+                // so the window below cannot lose it.
+                Directory.Move(final, backup);
+                movedToBackup = true;
+            }
+
+            Directory.Move(staging, final);
+        }
+        catch (Exception)
+        {
+            // The move failed. If we moved the prior data aside, restore it so the last
+            // good dataset survives; the staged directory is discarded by the caller's
+            // catch. (If the move partly failed and final exists, leave the backup for the
+            // next run to sweep.)
+            if (movedToBackup && Directory.Exists(backup) && !Directory.Exists(final))
+            {
+                try
+                {
+                    Directory.Move(backup, final);
+                }
+                catch (IOException)
+                {
+                    // Leave the backup; RecoverAndSweepStaging restores it next run.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+
+            throw;
         }
 
-        Directory.Move(staging, final);
+        // The new final is in place. Delete the prior backup (best-effort); a leftover is
+        // swept on the next run.
+        if (movedToBackup)
+        {
+            TryDeleteDirectory(backup);
+        }
     }
 
     /// <summary>
-    /// Sweeps leftover staging directories from a previously crashed export so they cannot
-    /// accumulate. Only the immediate children of the two conversation buckets are scanned,
-    /// so this is bounded by the number of conversations, not the whole export tree.
+    /// Sweeps leftover staging directories and recovers or sweeps leftover backups from a
+    /// previously crashed export. Only the immediate children of the two conversation
+    /// buckets are scanned, so this is bounded by the number of conversations, not the
+    /// whole export tree. A backup whose final directory is absent is recovered (renamed
+    /// back to the final path); a backup whose final is present is an orphan from a run
+    /// that completed but could not clean up, and is deleted.
     /// </summary>
-    private static void RemoveStaleStaging(string root)
+    private static void RecoverAndSweepStaging(string root)
     {
         foreach (var bucket in new[]
         {
@@ -638,11 +694,53 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
 
             foreach (var dir in Directory.EnumerateDirectories(bucket))
             {
-                if (Path.GetFileName(dir).StartsWith(ConversationStagingPrefix, StringComparison.Ordinal))
+                var name = Path.GetFileName(dir);
+                if (name.StartsWith(ConversationStagingPrefix, StringComparison.Ordinal))
                 {
+                    // An orphaned staging directory is always partial new data: discard it.
+                    TryDeleteDirectory(dir);
+                    continue;
+                }
+
+                var backupIndex = name.IndexOf(ConversationBackupInfix, StringComparison.Ordinal);
+                if (backupIndex <= 0)
+                {
+                    continue;
+                }
+
+                var finalName = name[..backupIndex];
+                var final = Path.Combine(bucket, finalName);
+                if (Directory.Exists(final))
+                {
+                    // The new final is in place; the backup is a leftover from a completed
+                    // run. Sweep it.
                     TryDeleteDirectory(dir);
                 }
+                else
+                {
+                    // A crash left final absent but the prior data is in the backup:
+                    // recover it so the last good dataset is not lost.
+                    TryMoveDirectory(dir, final);
+                }
             }
+        }
+    }
+
+    private static void TryMoveDirectory(string source, string destination)
+    {
+        try
+        {
+            if (Directory.Exists(source) && !Directory.Exists(destination))
+            {
+                Directory.Move(source, destination);
+            }
+        }
+        catch (IOException)
+        {
+            // Leave it; tried again on the next run.
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

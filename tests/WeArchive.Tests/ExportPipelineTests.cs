@@ -524,6 +524,82 @@ public sealed class ExportPipelineTests
             d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task ACrashedCommitIsRecoveredOnTheNextExportNotLost()
+    {
+        using var temp = new TempDirectory();
+        var harness = CreateHarness(temp);
+        var output = temp.Combine("export");
+
+        // A complete first export of the real conversation.
+        var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var realConversationId = first.ConversationIds.Single();
+        var groupsBucket = Path.Combine(output, "chats", "groups");
+
+        // Simulate a crash mid-commit of an UNRELATED conversation: its final directory is
+        // absent (the prior data was renamed to a backup), and a partial staging directory
+        // remains. This is exactly the dangerous interval the recoverable swap must
+        // survive.
+        const string crashedId = "g_crashed_fake_conv";
+        var crashedFinal = Path.Combine(groupsBucket, crashedId);
+        var crashedBackup = Path.Combine(groupsBucket, crashedId + ".wearchive-backup-deadbeef");
+        var crashedStaging = Path.Combine(groupsBucket, "wearchive-export-staging-deadbeef");
+        Directory.CreateDirectory(Path.Combine(crashedBackup, "2026"));
+        File.WriteAllText(
+            Path.Combine(crashedBackup, "2026", "2026-01.jsonl"),
+            "{\"id\":\"m_old\"}\n"); // the last known-good timeline
+        Directory.CreateDirectory(crashedStaging);
+
+        // A fresh export must recover the backup (rename it back to final) rather than
+        // deleting it, and sweep the orphaned staging.
+        var second = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+
+        // The crashed conversation's last good dataset was recovered into its final path.
+        Assert.True(Directory.Exists(crashedFinal), "the crashed conversation's backup must be recovered, not lost");
+        Assert.Equal("{\"id\":\"m_old\"}\n", await File.ReadAllTextAsync(
+            Path.Combine(crashedFinal, "2026", "2026-01.jsonl")));
+
+        // The real conversation exported normally, and no crash artifacts remain.
+        Assert.True(second.Succeeded);
+        Assert.True(Directory.Exists(Path.Combine(groupsBucket, realConversationId)));
+        Assert.DoesNotContain(
+            Directory.EnumerateDirectories(groupsBucket),
+            d => Path.GetFileName(d).Contains(".wearchive-backup-", StringComparison.Ordinal)
+              || Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ALeftoverBackupFromACompletedCommitIsSweptOnTheNextExport()
+    {
+        using var temp = new TempDirectory();
+        var harness = CreateHarness(temp);
+        var output = temp.Combine("export");
+
+        await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var groupsBucket = Path.Combine(output, "chats", "groups");
+
+        // Simulate a crash AFTER the move but BEFORE the backup delete: the new final is in
+        // place, but an orphan backup from the prior dataset remains.
+        const string convId = "g_completed_fake_conv";
+        var final = Path.Combine(groupsBucket, convId);
+        var orphanBackup = Path.Combine(groupsBucket, convId + ".wearchive-backup-deadbeef");
+        Directory.CreateDirectory(Path.Combine(final, "2026"));
+        File.WriteAllText(Path.Combine(final, "2026", "2026-01.jsonl"), "{\"id\":\"m_new\"}\n");
+        Directory.CreateDirectory(Path.Combine(orphanBackup, "2026"));
+        File.WriteAllText(Path.Combine(orphanBackup, "2026", "2026-01.jsonl"), "{\"id\":\"m_old\"}\n");
+
+        await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+
+        // The completed final is untouched; the orphan backup was swept.
+        Assert.True(Directory.Exists(final));
+        Assert.Equal("{\"id\":\"m_new\"}\n", await File.ReadAllTextAsync(
+            Path.Combine(final, "2026", "2026-01.jsonl")));
+        Assert.False(Directory.Exists(orphanBackup));
+        Assert.DoesNotContain(
+            Directory.EnumerateDirectories(groupsBucket),
+            d => Path.GetFileName(d).Contains(".wearchive-backup-", StringComparison.Ordinal));
+    }
+
     /// <summary>
     /// Reports synchronously so a test can cancel the token exactly when the exporter
     /// reports progress, rather than through the async <see cref="Progress{T}"/> post.
