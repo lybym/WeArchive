@@ -23,6 +23,7 @@ public static class DiagnosticCodes
     public const string KeyAcquisitionFailed = "key_acquisition_failed";
     public const string PartitionUnreadable = "partition_unreadable";
     public const string PartitionMissing = "partition_missing";
+    public const string SourceMessageIdUnavailable = "source_message_id_unavailable";
     public const string DatabaseIntegrityWarning = "database_integrity_warning";
     public const string WalFramesRejected = "wal_frames_rejected";
     public const string UnknownMessageType = "unknown_message_type";

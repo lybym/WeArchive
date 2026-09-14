@@ -88,7 +88,10 @@ public sealed record SourceMessage
     /// <summary>Upstream partition (e.g. which message shard) the record came from.</summary>
     public string? SourcePartition { get; init; }
 
-    /// <summary>Stable upstream record identifier, when one exists.</summary>
+    /// <summary>
+    /// Stable upstream record identifier. When upstream has no single id, the adapter
+    /// supplies its documented composite identity instead.
+    /// </summary>
     public string? SourceMessageId { get; init; }
 
     /// <summary>Upstream ordering key inside the partition.</summary>

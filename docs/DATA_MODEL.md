@@ -518,6 +518,10 @@ otherwise         -> l:<partition>:<local_id>
 `partition` identifies the upstream shard the record came from, so the composite stays unique
 across a multi-shard timeline.
 
+A record for which the adapter can provide neither form of identity is a source-coverage
+failure. The importer records a Fatal diagnostic and the workflow does not export a reduced
+dataset; it never skips that record or invents an identity.
+
 ## 17. Deduplication
 
 Deduplication prefers stable source identity over content heuristics.

@@ -301,7 +301,8 @@ Every adapter must provide:
 - `SourceAccount.SourceProfileId` for each locally available profile;
 - stable conversation IDs (`SourceConversation.SourceConversationId`);
 - stable participant IDs where available (`SourceParticipant.SourceUserId`);
-- stable message/source IDs where available (`SourceMessage.SourceMessageId`);
+- stable message/source IDs (`SourceMessage.SourceMessageId`), using the documented
+  composite strategy when upstream provides no single id;
 - source timestamps (`SourceMessage.OccurredAt`);
 - source partition references where applicable (`SourceMessage.SourcePartition`);
 - an upstream order key (`SourceMessage.SourceOrderKey`) so a merged timeline stays stable;
@@ -327,6 +328,10 @@ because repeated identical messages are valid data:
 server id present -> s:<server_id>
 otherwise         -> l:<partition>:<local_id>
 ```
+
+If an adapter cannot provide either a native or documented composite message identity for
+a source record, it is a source-coverage failure: the import records a Fatal diagnostic and
+the workflow does not export a dataset. It must not skip the record or fabricate an identity.
 
 The adapter hands this string to `StableIds.Message(conversationId, sourceMessageId)`. Reply
 references are addressed the same way so the archive can resolve them.

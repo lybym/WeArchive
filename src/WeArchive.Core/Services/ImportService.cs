@@ -157,13 +157,14 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
                 }
                 catch (ArgumentException ex)
                 {
-                    // A contract violation by the adapter must not silently lose the record.
-                    diagnostics.Partial(
-                        DiagnosticCodes.UnknownMessageType,
-                        ex.Message,
-                        source.SourceType,
-                        source.SourceSubtype);
-                    continue;
+                    // A record without a stable identity cannot be represented as an
+                    // unknown canonical message: doing so would fabricate an id, while
+                    // skipping it would make a reduced source look complete. Treat the
+                    // adapter-contract breach as source-coverage failure so the workflow
+                    // records a Fatal diagnostic and does not export a partial dataset.
+                    throw new SourceCoverageException(
+                        DiagnosticCodes.SourceMessageIdUnavailable,
+                        ex.Message);
                 }
 
                 if (message.Type == CanonicalMessageType.Unknown)

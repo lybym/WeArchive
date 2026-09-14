@@ -3,6 +3,7 @@ using WeArchive.Core.Domain;
 using WeArchive.Core.Services;
 using WeArchive.Infrastructure.Archive;
 using WeArchive.Infrastructure.Export;
+using WeArchive.Infrastructure.Fixtures;
 using WeArchive.Tests.Support;
 
 namespace WeArchive.Tests;
@@ -15,6 +16,66 @@ namespace WeArchive.Tests;
 /// </summary>
 public sealed class SourceCoverageTests
 {
+    /// <summary>
+    /// An otherwise valid adapter that emits one message without an upstream or composite
+    /// source id. Such a record cannot be represented safely in the canonical model.
+    /// </summary>
+    private sealed class MissingMessageIdAdapter : ISourceAdapter
+    {
+        private readonly FixtureSourceAdapter _fixture = new();
+
+        public string AdapterName => _fixture.AdapterName;
+        public string AdapterVersion => _fixture.AdapterVersion;
+
+        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
+            _fixture.DescribeSourceAsync(cancellationToken);
+
+        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
+            _fixture.ListAccountsAsync(cancellationToken);
+
+        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            _fixture.ListConversationsAsync(sourceProfileId, cancellationToken);
+
+        public Task<SourceConversationDetail> DescribeConversationAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            _fixture.DescribeConversationAsync(sourceProfileId, sourceConversationId, cancellationToken);
+
+        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            _fixture.ListParticipantsAsync(sourceProfileId, cancellationToken);
+
+        public async IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+            string sourceProfileId,
+            string sourceConversationId,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new SourceMessage
+            {
+                SourceConversationId = sourceConversationId,
+                SenderSourceUserId = FixtureSourceAdapter.Alice,
+                OccurredAt = FixtureSourceAdapter.Base,
+                SourcePartition = "fixture_0",
+                SourceMessageId = "l:fixture_0:1",
+                SourceOrderKey = "1",
+                Content = SourceMessageContent.PlainText("valid record"),
+            };
+
+            yield return new SourceMessage
+            {
+                SourceConversationId = sourceConversationId,
+                SenderSourceUserId = FixtureSourceAdapter.Bob,
+                OccurredAt = FixtureSourceAdapter.Base.AddMinutes(1),
+                SourcePartition = "fixture_0",
+                SourceOrderKey = "2",
+                Content = SourceMessageContent.PlainText("record without identity"),
+            };
+
+            await Task.Yield();
+        }
+    }
+
     /// <summary>
     /// An adapter whose message shard is unavailable. Its <see cref="ReadMessagesAsync"/>
     /// throws <see cref="SourceCoverageException"/> instead of yielding an empty stream,
@@ -150,5 +211,38 @@ public sealed class SourceCoverageTests
         // unavailable: the exporter is never reached.
         Assert.False(Directory.Exists(output),
             "an empty export package must not be produced for an unreadable shard");
+    }
+
+    [Fact]
+    public async Task ARecordWithoutStableIdFailsImportAndCannotExportAReducedDataset()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new MissingMessageIdAdapter();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
+        var exporter = new JsonlDatasetExporter(store);
+        var workflow = new ArchiveWorkflow(
+            new SourceCatalogService(adapter),
+            new ImportService(adapter, store, clock),
+            exporter,
+            store,
+            clock);
+        var output = temp.Combine("export");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            workflow.ExportConversationAsync(
+                new ExportConversationRequest
+                {
+                    SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+                    SourceConversationId = FixtureSourceAdapter.GroupConversation,
+                    Kind = ConversationKind.Group,
+                    OutputDirectory = output,
+                },
+                null,
+                CancellationToken.None));
+
+        Assert.Contains("stable SourceMessageId", ex.Message, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(output),
+            "a source record without an identity must not yield a silently reduced export");
     }
 }
