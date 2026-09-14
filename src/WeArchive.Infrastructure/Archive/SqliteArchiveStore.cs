@@ -286,6 +286,17 @@ public sealed class SqliteArchiveStore : IArchiveStore
                 semantic_text   = excluded.semantic_text,
                 payload_json    = excluded.payload_json,
                 reply_source_message_id = excluded.reply_source_message_id,
+                -- The resolved canonical target is only valid for the upstream id it was
+                -- resolved from. If the upstream target changed (the message was edited to
+                -- quote a different record), the previously-resolved target is stale and
+                -- would fabricate an incorrect relationship: clear it so the backfill pass
+                -- re-resolves. The comparison is NULL-safe so a source id that changed to or
+                -- from NULL is also detected. docs/DATA_MODEL.md section 8.7.
+                reply_to_message_id = CASE
+                    WHEN reply_source_message_id IS NOT excluded.reply_source_message_id
+                        THEN NULL
+                    ELSE reply_to_message_id
+                END,
                 reply_snapshot_json = excluded.reply_snapshot_json,
                 import_run_id   = excluded.import_run_id,
                 content_hash    = excluded.content_hash,
@@ -390,8 +401,8 @@ public sealed class SqliteArchiveStore : IArchiveStore
             aggregate.CommandText =
                 """
                 UPDATE conversations SET
-                    first_message_at = (SELECT MIN(occurred_at) FROM messages m WHERE m.conversation_id = conversations.id),
-                    last_message_at  = (SELECT MAX(occurred_at) FROM messages m WHERE m.conversation_id = conversations.id),
+                    first_message_at = (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = conversations.id ORDER BY m.occurred_utc ASC LIMIT 1),
+                    last_message_at  = (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = conversations.id ORDER BY m.occurred_utc DESC LIMIT 1),
                     message_count    = (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = conversations.id)
                 WHERE id IN (SELECT DISTINCT conversation_id FROM messages WHERE id IN (
                     SELECT value FROM json_each($ids)));
@@ -577,7 +588,8 @@ public sealed class SqliteArchiveStore : IArchiveStore
             SELECT COUNT(*),
                    SUM(CASE WHEN type = 'unknown' THEN 1 ELSE 0 END),
                    SUM(CASE WHEN is_partial = 1 THEN 1 ELSE 0 END),
-                   MIN(occurred_at), MAX(occurred_at)
+                   (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = $id ORDER BY m.occurred_utc ASC LIMIT 1),
+                   (SELECT m.occurred_at FROM messages m WHERE m.conversation_id = $id ORDER BY m.occurred_utc DESC LIMIT 1)
             FROM messages WHERE conversation_id = $id;
             """;
         head.Parameters.AddWithValue("$id", conversationId);

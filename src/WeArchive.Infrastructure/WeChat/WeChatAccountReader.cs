@@ -47,6 +47,10 @@ internal sealed class WeChatAccountReader(
     private List<WeChatSessionRow>? _sessions;
     private Dictionary<string, string>? _messageShardByTable;
     private readonly Dictionary<string, Dictionary<long, string>> _name2Id = new(StringComparer.OrdinalIgnoreCase);
+    // Shards that could not be opened/indexed, recorded (not swallowed) so a conversation
+    // whose only table lives in one of them surfaces a partial-coverage diagnostic instead
+    // of a silent empty import. FR-14.
+    private readonly List<string> _unreadableShards = [];
 
     public WeChatAccountLocation Account => _account;
 
@@ -184,11 +188,16 @@ internal sealed class WeChatAccountReader(
             }
             catch (SqliteException)
             {
-                // An unreadable shard does not prevent the others from being indexed.
+                // Recorded, not swallowed: a conversation whose table lives only in this
+                // shard must surface a partial-coverage diagnostic, not a silent empty
+                // import. See ReadMessages.
+                _unreadableShards.Add(shard);
             }
             catch (WeChatKeyUnavailableException)
             {
-                // Reported by the adapter when the requested conversation is affected.
+                // The key for this shard could not be recovered; the shard contributes no
+                // tables and any conversation whose data lives here is partial coverage.
+                _unreadableShards.Add(shard);
             }
         }
 
@@ -254,7 +263,21 @@ internal sealed class WeChatAccountReader(
         var shard = FindMessageShard(sourceConversationId);
         if (shard is null)
         {
-            yield break;
+            // No readable shard holds this conversation's table. If any shard failed to
+            // index, the table may live in one of those, so coverage is genuinely partial;
+            // otherwise the source simply has no table for this conversation. Either way
+            // this must not become a silent empty import that exports an apparently valid
+            // empty dataset (FR-14).
+            throw _unreadableShards.Count > 0
+                ? new SourceCoverageException(
+                    DiagnosticCodes.PartitionUnreadable,
+                    $"The message shard for conversation '{sourceConversationId}' could not be read. " +
+                    $"{_unreadableShards.Count} shard(s) failed during indexing, so source coverage is " +
+                    "incomplete and no records were archived for this conversation.")
+                : new SourceCoverageException(
+                    DiagnosticCodes.PartitionMissing,
+                    $"No message shard was found for conversation '{sourceConversationId}'. " +
+                    "The source provided no readable records for this conversation.");
         }
 
         var partition = Path.GetFileNameWithoutExtension(shard.Value.ShardPath);

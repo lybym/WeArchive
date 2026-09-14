@@ -218,6 +218,15 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
             status = ImportRunStatus.Cancelled;
             throw;
         }
+        catch (SourceCoverageException ex)
+        {
+            // The source could not provide complete coverage for this conversation (a
+            // missing or unreadable message shard). Surface a typed Fatal diagnostic
+            // instead of completing as a misleading empty import (FR-14). The run is
+            // recorded as Failed so the workflow will not export an empty dataset.
+            status = ImportRunStatus.Failed;
+            diagnostics.Fatal(ex.Code, ex.Message);
+        }
         catch (Exception)
         {
             status = ImportRunStatus.Failed;
@@ -255,7 +264,10 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
                 }
             }
 
-            if (processed == 0)
+            // "No new records" is only an honest Info summary when the import genuinely
+            // completed and read nothing. A failed run (e.g. an unreadable shard) must not
+            // be relabelled as a successful empty conversation.
+            if (status == ImportRunStatus.Completed && processed == 0)
             {
                 diagnostics.Info(DiagnosticCodes.NoNewRecords, "The conversation produced no records.");
             }

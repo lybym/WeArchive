@@ -236,7 +236,10 @@ A message stores its time twice:
 
 Storing both avoids re-parsing text on every range query while keeping the exported timestamp
 unambiguous. Canonical timeline order is `(occurred_utc, source_order_key, id)`, which is the
-index `ix_messages_timeline`.
+index `ix_messages_timeline`. Conversation first/last aggregates and stats are computed from
+`occurred_utc` (the epoch) and retain the corresponding rendered `occurred_at`; they never
+take `MIN`/`MAX` over the offset-bearing text, which would mis-order records across different
+timezone offsets.
 
 ### 8.2 Idempotent upsert and `content_hash`
 
@@ -338,7 +341,10 @@ Replies/quotes are represented structurally. Three columns work together:
 - `reply_to_message_id` — the resolved canonical `m_...` id, filled in by the archive when the
   referenced record is present in the same archive (resolved on insert and by a backfill pass
   for records imported later). It is null while the target does not resolve. The archive never
-  fabricates a target id.
+  fabricates a target id. When a re-import changes `reply_source_message_id` (the upstream
+  message was edited to quote a different record), the previously-resolved
+  `reply_to_message_id` is cleared so the backfill pass re-resolves it against the new target;
+  a target that no longer resolves is left null rather than retaining the stale id.
 - `reply_snapshot_json` — the locally available quoted sender/text metadata, kept even when no
   canonical target resolves.
 

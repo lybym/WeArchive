@@ -435,6 +435,102 @@ public sealed class ExportPipelineTests
         Assert.Contains(OperationStages.Completed, stages);
     }
 
+    [Fact]
+    public async Task ACancelledReExportLeavesThePreviouslyExportedDatasetIntact()
+    {
+        using var temp = new TempDirectory();
+        var harness = CreateHarness(temp);
+        var output = temp.Combine("export");
+
+        // Establish a complete dataset.
+        var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var conversationId = first.ConversationIds.Single();
+        var timelineFolder = Path.Combine(output, "chats", "groups", conversationId);
+
+        var priorManifest = await File.ReadAllTextAsync(Path.Combine(output, "manifest.json"));
+        var priorIdentities = await File.ReadAllTextAsync(Path.Combine(output, "identities.yaml"));
+        var priorPartitions = Directory
+            .EnumerateFiles(timelineFolder, "*.jsonl", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .ToList();
+
+        // Re-export through the exporter directly with a progress callback that cancels as
+        // soon as the first (and only) timeline has been staged, i.e. before the catalogs
+        // are written and before anything is committed.
+        using var cts = new CancellationTokenSource();
+        var cancelProgress = new CancelOnFirstReport<ExportProgress>(cts);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            harness.Exporter.ExportAsync(
+                new ExportRequest
+                {
+                    OutputDirectory = output,
+                    AccountId = StableIds.Account(harness.Adapter.AdapterName, FixtureSourceAdapter.FixtureAccountId),
+                    ConversationIds = [conversationId],
+                },
+                cancelProgress,
+                cts.Token));
+
+        // The prior package must survive untouched, with no leftover staging directory.
+        Assert.Equal(priorManifest, await File.ReadAllTextAsync(Path.Combine(output, "manifest.json")));
+        Assert.Equal(priorIdentities, await File.ReadAllTextAsync(Path.Combine(output, "identities.yaml")));
+        Assert.Equal(priorPartitions, Directory
+            .EnumerateFiles(timelineFolder, "*.jsonl", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .ToList());
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(output, "chats", "groups"))
+            .Where(d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task AWriteFailureDuringReExportLeavesThePreviouslyExportedDatasetIntact()
+    {
+        using var temp = new TempDirectory();
+        var harness = CreateHarness(temp);
+        var output = temp.Combine("export");
+
+        var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        var conversationId = first.ConversationIds.Single();
+        var timelineFolder = Path.Combine(output, "chats", "groups", conversationId);
+
+        var priorManifest = await File.ReadAllTextAsync(Path.Combine(output, "manifest.json"));
+        var priorIdentities = await File.ReadAllTextAsync(Path.Combine(output, "identities.yaml"));
+        var priorConversations = await File.ReadAllTextAsync(Path.Combine(output, "conversations.yaml"));
+        var priorPartitions = Directory
+            .EnumerateFiles(timelineFolder, "*.jsonl", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .ToList();
+
+        // Hold an exclusive handle on the identities catalog's staging path so the catalog
+        // write cannot truncate it. The staged timeline must be discarded and the prior
+        // package preserved, never partially overwritten.
+        var identitiesStaging = Path.Combine(output, "identities.yaml.wearchive-export-staging");
+        using (new FileStream(identitiesStaging, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+        {
+            await Assert.ThrowsAnyAsync<IOException>(() =>
+                harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None));
+        }
+
+        Assert.Equal(priorManifest, await File.ReadAllTextAsync(Path.Combine(output, "manifest.json")));
+        Assert.Equal(priorIdentities, await File.ReadAllTextAsync(Path.Combine(output, "identities.yaml")));
+        Assert.Equal(priorConversations, await File.ReadAllTextAsync(Path.Combine(output, "conversations.yaml")));
+        Assert.Equal(priorPartitions, Directory
+            .EnumerateFiles(timelineFolder, "*.jsonl", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .ToList());
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(output, "chats", "groups"))
+            .Where(d => Path.GetFileName(d).StartsWith("wearchive-export-staging-", StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// Reports synchronously so a test can cancel the token exactly when the exporter
+    /// reports progress, rather than through the async <see cref="Progress{T}"/> post.
+    /// </summary>
+    private sealed class CancelOnFirstReport<T>(CancellationTokenSource cts) : IProgress<T>
+    {
+        public void Report(T value) => cts.Cancel();
+    }
+
     private static Dictionary<string, string> Snapshot(string root)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);

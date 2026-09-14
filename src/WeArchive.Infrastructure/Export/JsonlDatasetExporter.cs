@@ -19,11 +19,28 @@ namespace WeArchive.Infrastructure.Export;
 /// Harness reference. Re-exporting a conversation rewrites its own partitions, which
 /// makes duplicate logical records structurally impossible.
 /// </para>
+/// <para>
+/// A re-export is crash-safe: each conversation's timeline is written to a sibling
+/// staging directory, and the root catalogs and manifest are written to sibling temp
+/// files. Nothing in the previously-exported package is deleted until every replacement
+/// file is durable, so a cancellation, I/O failure or process termination leaves the
+/// last good dataset intact rather than a half-written one. docs/EXPORT_PRD.md section
+/// 3.2 and section 15.
+/// </para>
 /// </summary>
 public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
 {
     public const string ExportSchemaVersion = "1.0";
     public const string MessageSchemaVersion = "1.0";
+
+    // Conversation timelines stage under a sibling directory whose name starts with this
+    // prefix so it can never collide with a stable conversation id (g_.../u_...) and so
+    // leftover staging directories from a crashed run can be swept at the start of the
+    // next export.
+    private const string ConversationStagingPrefix = "wearchive-export-staging-";
+
+    // Root catalogs and the manifest stage under a sibling temp file with this suffix.
+    private const string RootFileStagingSuffix = ".wearchive-export-staging";
 
     private static readonly JsonWriterOptions WriterOptions = new()
     {
@@ -68,6 +85,7 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
 
         Directory.CreateDirectory(root);
         Directory.CreateDirectory(Path.Combine(root, "chats"));
+        RemoveStaleStaging(root);
 
         // Identity resolution is centralized here. Only the participants referenced by the
         // exported conversations are published, so the catalog stays small enough for a
@@ -87,120 +105,158 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
 
         var ledger = new Dictionary<string, IdentityEntry>(StringComparer.Ordinal);
 
-        foreach (var conversationId in request.ConversationIds)
+        // Everything is staged first and committed only once every timeline, catalog and
+        // the manifest are durable. On any failure the staging artifacts are discarded and
+        // the previously-exported package is left untouched.
+        var stagedConversations = new List<(string Staging, string Final)>();
+        var stagedRootFiles = new List<(string Temp, string Final)>();
+
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var conversation = await _archive.GetConversationAsync(conversationId, cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw new InvalidOperationException(
-                    $"Conversation '{conversationId}' is not present in the archive. Import it before exporting.");
-
-            var messages = await _archive.ReadMessagesAsync(conversationId, cancellationToken)
-                .ConfigureAwait(false);
-
-            var relativeFolder = BuildConversationFolder(conversation);
-            conversationPaths.Add(relativeFolder);
-
-            var absoluteFolder = Path.Combine(root, relativeFolder.Replace('/', Path.DirectorySeparatorChar));
-            if (Directory.Exists(absoluteFolder))
+            foreach (var conversationId in request.ConversationIds)
             {
-                // Guarantees no stale or duplicated partitions survive a re-export.
-                Directory.Delete(absoluteFolder, recursive: true);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var conversation = await _archive.GetConversationAsync(conversationId, cancellationToken)
+                    .ConfigureAwait(false)
+                    ?? throw new InvalidOperationException(
+                        $"Conversation '{conversationId}' is not present in the archive. Import it before exporting.");
+
+                var messages = await _archive.ReadMessagesAsync(conversationId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var relativeFolder = BuildConversationFolder(conversation);
+                conversationPaths.Add(relativeFolder);
+
+                var finalFolder = Path.Combine(root, relativeFolder.Replace('/', Path.DirectorySeparatorChar));
+                var stagingFolder = CreateStagingFolder(finalFolder);
+                stagedConversations.Add((stagingFolder, finalFolder));
+
+                var written = WriteTimeline(stagingFolder, relativeFolder, conversation.Id, messages, files, manifestFiles, cancellationToken);
+                recordCount += written.Records;
+                unknownCount += written.Unknown;
+                partialCount += written.Partial;
+                first = Min(first, written.First);
+                last = Max(last, written.Last);
+
+                manifestConversations.Add(new ManifestConversation
+                {
+                    ConversationId = conversation.Id,
+                    Type = conversation.Kind.ToWireName(),
+                    CurrentName = conversation.Title,
+                    RecordCount = written.Records,
+                    FirstMessageAt = written.First is null ? null : FormatTimestamp(written.First.Value),
+                    LastMessageAt = written.Last is null ? null : FormatTimestamp(written.Last.Value),
+                });
+
+                RecordReferencedSenders(conversation, messages, ledger, participantById);
+
+                progress?.Report(new ExportProgress
+                {
+                    Stage = "writing_timeline",
+                    Processed = recordCount,
+                    Total = recordCount,
+                    ConversationId = conversationId,
+                });
             }
 
-            Directory.CreateDirectory(absoluteFolder);
-
-            var written = WriteTimeline(absoluteFolder, relativeFolder, conversation.Id, messages, files, manifestFiles, cancellationToken);
-            recordCount += written.Records;
-            unknownCount += written.Unknown;
-            partialCount += written.Partial;
-            first = Min(first, written.First);
-            last = Max(last, written.Last);
-
-            manifestConversations.Add(new ManifestConversation
+            await WriteIdentitiesAsync(root, ledger, stagedRootFiles, cancellationToken).ConfigureAwait(false);
+            files.Add(new ExportedFile
             {
-                ConversationId = conversation.Id,
-                Type = conversation.Kind.ToWireName(),
-                CurrentName = conversation.Title,
-                RecordCount = written.Records,
-                FirstMessageAt = written.First is null ? null : FormatTimestamp(written.First.Value),
-                LastMessageAt = written.Last is null ? null : FormatTimestamp(written.Last.Value),
+                RelativePath = "identities.yaml",
+                Kind = "identities",
+                RecordCount = ledger.Count,
+            });
+            manifestFiles.Add(new ManifestFile
+            {
+                Path = "identities.yaml",
+                Kind = "identities",
+                RecordCount = ledger.Count,
             });
 
-            RecordReferencedSenders(conversation, messages, ledger, participantById);
-
-            progress?.Report(new ExportProgress
+            await WriteConversationsAsync(root, manifestConversations, stagedRootFiles, cancellationToken).ConfigureAwait(false);
+            files.Add(new ExportedFile
             {
-                Stage = "writing_timeline",
-                Processed = recordCount,
-                Total = recordCount,
-                ConversationId = conversationId,
+                RelativePath = "conversations.yaml",
+                Kind = "conversations",
+                RecordCount = manifestConversations.Count,
             });
+            manifestFiles.Add(new ManifestFile
+            {
+                Path = "conversations.yaml",
+                Kind = "conversations",
+                RecordCount = manifestConversations.Count,
+            });
+
+            WriteCollections(root, stagedRootFiles);
+            files.Add(new ExportedFile { RelativePath = "collections.yaml", Kind = "collections" });
+            manifestFiles.Add(new ManifestFile { Path = "collections.yaml", Kind = "collections" });
+
+            var manifest = new ExportManifest
+            {
+                ExportSchemaVersion = ExportSchemaVersion,
+                MessageSchemaVersion = MessageSchemaVersion,
+                ExporterVersion = ExporterVersion,
+                CreatedAt = FormatTimestamp(createdAt),
+                SourceAccountId = request.AccountId,
+                SourceAdapter = account?.AdapterName,
+                SourceVersion = account?.SourceVersion,
+                ConversationIds = [.. request.ConversationIds],
+                TimeRange = new ManifestTimeRange
+                {
+                    FirstMessageAt = first is null ? null : FormatTimestamp(first.Value),
+                    LastMessageAt = last is null ? null : FormatTimestamp(last.Value),
+                },
+                RecordCount = recordCount,
+                UnknownCount = unknownCount,
+                PartialCount = partialCount,
+                UnsupportedCount = unknownCount,
+                Files = manifestFiles,
+                Conversations = manifestConversations,
+                Diagnostics = [.. request.Diagnostics.Select(ToManifestDiagnostic)],
+            };
+
+            var manifestPath = Path.Combine(root, "manifest.json");
+            var manifestTemp = manifestPath + RootFileStagingSuffix;
+            await File.WriteAllTextAsync(
+                manifestTemp,
+                JsonSerializer.Serialize(manifest, ManifestOptions),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                cancellationToken).ConfigureAwait(false);
+            stagedRootFiles.Add((manifestTemp, manifestPath));
+
+            // Everything is durable. Commit: swap the staged conversation directories in,
+            // then rename the staged root files over their originals. The manifest is
+            // renamed last so a consumer that loads it never sees references to files that
+            // have not yet been swapped.
+            foreach (var (staging, final) in stagedConversations)
+            {
+                CommitConversation(staging, final);
+            }
+
+            foreach (var (temp, final) in stagedRootFiles)
+            {
+                File.Move(temp, final, overwrite: true);
+            }
         }
-
-        await WriteIdentitiesAsync(root, ledger, cancellationToken).ConfigureAwait(false);
-        files.Add(new ExportedFile
+        catch (Exception)
         {
-            RelativePath = "identities.yaml",
-            Kind = "identities",
-            RecordCount = ledger.Count,
-        });
-        manifestFiles.Add(new ManifestFile
-        {
-            Path = "identities.yaml",
-            Kind = "identities",
-            RecordCount = ledger.Count,
-        });
-
-        await WriteConversationsAsync(root, manifestConversations, cancellationToken).ConfigureAwait(false);
-        files.Add(new ExportedFile
-        {
-            RelativePath = "conversations.yaml",
-            Kind = "conversations",
-            RecordCount = manifestConversations.Count,
-        });
-        manifestFiles.Add(new ManifestFile
-        {
-            Path = "conversations.yaml",
-            Kind = "conversations",
-            RecordCount = manifestConversations.Count,
-        });
-
-        WriteCollections(root);
-        files.Add(new ExportedFile { RelativePath = "collections.yaml", Kind = "collections" });
-        manifestFiles.Add(new ManifestFile { Path = "collections.yaml", Kind = "collections" });
-
-        var manifest = new ExportManifest
-        {
-            ExportSchemaVersion = ExportSchemaVersion,
-            MessageSchemaVersion = MessageSchemaVersion,
-            ExporterVersion = ExporterVersion,
-            CreatedAt = FormatTimestamp(createdAt),
-            SourceAccountId = request.AccountId,
-            SourceAdapter = account?.AdapterName,
-            SourceVersion = account?.SourceVersion,
-            ConversationIds = [.. request.ConversationIds],
-            TimeRange = new ManifestTimeRange
+            // Discard every staging artifact. The previously-exported package was never
+            // touched (its conversation directories are only deleted inside
+            // CommitConversation, which runs last, and its root files are only overwritten
+            // by the moves above).
+            foreach (var (staging, _) in stagedConversations)
             {
-                FirstMessageAt = first is null ? null : FormatTimestamp(first.Value),
-                LastMessageAt = last is null ? null : FormatTimestamp(last.Value),
-            },
-            RecordCount = recordCount,
-            UnknownCount = unknownCount,
-            PartialCount = partialCount,
-            UnsupportedCount = unknownCount,
-            Files = manifestFiles,
-            Conversations = manifestConversations,
-            Diagnostics = [.. request.Diagnostics.Select(ToManifestDiagnostic)],
-        };
+                TryDeleteDirectory(staging);
+            }
 
-        var manifestPath = Path.Combine(root, "manifest.json");
-        await File.WriteAllTextAsync(
-            manifestPath,
-            JsonSerializer.Serialize(manifest, ManifestOptions),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-            cancellationToken).ConfigureAwait(false);
+            foreach (var (temp, _) in stagedRootFiles)
+            {
+                TryDeleteFile(temp);
+            }
+
+            throw;
+        }
 
         return new ExportResult
         {
@@ -430,11 +486,13 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
     private async Task WriteIdentitiesAsync(
         string root,
         Dictionary<string, IdentityEntry> ledger,
+        List<(string Temp, string Final)> staged,
         CancellationToken cancellationToken)
     {
-        var path = Path.Combine(root, "identities.yaml");
-        var existing = File.Exists(path)
-            ? YamlCatalogs.Deserialize<IdentityDocument>(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false))
+        var final = Path.Combine(root, "identities.yaml");
+        var temp = final + RootFileStagingSuffix;
+        var existing = File.Exists(final)
+            ? YamlCatalogs.Deserialize<IdentityDocument>(await File.ReadAllTextAsync(final, cancellationToken).ConfigureAwait(false))
             : null;
 
         foreach (var (id, entry) in ledger)
@@ -466,20 +524,23 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
         }
 
         await File.WriteAllTextAsync(
-            path,
+            temp,
             YamlCatalogs.Serialize(document),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken).ConfigureAwait(false);
+        staged.Add((temp, final));
     }
 
     private static async Task WriteConversationsAsync(
         string root,
         IReadOnlyList<ManifestConversation> conversations,
+        List<(string Temp, string Final)> staged,
         CancellationToken cancellationToken)
     {
-        var path = Path.Combine(root, "conversations.yaml");
-        var existing = File.Exists(path)
-            ? YamlCatalogs.Deserialize<ConversationDocument>(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false))
+        var final = Path.Combine(root, "conversations.yaml");
+        var temp = final + RootFileStagingSuffix;
+        var existing = File.Exists(final)
+            ? YamlCatalogs.Deserialize<ConversationDocument>(await File.ReadAllTextAsync(final, cancellationToken).ConfigureAwait(false))
             : null;
 
         var document = new ConversationDocument();
@@ -503,25 +564,122 @@ public sealed class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExport
         }
 
         await File.WriteAllTextAsync(
-            path,
+            temp,
             YamlCatalogs.Serialize(document),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken).ConfigureAwait(false);
+        staged.Add((temp, final));
     }
 
-    private static void WriteCollections(string root)
+    private static void WriteCollections(string root, List<(string Temp, string Final)> staged)
     {
-        var path = Path.Combine(root, "collections.yaml");
-        if (File.Exists(path))
+        var final = Path.Combine(root, "collections.yaml");
+        // collections.yaml is user-maintained; an export must never discard it.
+        if (File.Exists(final))
         {
-            // collections.yaml is user-maintained; an export must never discard it.
             return;
         }
 
+        var temp = final + RootFileStagingSuffix;
         File.WriteAllText(
-            path,
+            temp,
             YamlCatalogs.Serialize(new CollectionDocument()),
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        staged.Add((temp, final));
+    }
+
+    /// <summary>
+    /// Creates a sibling staging directory for one conversation's timeline. It is on the
+    /// same volume as the final directory so <see cref="CommitConversation"/> can swap it
+    /// in with a rename rather than a cross-volume copy.
+    /// </summary>
+    private static string CreateStagingFolder(string finalFolder)
+    {
+        var parent = Path.GetDirectoryName(finalFolder)!;
+        var staging = Path.Combine(parent, ConversationStagingPrefix + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(staging);
+        return staging;
+    }
+
+    /// <summary>
+    /// Swaps a staged conversation directory into its final path. The previous directory is
+    /// only deleted after the staged replacement is fully written, so a failed or cancelled
+    /// export never leaves the conversation without a complete dataset.
+    /// </summary>
+    private static void CommitConversation(string staging, string final)
+    {
+        if (Directory.Exists(final))
+        {
+            // Guarantees no stale or duplicated partitions survive a re-export, but only
+            // once the replacement is durable.
+            Directory.Delete(final, recursive: true);
+        }
+
+        Directory.Move(staging, final);
+    }
+
+    /// <summary>
+    /// Sweeps leftover staging directories from a previously crashed export so they cannot
+    /// accumulate. Only the immediate children of the two conversation buckets are scanned,
+    /// so this is bounded by the number of conversations, not the whole export tree.
+    /// </summary>
+    private static void RemoveStaleStaging(string root)
+    {
+        foreach (var bucket in new[]
+        {
+            Path.Combine(root, "chats", "direct"),
+            Path.Combine(root, "chats", "groups"),
+        })
+        {
+            if (!Directory.Exists(bucket))
+            {
+                continue;
+            }
+
+            foreach (var dir in Directory.EnumerateDirectories(bucket))
+            {
+                if (Path.GetFileName(dir).StartsWith(ConversationStagingPrefix, StringComparison.Ordinal))
+                {
+                    TryDeleteDirectory(dir);
+                }
+            }
+        }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup; a leftover staging directory does not corrupt the export
+            // and is swept on the next run.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static ManifestDiagnostic ToManifestDiagnostic(ImportDiagnostic diagnostic) => new()

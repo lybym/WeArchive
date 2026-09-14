@@ -80,6 +80,16 @@ public sealed class ArchiveWorkflow(
             progress,
             cancellationToken).ConfigureAwait(false);
 
+        // A non-completed import must not fall through to an empty dataset export. A
+        // missing or unreadable message shard, for example, surfaces a Fatal diagnostic
+        // and a Failed run here (FR-14).
+        if (outcome.Run.Status != ImportRunStatus.Completed)
+        {
+            var fatal = outcome.Diagnostics.LastOrDefault(d => d.Severity == DiagnosticSeverity.Fatal);
+            throw new InvalidOperationException(
+                fatal?.Message ?? $"Import did not complete (status: {outcome.Run.Status}).");
+        }
+
         diagnostics.AddRange(outcome.Diagnostics);
         diagnostics.AddRange(failures.Items);
 

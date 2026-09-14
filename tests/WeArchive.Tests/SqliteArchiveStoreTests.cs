@@ -296,6 +296,116 @@ public sealed class SqliteArchiveStoreTests
     }
 
     [Fact]
+    public async Task AChangedReplyTargetIsReResolvedToTheNewCanonicalTarget()
+    {
+        using var temp = new TempDirectory();
+        var store = await CreateStoreAsync(temp);
+        await SeedAsync(store);
+
+        var firstTarget = StableIds.Message("g_1", "s:1");
+        var secondTarget = StableIds.Message("g_1", "s:3");
+
+        // s:2 quotes s:1, which is archived, so the relationship resolves to s:1.
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:1", "下午三点开会。"),
+            Message("s:2", "我同意这个方案。",
+                reply: new ReplyReference { SourceMessageId = "s:1", SenderId = "u_bob", Text = "下午三点开会。" },
+                orderKey: "9"),
+        ], CancellationToken.None);
+        await store.ResolveReplyTargetsAsync("g_1", CancellationToken.None);
+
+        var reply = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
+        Assert.Equal(firstTarget, reply.ReplyTo!.MessageId);
+
+        // Upstream edits s:2 to quote a different archived record, s:3.
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:3", "另一个讨论。"),
+            Message("s:2", "我同意这个方案。",
+                reply: new ReplyReference { SourceMessageId = "s:3", SenderId = "u_bob", Text = "另一个讨论。" },
+                orderKey: "9"),
+        ], CancellationToken.None);
+        await store.ResolveReplyTargetsAsync("g_1", CancellationToken.None);
+
+        // The resolved target must follow the new upstream id, not retain the stale s:1
+        // target that was resolved on the previous run.
+        reply = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
+        Assert.Equal(secondTarget, reply.ReplyTo!.MessageId);
+        Assert.Equal("另一个讨论。", reply.ReplyTo.Text);
+    }
+
+    [Fact]
+    public async Task AReplyTargetThatBecomesUnresolvableClearsTheStaleResolvedTarget()
+    {
+        using var temp = new TempDirectory();
+        var store = await CreateStoreAsync(temp);
+        await SeedAsync(store);
+
+        // s:2 quotes s:1 (archived) and resolves to a canonical target.
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:1", "下午三点开会。"),
+            Message("s:2", "我同意这个方案。",
+                reply: new ReplyReference { SourceMessageId = "s:1", SenderId = "u_bob", Text = "下午三点开会。" },
+                orderKey: "9"),
+        ], CancellationToken.None);
+        await store.ResolveReplyTargetsAsync("g_1", CancellationToken.None);
+
+        var before = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
+        Assert.NotNull(before.ReplyTo!.MessageId);
+
+        // Upstream edits s:2 to quote a record that is not in the archive. The previously
+        // resolved target must be cleared rather than retained (retaining it would
+        // fabricate an incorrect relationship). docs/DATA_MODEL.md section 8.7.
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:2", "我同意这个方案。",
+                reply: new ReplyReference { SourceMessageId = "s:999", SenderId = "u_bob", Text = "已删除的消息。" },
+                orderKey: "9"),
+        ], CancellationToken.None);
+        await store.ResolveReplyTargetsAsync("g_1", CancellationToken.None);
+
+        var after = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
+        Assert.Null(after.ReplyTo!.MessageId);
+        Assert.Equal("已删除的消息。", after.ReplyTo.Text);
+    }
+
+    [Fact]
+    public async Task ConversationFirstAndLastAreAggregatedByEpochNotOffsetBearingText()
+    {
+        using var temp = new TempDirectory();
+        var store = await CreateStoreAsync(temp);
+        await SeedAsync(store);
+
+        // Three instants whose offset-bearing ISO-8601 text does not sort chronologically:
+        //   A 2026-01-15T02:00:00+00:00  -> 02:00 UTC  (earliest)
+        //   B 2026-01-15T01:00:00-05:00  -> 06:00 UTC  (latest)
+        //   C 2026-01-15T03:00:00+00:00  -> 03:00 UTC
+        // MIN/MAX over the text would wrongly pick B (first) and C (last). The archive
+        // must aggregate by the epoch column and retain the corresponding rendered time.
+        var a = new DateTimeOffset(2026, 1, 15, 2, 0, 0, TimeSpan.Zero);
+        var b = new DateTimeOffset(2026, 1, 15, 1, 0, 0, TimeSpan.FromHours(-5));
+        var c = new DateTimeOffset(2026, 1, 15, 3, 0, 0, TimeSpan.Zero);
+
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:a", "a", at: a),
+            Message("s:b", "b", at: b),
+            Message("s:c", "c", at: c),
+        ], CancellationToken.None);
+
+        var conversation = await store.GetConversationAsync("g_1", CancellationToken.None);
+        Assert.NotNull(conversation);
+        Assert.Equal(a, conversation!.FirstMessageAt);
+        Assert.Equal(b, conversation.LastMessageAt);
+
+        var stats = await store.GetConversationStatsAsync("g_1", CancellationToken.None);
+        Assert.Equal(a, stats.FirstMessageAt);
+        Assert.Equal(b, stats.LastMessageAt);
+    }
+
+    [Fact]
     public async Task ImportRunsAreAudited()
     {
         using var temp = new TempDirectory();

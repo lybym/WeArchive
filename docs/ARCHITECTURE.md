@@ -413,7 +413,10 @@ Examples:
 - archive schema unavailable;
 - unsupported migration state;
 - source profile cannot be initialized;
-- WeChat keys cannot be recovered (`key_acquisition_failed`).
+- WeChat keys cannot be recovered (`key_acquisition_failed`);
+- the imported conversation's message shard is missing or unreadable, so no records can be
+  archived and the import fails rather than completing as an empty dataset
+  (`partition_missing`, `partition_unreadable`).
 
 ### Partial
 
@@ -423,7 +426,8 @@ Diagnostic severity `Partial`.
 
 Examples:
 
-- one source partition unavailable or unreadable (`partition_missing`, `partition_unreadable`);
+- within a multi-partition conversation, one source partition unavailable or unreadable
+  while the others are still read (`partition_missing`, `partition_unreadable`);
 - one message type is unknown (`unknown_message_type`);
 - a reply target cannot be resolved (`unresolved_reply_target`, `reply_snapshot_only`);
 - app-share metadata lacks a confirmed original URL (`link_wrapper_url_only`, `link_metadata_missing`);
