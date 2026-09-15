@@ -33,4 +33,14 @@
     <ProjectReference Include="..\WeArchive.Infrastructure\WeArchive.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!--
+    The view models are exercised directly by the test project so that conversation-list error
+    observation can be verified without a running WeChat client or a WPF dispatcher.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>WeArchive.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

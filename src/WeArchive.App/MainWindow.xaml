@@ -78,6 +78,7 @@
                     <Grid Height="320">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
@@ -97,7 +98,11 @@
                             </TextBlock>
                         </StackPanel>
 
-                        <ListBox Grid.Row="1" ItemsSource="{Binding Conversations}"
+                        <TextBlock Grid.Row="1" Text="{Binding ConversationStatus}" TextWrapping="Wrap"
+                                   Foreground="#FFB42318" Margin="0,0,0,8"
+                                   Visibility="{Binding HasConversationStatus, Converter={StaticResource BoolToVisibility}}" />
+
+                        <ListBox Grid.Row="2" ItemsSource="{Binding Conversations}"
                                  SelectedItem="{Binding SelectedConversation, Mode=TwoWay}"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                  VirtualizingPanel.IsVirtualizing="True">

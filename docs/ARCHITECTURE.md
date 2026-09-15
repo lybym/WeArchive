@@ -60,7 +60,7 @@ WeArchive.Infrastructure
 WeArchive.Core
 ```
 
-`tests/WeArchive.Tests` references `Core` and `Infrastructure`.
+`tests/WeArchive.Tests` references `Core`, `Infrastructure` and `WeArchive.App` (the view models are tested directly, without a WPF dispatcher or a running WeChat client).
 
 ### 3.1 Presentation — `src/WeArchive.App`
 
@@ -71,6 +71,7 @@ Responsibilities:
 - render the environment/status panel, account selection, conversation list, conversation preview, export progress and diagnostics;
 - collect user intent (conversation, output directory) and forward it to application services;
 - display progress counters, cancellation and the result summary;
+- observe recoverable source failures itself: a conversation-list load that fails for an expected reason (for example the WeChat client is not running, so the local archive key cannot be recovered from its memory — already reported by source discovery as `source_not_running`) is shown in the conversation panel as a status, never allowed to escape the fire-and-forget load as an unobserved task exception that writes a crash log;
 - never contain source-format logic and never touch WeChat data directly.
 
 The single screen of the MVP is `MainWindow.xaml` with `MainViewModel`. The observable state (busy/cancel, progress stage and counters, result summary, diagnostics, update status) lives in the view model; the view is declarative.

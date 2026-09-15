@@ -36,6 +36,12 @@ public sealed class MainViewModel : ObservableObject
     private readonly List<ConversationItemViewModel> _allConversations = [];
     private SourceDescriptor? _descriptor;
 
+    // The conversation-list load is fire-and-forget from the SelectedAccount setter. It
+    // observes its own exceptions (see LoadConversationsAsync) and stores the task here so
+    // tests can await it deterministically; it never throws to a discarded-task handler.
+    private Task? _conversationLoadTask;
+    private string _conversationStatus = string.Empty;
+
     private string _sourceStatus = "正在检测…";
     private string _dataSourceStatus = string.Empty;
     private string _archiveStatus = string.Empty;
@@ -132,7 +138,7 @@ public sealed class MainViewModel : ObservableObject
             if (SetProperty(ref _selectedAccount, value))
             {
                 OnPropertyChanged(nameof(AccountLabel));
-                _ = LoadConversationsAsync();
+                _conversationLoadTask = LoadConversationsAsync();
             }
         }
     }
@@ -187,6 +193,36 @@ public sealed class MainViewModel : ObservableObject
         get => _conversationDetail;
         private set => SetProperty(ref _conversationDetail, value);
     }
+
+    /// <summary>
+    /// Status line for the conversation list. Populated only when listing conversations fails
+    /// for a recoverable reason (for example the WeChat client is not running, so the local
+    /// archive key cannot be recovered from its memory); empty on success so the list is the
+    /// only thing shown. A recoverable list failure is surfaced here rather than being allowed
+    /// to escape the fire-and-forget load as an unobserved task exception that writes a crash
+    /// log. docs/ARCHITECTURE.md sections 3.1 and 11.
+    /// </summary>
+    public string ConversationStatus
+    {
+        get => _conversationStatus;
+        private set
+        {
+            if (SetProperty(ref _conversationStatus, value))
+            {
+                OnPropertyChanged(nameof(HasConversationStatus));
+            }
+        }
+    }
+
+    /// <summary>True when a conversation-list status message should be shown.</summary>
+    public bool HasConversationStatus => _conversationStatus.Length > 0;
+
+    /// <summary>
+    /// The most recently started conversation-list load. Completed (not faulted) once the
+    /// list or the failure status has settled, because <see cref="LoadConversationsAsync"/>
+    /// observes its own exceptions. Exposed for deterministic tests.
+    /// </summary>
+    internal Task? ConversationLoadTask => _conversationLoadTask;
 
     public string ExportDirectory
     {
@@ -329,6 +365,7 @@ public sealed class MainViewModel : ObservableObject
     {
         _allConversations.Clear();
         Conversations.Clear();
+        ConversationStatus = string.Empty;
 
         if (SelectedAccount is null)
         {
@@ -337,17 +374,31 @@ public sealed class MainViewModel : ObservableObject
         }
 
         var account = SelectedAccount;
-        var conversations = await Task.Run(
-            () => _catalog.ListConversationsAsync(account.SourceProfileId, CancellationToken.None),
-            CancellationToken.None).ConfigureAwait(true);
-
-        foreach (var conversation in conversations)
+        try
         {
-            _allConversations.Add(new ConversationItemViewModel(conversation));
-        }
+            var conversations = await Task.Run(
+                () => _catalog.ListConversationsAsync(account.SourceProfileId, CancellationToken.None),
+                CancellationToken.None).ConfigureAwait(true);
 
-        _settings.Save(_settings.Load() with { SourceProfileId = account.SourceProfileId });
-        ApplyFilter();
+            foreach (var conversation in conversations)
+            {
+                _allConversations.Add(new ConversationItemViewModel(conversation));
+            }
+
+            _settings.Save(_settings.Load() with { SourceProfileId = account.SourceProfileId });
+            ApplyFilter();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Listing conversations can fail for an expected, recoverable reason: most often
+            // the WeChat client is not running, so the local archive key cannot be recovered
+            // from its memory (a normal missing precondition already reported by source
+            // discovery as `source_not_running`). Such a failure is surfaced here as a
+            // conversation-list status and must never escape this discarded task as an
+            // unobserved exception that writes a crash log. docs/ARCHITECTURE.md §11.
+            ConversationStatus = $"无法加载会话列表：{ex.Message}";
+            ApplyFilter();
+        }
     }
 
     private async Task LoadConversationDetailAsync()

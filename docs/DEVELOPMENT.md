@@ -156,6 +156,16 @@ SqliteArchiveStoreTests  upsert idempotency, timeline ordering, reply resolution
 SourceCoverageTests      source-coverage failure -> failing run, and no partial archive publication
 ```
 
+### Presentation tests
+
+For the WPF view models, with a fake source adapter and a real (temp) archive store. No WPF
+dispatcher or running WeChat client is required, because the view model is plain MVVM state and
+observes its own fire-and-forget exceptions:
+
+```text
+MainViewModelTests       conversation-list failure -> observed status, never an unobserved exception
+```
+
 ### Adapter compatibility tests
 
 For source-specific behavior:
