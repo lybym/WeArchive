@@ -31,7 +31,9 @@ Layout and dependency direction are normative in `docs/ARCHITECTURE.md` and `doc
 - Do not invent product requirements from existing code.
 - Do not change architecture implicitly through implementation.
 - Every feature must map to a PRD requirement and Roadmap milestone.
-- Every non-trivial implementation should map to a GitHub Issue with explicit acceptance criteria.
+- **Every non-trivial PR must have a pre-existing GitHub Issue created before the PR is opened.** The Issue must define the goal/scope/acceptance criteria, and the PR must reference it with `Closes #N` or `Refs #N` as appropriate.
+- **Creating an Issue after a PR has already been opened does not satisfy the Issue-first rule.** If that happens, close the invalid PR, establish the Issue, then open a replacement PR referencing it.
+- The PR must stay within the predecessor Issue scope. Materially new product/reliability/architecture scope requires updating/approving the Issue or creating another Issue before implementation expands.
 - Source/client-specific behavior must remain behind the adapter boundary.
 - Normalizer output must follow `docs/MESSAGE_SCHEMA.md`.
 - Export behavior and physical dataset layout must follow `docs/EXPORT_PRD.md`.
@@ -98,19 +100,23 @@ Do not silently alter implementation direction to preserve provisional code. Eit
 
 ## Task workflow
 
-For each implementation task:
+For each non-trivial task:
 
 1. Identify PRD requirement(s).
 2. Identify Roadmap milestone.
-3. Identify the GitHub Issue and acceptance criteria.
-4. Check `EXPORT_PRD.md` / `MESSAGE_SCHEMA.md` when relevant.
-5. Check architecture/data-model implications.
-6. Identify the applicable Reliability Level when persistence/files/transactions are touched.
-7. Implement the smallest compliant change.
-8. Add/update tests, including failure-semantics tests where relevant.
-9. Update docs when behavior, CLI contract, reliability or architecture changes.
-10. Verify that diagnostics/provenance are not weakened.
-11. Verify the implementation did not silently add stronger recovery guarantees than required.
+3. **Create or select the GitHub Issue before opening a PR.** Confirm goal, scope and acceptance criteria.
+4. Create the branch / make changes only within that Issue scope.
+5. Check `EXPORT_PRD.md` / `MESSAGE_SCHEMA.md` when relevant.
+6. Check architecture/data-model implications.
+7. Identify the applicable Reliability Level when persistence/files/transactions are touched.
+8. Implement the smallest compliant change.
+9. Add/update tests, including failure-semantics tests where relevant.
+10. Update docs when behavior, CLI contract, reliability or architecture changes.
+11. Verify that diagnostics/provenance are not weakened.
+12. Verify the implementation did not silently add stronger recovery guarantees than required.
+13. Open the PR only after the predecessor Issue exists; reference it with `Closes #N` / `Refs #N`.
+
+If an agent discovers that a non-trivial PR has already been opened without a predecessor Issue, it must not paper over the violation by creating an Issue afterward and merely editing the PR body. Close that PR and replace it after the Issue exists.
 
 ## Current priority
 
