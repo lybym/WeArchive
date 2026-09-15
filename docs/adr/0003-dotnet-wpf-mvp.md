@@ -1,7 +1,11 @@
 # ADR 0003 — .NET 10 / C# 14 / WPF is the implementation stack
 
-Status: accepted
+Status: superseded by [ADR 0006](0006-cli-first-product-surface.md)
 Date: 2026-03-01
+
+> Historical note: ADR 0006 supersedes the WPF/presentation-surface decision. The C# 14 / .NET 10
+> runtime choice, Windows source-adapter constraint, Core/Infrastructure layering principles and
+> xUnit decision remain in force unless a later ADR changes them.
 
 ## Context
 
@@ -100,3 +104,4 @@ Costs:
 - `docs/adr/0002-archive-core-before-real-source-adapter.md`
 - `docs/adr/0004-distribution-velopack.md`
 - `docs/adr/0005-wechat-local-key-acquisition.md`
+- `docs/adr/0006-cli-first-product-surface.md`
