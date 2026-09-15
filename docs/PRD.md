@@ -4,19 +4,22 @@
 
 WeArchive is a local-first personal archive tool for organizing, preserving, searching and exporting the user's own WeChat desktop data.
 
-The product is designed around one core idea: **the archive is the product; collection is only an input stage**. The system should build a durable, normalized, queryable personal message archive that remains useful even when upstream client versions change.
+The product is designed around one core idea: **the archive is the product; collection is only an input stage**. The system builds a durable, normalized, queryable personal message archive that remains useful even when upstream client versions change.
 
-The shipped product form is a **Windows desktop (WPF) application** for WeChat for Windows 4.x. The Python CLI sketch was deleted; see [adr/0003-dotnet-wpf-mvp.md](adr/0003-dotnet-wpf-mvp.md). A command-line surface remains a long-term goal (section 9), not a current deliverable.
+The target product surface is a **Windows `gh`-style command-line application** for WeChat for Windows 4.x. It is designed to be called directly by humans, scripts, Harness workflows and AI agents. The CLI is an explicit command interface, not a conversational shell, TUI or embedded agent runtime. See [adr/0006-cli-first-product-surface.md](adr/0006-cli-first-product-surface.md).
 
-## 2. Target user
+The repository currently contains the historical WPF MVP while the CLI migration is implemented. That WPF surface is transitional and must not be expanded as a second first-class product surface.
 
-Initial target user:
+## 2. Target user and caller
+
+Initial users/callers:
 
 - A Windows user of WeChat for Windows 4.x.
-- Uses WeChat desktop regularly.
-- Wants to preserve and organize their own conversations over long periods.
-- Wants structured exports for LLM/Harness analysis, scripting, search, statistics or downstream automation.
-- Is willing to run a desktop application; is not required to write code or drive a command line.
+- Scripts and local automation that need deterministic access to the user's own archive.
+- Harness/LLM workflows and AI agents that need stable machine-readable commands and outputs.
+- Technical users who prefer concise commands over a desktop workflow.
+
+The product must not require an agent or AI provider. Humans and automation call the same underlying operations.
 
 ## 3. Product goals
 
@@ -44,11 +47,15 @@ Upstream message types shall be normalized into a stable semantic message contra
 
 Canonical message behavior is defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md).
 
-### G6. Long-term maintainability
+### G6. Agent- and script-friendly CLI
 
-Source-specific logic must be isolated behind adapters so that upstream client changes do not force a rewrite of the archive, search or export layers.
+All automation-relevant product operations shall have deterministic command syntax, stable exit semantics and a machine-readable JSON mode. Agents should call commands, not automate a GUI.
 
-### G7. Local-first privacy
+### G7. Long-term maintainability
+
+Source-specific logic must be isolated behind adapters so that upstream client changes do not force a rewrite of the archive, search, export or CLI layers.
+
+### G8. Local-first privacy
 
 Conversation content remains local by default. Any future external AI integration must be opt-in and separable from the core archive/export pipeline.
 
@@ -56,12 +63,15 @@ Conversation content remains local by default. Any future external AI integratio
 
 The following are explicitly out of scope for the first phases:
 
-- Sending messages or automating user interactions.
+- Sending messages or automating WeChat user interactions.
 - Remote account access.
 - Multi-user hosted service.
 - Cloud synchronization as a required dependency.
 - Social/CRM features.
-- A cross-platform or design-led desktop experience. The MVP desktop application exists (section 9), but it is a technical surface for verification and export, not a chat client.
+- A WPF/WinUI/Avalonia desktop GUI as a first-class product surface.
+- A full-screen TUI or interactive terminal menu.
+- A Claude Code-style conversational shell or embedded LLM/agent runtime.
+- MCP/server mode as part of the current CLI migration.
 - Human-oriented chat rendering as a core requirement.
 - Exporting or preserving binary image/audio/video/file payloads as part of the Phase 1 product.
 - OCR over images.
@@ -71,38 +81,46 @@ The following are explicitly out of scope for the first phases:
 
 ## 5. Primary user journeys
 
-### Journey A — First archive
+### Journey A — Diagnose and discover
 
-1. Install WeArchive (or extract the portable build).
-2. Launch it and review the environment panel: detected WeChat version, source availability and archive location.
-3. Select an available local account/source.
-4. Narrow the conversation list with search and the direct/group filter.
-5. Start an export for the selected conversation.
-6. Observe progress and warnings.
-7. Inspect the result summary and the exported folder.
+1. Start WeChat and sign in.
+2. Run `wearchive doctor` to inspect platform/source/archive readiness.
+3. Run `wearchive account list` when multiple local profiles exist.
+4. Run `wearchive conversation list` to obtain stable conversation identifiers and metadata.
+5. Automation uses the same commands with `--json --no-input`.
 
-Success condition: the user obtains a durable local archive without modifying source data.
+Success condition: the caller can determine readiness and address a conversation without GUI state.
 
-### Journey B — Incremental refresh
+### Journey B — First archive/export
 
-1. Export the same conversation again.
-2. Re-running the import over the same source range creates no duplicate logical records; existing rows are updated in place.
+1. Resolve a conversation ID or alias.
+2. Run `wearchive sync --conversation <id-or-alias>`.
+3. Run `wearchive export --conversation <id-or-alias>`.
+4. Observe progress/diagnostics on stderr or consume the final JSON result from stdout.
+5. Inspect or process the generated machine-readable dataset.
+
+Success condition: the caller obtains a durable local archive and deterministic export without modifying source data.
+
+### Journey C — Incremental refresh
+
+1. Run sync for the same conversation again.
+2. Re-running the import over the same source range creates no duplicate logical records.
 3. Archive integrity checks run.
-4. User receives a concise summary of records, unknown records and warnings.
+4. The command returns concise counters and diagnostics.
 
-Only-new-record incremental refresh requires per-source checkpoints (FR-10) and is not yet delivered; the current behaviour is a full, idempotent re-read.
+Only-new-record incremental refresh requires per-source checkpoints (FR-10) and is not yet delivered; the current importer performs a full, idempotent re-read.
 
-### Journey C — Search and retrieval
+### Journey D — Search and retrieval
 
 1. Search for a keyword, participant, group or date range.
 2. Retrieve matching normalized messages.
 3. Select relevant conversations/time ranges for downstream processing.
 
-Archive full-text search (FR-11 / M3) is not yet delivered. The MVP provides conversation search and a per-conversation preview of message count and available time range.
+Archive full-text search (FR-11 / M3) is not yet delivered. It must be exposed through CLI when implemented rather than through a separate GUI-only path.
 
-### Journey D — LLM / Harness analysis
+### Journey E — LLM / Harness analysis
 
-1. Select one or more direct/group conversations or a named collection.
+1. Resolve one or more direct/group conversations or a named collection.
 2. Export monthly JSONL timelines plus identity/conversation/collection catalogs.
 3. Point Harness/LLM workflows at stable conversation folders and date partitions.
 4. Resolve stable IDs through `identities.yaml`, `conversations.yaml` and `collections.yaml`.
@@ -111,17 +129,15 @@ Archive full-text search (FR-11 / M3) is not yet delivered. The MVP provides con
 
 ### FR-01 Source discovery
 
-The system shall expose available local source profiles through a common adapter interface.
+The system shall expose available local source profiles through a common adapter interface and CLI commands.
 
 ### FR-02 Diagnostics
 
-The system shall report platform support, configuration, archive availability and adapter readiness without changing source data.
-
-In the shipped application this is the environment panel, which is refreshed on demand and needs no separate command.
+The system shall report platform support, configuration, archive availability and adapter readiness without changing source data. `wearchive doctor` is the primary product command for this requirement.
 
 ### FR-03 Conversation discovery
 
-The system shall enumerate supported conversations with stable source identifiers and display metadata where available.
+The system shall enumerate supported conversations with stable source identifiers and display metadata where available. CLI enumeration must support machine-readable output.
 
 ### FR-04 Message ingestion
 
@@ -153,7 +169,7 @@ Every ingestion operation shall produce an import-run record containing start/en
 
 The system shall store per-source checkpoints to enable incremental refresh.
 
-The `source_checkpoints` table and its lifecycle rules are defined by [DATA_MODEL.md](DATA_MODEL.md) section 14, but the MVP importer does **not** yet read or advance checkpoints. This requirement is met at M1 completion, not by the current MVP slice.
+The `source_checkpoints` table and its lifecycle rules are defined by [DATA_MODEL.md](DATA_MODEL.md) section 14, but the current importer does **not** yet read or advance checkpoints. This requirement is met at M1 completion.
 
 ### FR-11 Search
 
@@ -173,19 +189,17 @@ Detailed behavior is defined by [EXPORT_PRD.md](EXPORT_PRD.md).
 
 Every archived message shall retain source account, conversation, source record ID, source type/subtype where available, source partition/shard if relevant and import run.
 
-### FR-14 Integrity reporting
+### FR-14 Integrity reporting and import publication
 
 The system shall surface partial-read, stale-source, unknown-type and parsing warnings instead of silently dropping uncertain data.
 
-A run that cannot read a source completely shall not publish a partial result: it records a Fatal diagnostic and leaves the archive exactly as it was before the run, so an incomplete source can never become usable archive data. Cancelling a run is not a coverage failure and keeps the records written so far; see section 9.1.
+A **Fatal source-coverage failure must roll back the entire conversation import transaction**. No records from that failed conversation run may become usable archive state. Cancellation is not automatically equivalent to a source-coverage failure; its exact publication behavior follows the documented import reliability level in `DEVELOPMENT.md` and the architecture transaction contract.
 
 ### FR-15 Link/app-share normalization
 
 When a message contains a link, third-party shared content or mini-program/card content, the system shall preserve all locally obtainable semantic metadata and expose the best locally obtainable original URL when available.
 
-A wrapper/tracking URL must not be mislabeled as a confirmed original URL.
-
-Missing link metadata must not cause the message itself to be dropped.
+A wrapper/tracking URL must not be mislabeled as a confirmed original URL. Missing link metadata must not cause the message itself to be dropped.
 
 ### FR-16 Identity mapping
 
@@ -208,31 +222,49 @@ The export shall include a conversation catalog and support user-maintainable al
 
 ### FR-18 Canonical message envelope
 
-Every normalized/exported timeline record shall conform to [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md) and expose the conceptual layers:
+Every normalized/exported timeline record shall conform to [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md) and expose:
 
 ```text
 common envelope + text + payload + reply_to + source
 ```
 
-The `text` field is the default LLM/search representation. Type-specific detail belongs in `payload`.
-
 ### FR-19 Reply/quote relationship
 
 Replies/quotes shall be represented structurally rather than flattened only into text.
-
-When the referenced archived message resolves, retain its canonical message ID. When only a local quote snapshot is available, retain the snapshot without inventing an ID.
 
 ### FR-20 Forwarded chat bundles
 
 Where locally parsable, merged/forwarded chat records shall preserve nested textual items, sender labels, times and normalized types.
 
-Nested identities shall be mapped to stable IDs only when resolution is sufficiently reliable.
-
 ### FR-21 Unknown messages
 
-Unsupported or unrecognized source records shall be exported/archived as `unknown` semantic events with source type/subtype metadata where available.
+Unsupported or unrecognized source records shall be exported/archived as `unknown` semantic events with source type/subtype metadata where available. Unknown records must be counted and never silently discarded.
 
-Unknown records must be counted in diagnostics and must never be silently discarded.
+### FR-22 CLI command contract
+
+The CLI is a first-class product API.
+
+Initial required command family:
+
+```text
+wearchive doctor
+wearchive account list
+wearchive conversation list
+wearchive conversation show <id-or-alias>
+wearchive sync --conversation <id-or-alias>
+wearchive export --conversation <id-or-alias>
+```
+
+Every automation-relevant command shall support:
+
+- default concise human-readable output;
+- `--json`: one final JSON document on stdout, with no ANSI decoration or explanatory prose;
+- progress/human diagnostics on stderr;
+- `--quiet`: suppress non-essential progress;
+- `--no-input`: never prompt; fail when required input is missing;
+- deterministic exit semantics: `0` success, `1` runtime/operation failure, `2` usage/configuration validation failure, `130` user cancellation/interrupt.
+
+Exact JSON schemas are versioned implementation contracts and must be covered by contract tests. A command may return exit `0` with Partial diagnostics only when the corresponding product requirement explicitly permits a valid partial result.
 
 ## 7. Non-functional requirements
 
@@ -250,11 +282,11 @@ Given the same source snapshot, export configuration and exporter version, norma
 
 ### NFR-04 Observability
 
-Long-running operations must emit structured progress, counters and warnings.
+Long-running operations must emit structured progress, counters and warnings. In CLI mode, progress must not corrupt machine-readable stdout.
 
 ### NFR-05 Testability
 
-Archive/export layers must be testable using fixtures without requiring a running WeChat client.
+Archive/export layers must be testable using fixtures without requiring a running WeChat client. CLI parsing, stdout/stderr separation, JSON schemas and exit codes must also be testable without GUI automation.
 
 ### NFR-06 Version isolation
 
@@ -266,7 +298,7 @@ Secrets, raw private datasets and generated personal archives must never be comm
 
 ### NFR-08 Recoverability
 
-Interrupted imports must be resumable or safely repeatable.
+Recoverability guarantees must be stated by operation and failure class, not described with unqualified words such as "safe", "durable" or "atomic". The normative reliability levels are defined in `docs/DEVELOPMENT.md`.
 
 ### NFR-09 Stable references
 
@@ -275,6 +307,10 @@ Mutable human names shall not determine physical export paths. Harness workflows
 ### NFR-10 No fabricated semantics
 
 The system must not invent unavailable identities, URLs, amounts, timestamps, filenames or message content merely to avoid null/unknown states.
+
+### NFR-11 Composability
+
+CLI commands must be pipeable and automation-safe. Machine-readable stdout must not contain progress bars, prompts or localization-dependent prose.
 
 ## 8. Normalized domain model
 
@@ -297,85 +333,88 @@ See [DATA_MODEL.md](DATA_MODEL.md).
 
 ## 9. Product surface
 
-### 9.1 Shipped surface — WPF desktop application
+### 9.1 Target surface — command CLI
 
-The MVP product surface is a single-window Windows desktop application. It provides, in order of the workflow:
+The primary product surface is a single executable with `gh`-style subcommands. It must remain thin over application services and must not contain source-format logic.
 
-- **Environment panel** — detected WeChat version, source availability (with the reason when unavailable), the resolved data source diagnostics, and the current archive path with conversation/message counters.
-- **Account selection** — the locally available source profiles, with the last used profile remembered across runs.
-- **Conversation list** — direct and group conversations with their display titles, a text search over title and upstream id, and an all/direct/group filter.
-- **Conversation preview** — for the selected conversation, its message count and its available time range, read cheaply without loading message bodies.
-- **Export** — a chosen output directory (remembered), single-conversation export, live progress with counters, and cancellation. Cancelling is safe: archive writes are idempotent by stable ID.
-- **Result summary** — record count, conversation id, unknown and partial counts, the exported time range, and a link that opens the exported conversation folder.
-- **Diagnostics list** — the structured diagnostics produced by the export, with their severity and message.
-- **Update check** — an on-demand check against the GitHub Releases feed that degrades to a normal message when the feed is absent or the machine is offline.
-
-The application must never contain source-format logic; it drives application services and renders their progress and diagnostics.
-
-### 9.2 Archived CLI surface — target
-
-A command-line surface is not promised by the current milestone and does not exist in this implementation. It remains a documented long-term target, to be delivered only when a milestone accepts it:
+Human example:
 
 ```text
 wearchive doctor
-wearchive sources
-wearchive conversations
-wearchive sync
-wearchive stats
-wearchive search <query>
-wearchive export --conversation <stable-id-or-alias>
-wearchive export --collection <collection-name>
+wearchive conversation list
+wearchive export --conversation g_01fd893a7b21c054
 ```
 
-Exact syntax may evolve, but product behavior must remain consistent with the docs.
+Agent/script example:
+
+```text
+wearchive doctor --json --no-input
+wearchive conversation list --json --no-input
+wearchive export --conversation g_01fd893a7b21c054 --json --no-input
+```
+
+The CLI is not a TUI and does not host an LLM.
+
+### 9.2 Transitional surface — historical WPF MVP
+
+The repository currently contains the WPF MVP described by superseded ADR 0003. It exists only until the CLI migration reaches the acceptance criteria tracked in GitHub Issues. New product features must target the CLI/application-service path rather than extend WPF-specific behavior.
 
 ## 10. Milestone acceptance criteria
 
-### M0 — Foundation (met)
+### M0 — Archive foundation (met)
 
-- Project builds and runs cleanly on Windows. (met: `dotnet build` and `dotnet test` on the .NET 10 SDK; the shipped surface is a WPF application rather than a CLI/configuration surface.)
-- Canonical domain/message models are defined and tested. (met)
-- SQLite archive schema and migrations exist. (met: migration 1 with a `schema_migrations` record)
-- A fixture/mock adapter can complete an end-to-end import. (met: `FixtureSourceAdapter`)
-- Canonical Phase 1 JSONL export works from fixture/archive data. (met: `JsonlDatasetExporter` reads the archive only)
-- Stable conversation paths, identity mappings and conversation catalog behavior are covered by tests. (met)
-- Unknown message fixtures remain present and counted. (met)
+- Canonical domain/message models are defined and tested.
+- SQLite archive schema and migrations exist.
+- A fixture/mock adapter can complete an end-to-end import.
+- Canonical Phase 1 JSONL export works from fixture/archive data.
+- Stable conversation paths, identity mappings and conversation catalog behavior are covered by tests.
+- Unknown message fixtures remain present and counted.
 
-### M1 — First real local source adapter (MVP slice met)
+The historical WPF shell was an implementation vehicle, not part of the enduring M0 contract.
+
+### M0.5 — CLI product-surface migration
+
+- `WeArchive.Cli` (or equivalent console entry point) is the primary executable.
+- Required FR-22 commands are implemented over existing application services.
+- Human and `--json` output modes have contract tests.
+- stdout/stderr separation and exit codes are tested.
+- `--no-input` never prompts.
+- Required sync/export behavior retains the existing archive/export semantics and reliability levels.
+- WPF-specific product code is removed after parity; the project does not carry two first-class presentation layers.
+- Portable self-contained `win-x64` release is produced and smoke-tested from GitHub Actions/Release artifacts.
+
+### M1 — First real local source adapter (MVP slice met; milestone incomplete)
 
 Met:
 
-- A supported account/source can be discovered for a locally signed-in WeChat 4.x installation, together with the client version. (met)
-- Conversations and text messages can be imported. (met)
-- Multiple source partitions are merged into one stable logical timeline. (met: message databases are merged and ordered by canonical time, upstream order key and stable id)
-- File/image/voice/video events are normalized without binary preservation. (met)
-- Link/app-share/mini-program records preserve obtainable semantic metadata and original URLs. (met; wrapper/tracking URLs are never mislabeled as original)
-- Reply relationships are preserved where locally resolvable. (met: the archive resolves the upstream reply target to a canonical message id)
-- Latest available remarks populate default identity display names according to the export PRD. (met)
-- Unsupported records produce explicit diagnostics. (met, with counted rollups by code and source type/subtype)
+- A supported account/source can be discovered for a locally signed-in WeChat 4.x installation, together with the client version.
+- Conversations and text messages can be imported.
+- Multiple source partitions are merged into one stable logical timeline.
+- File/image/voice/video events are normalized without binary preservation.
+- Link/app-share/mini-program records preserve obtainable semantic metadata and original URLs.
+- Reply relationships are preserved where locally resolvable.
+- Latest available remarks populate default identity display names.
+- Unsupported records produce explicit diagnostics.
 
 Not yet met:
 
-- Incremental refresh works for supported records. (not met: checkpoints are defined in the schema but the importer always reads the full conversation)
-- Missing partitions produce explicit, complete coverage reporting. (partially met: an unreadable or missing partition is diagnosed, but there is no full partition-coverage report)
+- Incremental refresh works for supported records.
+- Missing partitions produce explicit, complete coverage reporting.
 
-### M2 — Semantic completeness (partly delivered ahead of the milestone)
+### M2 — Semantic completeness
 
-- Forwarded bundles, system/revoke events and additional card/special-message types are normalized where feasible. (delivered early: `forward_bundle`, `system`, `revoke`, `location`, `contact_card`, `red_packet` and `transfer` are all normalized and tested)
-- Unsupported/partial records are represented and counted rather than silently dropped. (delivered early)
-- Conversation and identity metadata refresh safely without changing stable paths. (delivered early: re-export refreshes metadata and preserves user-maintained fields, and stable paths are unaffected)
-
-Remaining M2 work is depth rather than coverage: more reliable special-message semantics (for example red-packet recognition), better unknown-type diagnostics and reply-target resolution improvements.
+Remaining work is depth rather than coverage: more reliable special-message semantics, better unknown-type diagnostics and reply-target resolution improvements.
 
 ### M3 — Retrieval
 
 - Full-text search works.
 - Conversation/date/person filters work.
 - Archive statistics and timelines are available.
+- Retrieval is exposed through machine-readable CLI commands.
 
 ### M4 — Harness workflows
 
-- Harness workflows can reliably select conversations/collections and date partitions from canonical export files.
+- Harness workflows can reliably select conversations/collections and date partitions from canonical export files and/or CLI JSON results.
 - Core archive/export remains fully functional without any AI provider.
 - No separate LLM-derived/chunk dataset is required.
 
@@ -393,4 +432,4 @@ Before code implementing a new capability is merged, at least one of the followi
 - `ROADMAP.md`
 - an ADR under `docs/adr/`
 
-If code changes intended product behavior or schema semantics, update documentation in the same pull request.
+If code changes intended product behavior, CLI contract, schema semantics or reliability level, update documentation in the same pull request.
