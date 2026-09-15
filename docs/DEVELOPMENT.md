@@ -13,12 +13,49 @@ Architecture / Data Model / ADR
   ↓
 Roadmap milestone
   ↓
-Issue / task
+GitHub Issue
   ↓
-Code + tests
+Branch / implementation / documentation change
+  ↓
+Pull Request
+  ↓
+Review / merge
 ```
 
 Code is not the specification. When behavior changes, the documents that describe it change in the same pull request. When implementation and docs disagree, the discrepancy itself is a required task.
+
+### 1.1 Mandatory Issue-first rule
+
+Every **non-trivial Pull Request** must have a **pre-existing GitHub Issue** that was created before the PR is opened.
+
+This applies to implementation, refactoring, architecture, reliability, packaging, documentation/governance changes and other non-trivial repository changes.
+
+The Issue is the authorization and scope boundary; the PR is the implementation/review vehicle.
+
+Required sequence:
+
+```text
+Requirement / problem identified
+        ↓
+Create or select GitHub Issue
+        ↓
+Issue has goal, scope and acceptance criteria
+        ↓
+Create branch / make changes
+        ↓
+Open PR referencing the Issue
+```
+
+Rules:
+
+1. A non-trivial PR **must not be opened before its Issue exists**.
+2. Creating an Issue after a PR has already been opened does **not** retroactively satisfy this rule.
+3. If a PR was opened without a valid predecessor Issue, close the PR, establish the Issue, then open a replacement PR that references it.
+4. Every non-trivial PR body must contain an explicit Issue reference, normally `Closes #N` when the PR fully satisfies it or `Refs #N` when it is only part of the Issue.
+5. The PR scope must remain within the Issue scope. If review reveals materially new work, update/approve the Issue or create a new Issue before expanding implementation.
+6. Review findings that are ordinary corrections inside the accepted Issue scope do not require a new Issue. New product requirements, reliability levels or architectural scope do.
+
+Trivial exceptions are limited to changes with no meaningful reviewable scope, such as typo-only corrections or mechanical metadata fixes. When uncertain, create an Issue.
 
 ## 2. Definition of ready
 
@@ -28,7 +65,7 @@ A development task is ready only when:
 - architecture impact is understood;
 - persistent model changes are reflected in `docs/DATA_MODEL.md`;
 - the task belongs to a Roadmap milestone;
-- acceptance criteria are explicit;
+- a pre-existing GitHub Issue defines goal, scope and acceptance criteria;
 - reliability expectations are explicit when the task touches persistence, files, transactions, recovery or publication.
 
 ## 3. Stack and toolchain
@@ -62,18 +99,21 @@ xUnit **v2 on VSTest** remains the test platform. xUnit v3 with Microsoft.Testin
 
 ## 4. Pull request requirements
 
-Every non-trivial PR should answer:
+Every non-trivial PR must reference its pre-existing Issue and answer:
 
-1. Which PRD requirement/Roadmap item/Issue does this implement?
-2. Does it change architecture?
-3. Does it change persisted data/schema?
-4. Does it change CLI/user-visible behavior?
-5. What tests prove the acceptance criteria?
-6. What diagnostics/failure modes were added or changed?
-7. What Reliability Level applies to file/database/publication behavior?
-8. Which documents were updated, and do they describe the shipped behavior?
+1. Which GitHub Issue does this implement, and does the PR use `Closes #N` or `Refs #N` appropriately?
+2. Which PRD requirement/Roadmap item does it implement?
+3. Does it change architecture?
+4. Does it change persisted data/schema?
+5. Does it change CLI/user-visible behavior?
+6. What tests prove the acceptance criteria?
+7. What diagnostics/failure modes were added or changed?
+8. What Reliability Level applies to file/database/publication behavior?
+9. Which documents were updated, and do they describe the shipped behavior?
 
 If behavior changes, docs must change in the same PR.
+
+A reviewer should reject or request correction for a non-trivial PR with no valid predecessor Issue.
 
 ## 5. Architecture Decision Records
 
@@ -111,7 +151,7 @@ Current key records include:
 
 ## 6. Branching and change scope
 
-Prefer small, milestone-aligned changes.
+Prefer small, Issue-aligned, milestone-aligned changes. The predecessor Issue must exist before the PR is opened; preferably create the branch from the Issue scope as well.
 
 Examples:
 
@@ -391,6 +431,7 @@ Reliability: R0 / R1 / R2 / R3+
 
 A feature is complete only when:
 
+- its predecessor Issue existed before the PR was opened and the PR references it;
 - acceptance criteria pass;
 - tests cover behavior and documented failure semantics;
 - diagnostics are adequate;
