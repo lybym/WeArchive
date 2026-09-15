@@ -188,8 +188,9 @@ The CLI is a product API. Tests must cover at least:
 
 - command/option parsing;
 - `--json` emits exactly one JSON document to stdout;
+- `--json` emits exactly one JSON document on the help path (`--help --json`, bare `wearchive --json`) and on every failure path (usage error, runtime failure, cancellation), including a stable `error.code`;
 - JSON mode never emits progress/ANSI/localized prose to stdout;
-- progress and human diagnostics go to stderr;
+- progress and human diagnostics go to stderr, including help text printed for an invalid command;
 - `--quiet` suppresses non-essential progress;
 - `--no-input` never prompts;
 - documented exit codes (`0`, `1`, `2`, `130`);

@@ -112,6 +112,19 @@ stderr  progress, warnings and human diagnostics
 
 `--no-input` must never prompt. Missing information becomes a deterministic failure instead.
 
+With `--json`, stdout carries exactly one JSON document on every path, including paths that
+do not reach a command:
+
+- a successful command result rendered by the command itself;
+- the command surface itself (`--help --json`, and a bare `wearchive --json`) rendered as a
+  help document (`usage`, `commands`, `options`);
+- a failure (usage error, runtime failure, cancellation) rendered as an error document
+  (`error.code`, `error.message`), where `error.code` mirrors the exit-code family below.
+
+Human diagnostics — including help text printed because a command was missing or unknown —
+stay on stderr, and `--quiet` never suppresses a failure. The process exit code remains the
+authoritative outcome class.
+
 CLI JSON DTOs are presentation contracts. They may wrap Core domain results but must not expose unstable implementation internals such as raw WeChat table names or parser-specific types.
 
 ### 3.2 Application / orchestration — `src/WeArchive.Core/Services`

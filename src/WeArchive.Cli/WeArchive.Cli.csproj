@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WeArchive.Cli is the primary product surface: a gh-style command-line application.
+
+    It is a thin transport/presentation boundary over application services and must not
+    contain WeChat schema logic, archive semantics or export business rules.
+    docs/ARCHITECTURE.md section 3.1, docs/adr/0006-cli-first-product-surface.md.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>WeArchive.Cli</RootNamespace>
+    <!--
+      During M0.5 the historical WPF project (WeArchive.App) still produces an assembly
+      named WeArchive. The CLI uses WeArchive.Cli until the WPF surface is removed, at
+      which point a follow-up issue can rename this assembly to WeArchive.
+    -->
+    <AssemblyName>WeArchive.Cli</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WeArchive.Core\WeArchive.Core.csproj" />
+    <ProjectReference Include="..\WeArchive.Infrastructure\WeArchive.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
