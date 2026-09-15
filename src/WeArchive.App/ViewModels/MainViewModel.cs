@@ -40,6 +40,22 @@ public sealed class MainViewModel : ObservableObject
     // observes its own exceptions (see LoadConversationsAsync) and stores the task here so
     // tests can await it deterministically; it never throws to a discarded-task handler.
     private Task? _conversationLoadTask;
+
+    // A monotonically increasing generation stamped onto each conversation-list load when an
+    // account is selected. A load that completes after a newer selection must discard its
+    // result: otherwise a slow load for account A could publish A's conversations and
+    // persist A's profile id after the user selected B, so the UI would show A's list while
+    // export used B's SourceProfileId — reading/exporting the wrong conversation. Mirrors
+    // the ReferenceEquals staleness guard in LoadConversationDetailAsync.
+    private long _accountSelectionGeneration;
+
+    // Cancelled and replaced on each selection so a superseded load stops doing source work
+    // (the adapter cooperates via ThrowIfCancellationRequested) instead of running to
+    // completion only to be discarded. The generation check is the authoritative guard. The
+    // source is intentionally not disposed: a load keeps observing its token after the setter
+    // returns and not every token consumer can be tracked, so cleanup is left to the GC.
+    private CancellationTokenSource? _conversationLoadCts;
+
     private string _conversationStatus = string.Empty;
 
     private string _sourceStatus = "正在检测…";
@@ -138,7 +154,7 @@ public sealed class MainViewModel : ObservableObject
             if (SetProperty(ref _selectedAccount, value))
             {
                 OnPropertyChanged(nameof(AccountLabel));
-                _conversationLoadTask = LoadConversationsAsync();
+                _conversationLoadTask = StartConversationLoad();
             }
         }
     }
@@ -361,24 +377,52 @@ public sealed class MainViewModel : ObservableObject
             $"档案：{stats.ConversationCount} 个会话 / {stats.MessageCount} 条消息\n{stats.ArchivePath}");
     }
 
-    private async Task LoadConversationsAsync()
+    private Task StartConversationLoad()
     {
+        // Cancel any in-flight load for a previously selected account: it is now stale and its
+        // result must never be published or persisted. A fresh generation is stamped onto the
+        // new load so that even if the cancelled (or merely slow) previous load completes
+        // last, it is discarded. See LoadConversationsAsync for the guard.
+        if (_conversationLoadCts is { } previous)
+        {
+            previous.Cancel();
+        }
+
+        var cts = new CancellationTokenSource();
+        _conversationLoadCts = cts;
+        var generation = ++_accountSelectionGeneration;
+        return LoadConversationsAsync(generation, cts.Token);
+    }
+
+    private async Task LoadConversationsAsync(long generation, CancellationToken cancellationToken)
+    {
+        var account = SelectedAccount;
+
         _allConversations.Clear();
         Conversations.Clear();
         ConversationStatus = string.Empty;
 
-        if (SelectedAccount is null)
+        if (account is null)
         {
             ApplyFilter();
             return;
         }
 
-        var account = SelectedAccount;
         try
         {
             var conversations = await Task.Run(
-                () => _catalog.ListConversationsAsync(account.SourceProfileId, CancellationToken.None),
-                CancellationToken.None).ConfigureAwait(true);
+                () => _catalog.ListConversationsAsync(account.SourceProfileId, cancellationToken),
+                cancellationToken).ConfigureAwait(true);
+
+            // A slow load that completed after a newer account was selected must not publish or
+            // persist the stale account's conversations. Otherwise the UI would show the previous
+            // account's list while SelectedAccount had moved on, and exporting a displayed
+            // conversation would pair the new account's SourceProfileId with the old account's
+            // SourceConversationId. Mirrors the ReferenceEquals guard in LoadConversationDetailAsync.
+            if (generation != _accountSelectionGeneration)
+            {
+                return;
+            }
 
             foreach (var conversation in conversations)
             {
@@ -388,8 +432,21 @@ public sealed class MainViewModel : ObservableObject
             _settings.Save(_settings.Load() with { SourceProfileId = account.SourceProfileId });
             ApplyFilter();
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
         {
+            // A superseded list load is cancelled by the next account selection; this is expected
+            // and must never surface a status or escape this fire-and-forget task as an unobserved
+            // exception that writes a crash log. docs/ARCHITECTURE.md §11.
+        }
+        catch (Exception ex)
+        {
+            // Only surface a list failure if this load is still current; a stale failure must not
+            // overwrite a newer selection's (possibly successful) status.
+            if (generation != _accountSelectionGeneration)
+            {
+                return;
+            }
+
             // Listing conversations can fail for an expected, recoverable reason: most often
             // the WeChat client is not running, so the local archive key cannot be recovered
             // from its memory (a normal missing precondition already reported by source

@@ -164,6 +164,7 @@ observes its own fire-and-forget exceptions:
 
 ```text
 MainViewModelTests       conversation-list failure -> observed status, never an unobserved exception
+                         out-of-order account selection -> stale list load discarded, never published
 ```
 
 ### Adapter compatibility tests
