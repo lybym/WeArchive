@@ -1,0 +1,151 @@
+name: Release
+
+# Triggered by a version tag (v0.1.0) or manually with an explicit version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, for example 0.1.0'
+        required: true
+        type: string
+
+permissions:
+  # Required so vpk / gh can create the release and upload assets.
+  contents: write
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  release:
+    name: Build, package, publish release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $version = '${{ github.event.inputs.version }}'
+          if (-not $version) {
+            # Tag builds: strip the leading "v".
+            $version = '${{ github.ref_name }}'.TrimStart('v')
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+') {
+            throw "Invalid release version '$version'."
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing $version"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release -p:Version=${{ steps.version.outputs.value }}
+
+      # DoD: `dotnet test` must be green before a release is produced.
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+      - name: Publish win-x64 self-contained
+        run: >
+          dotnet publish src/WeArchive.App/WeArchive.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:Version=${{ steps.version.outputs.value }}
+          -o artifacts/publish/win-x64
+
+      - name: Build portable ZIP
+        shell: pwsh
+        run: ./scripts/pack-portable.ps1 -Version ${{ steps.version.outputs.value }} -SkipPublish
+
+      - name: Install Velopack CLI
+        shell: pwsh
+        run: |
+          $clientVersion = (Select-String -Path Directory.Packages.props `
+            -Pattern 'Include="Velopack"\s+Version="([^"]+)"').Matches.Groups[1].Value
+          if (-not $clientVersion) { throw 'Velopack package version not found.' }
+          dotnet tool install --global vpk --version $clientVersion
+          "Velopack CLI $clientVersion installed"
+
+      # Delta packages need the previous release; a first release has none, so failure here
+      # must not fail the job.
+      - name: Download previous Velopack release
+        continue-on-error: true
+        shell: pwsh
+        run: >
+          vpk download github
+          --repoUrl https://github.com/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --outputDir artifacts/velopack
+
+      - name: Pack Velopack release
+        shell: pwsh
+        run: ./scripts/pack-velopack.ps1 -Version ${{ steps.version.outputs.value }} -SkipPublish
+
+      - name: Add a friendlier installer name
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem artifacts/velopack -Filter '*-Setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Velopack did not produce a Setup.exe' }
+          Copy-Item $setup.FullName (Join-Path $setup.DirectoryName 'WeArchive-Setup.exe')
+          Get-ChildItem artifacts/velopack -File | Select-Object Name, Length
+
+      - name: Upload Velopack release assets and create the GitHub Release
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.value }}'
+          $vpkArgs = @(
+            'upload', 'github',
+            '--repoUrl', 'https://github.com/${{ github.repository }}',
+            '--token', '${{ secrets.GITHUB_TOKEN }}',
+            # Must match the --outputDir and --channel used by `vpk pack`, otherwise vpk
+            # looks for assets.win.json in the default 'Releases' directory and fails.
+            '--outputDir', 'artifacts/velopack',
+            '--channel', 'win',
+            '--publish',
+            '--releaseName', "WeArchive $version",
+            '--tag', "v$version"
+          )
+          # A version carrying a SemVer prerelease suffix (for example 0.1.0-rc.1) is
+          # published as a GitHub pre-release, so it is clearly a test build and is never
+          # picked up as the stable release of record.
+          if ($version.Contains('-')) {
+            $vpkArgs += '--pre'
+            Write-Host 'Publishing as a pre-release.'
+          }
+          vpk @vpkArgs
+          if ($LASTEXITCODE -ne 0) { throw "vpk upload failed with exit code $LASTEXITCODE" }
+
+      - name: Attach the portable ZIP and the Setup.exe copy to the release
+        shell: pwsh
+        run: |
+          # vpk uploads the assets it tracks; the portable ZIP and the friendlier
+          # WeArchive-Setup.exe copy are attached separately.
+          gh release upload "v${{ steps.version.outputs.value }}" `
+            artifacts/WeArchive-win-x64.zip `
+            artifacts/velopack/WeArchive-Setup.exe `
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summarize release assets
+        shell: pwsh
+        run: |
+          gh release view "v${{ steps.version.outputs.value }}" --json assets `
+            --jq '.assets[] | "\(.name)  \(.size) bytes"' | Tee-Object -FilePath release-assets.txt
+          Get-Content release-assets.txt >> $env:GITHUB_STEP_SUMMARY
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

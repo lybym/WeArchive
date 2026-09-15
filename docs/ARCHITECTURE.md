@@ -10,7 +10,7 @@ Key constraints:
 - the normalized archive must remain stable across those changes;
 - source-specific behavior must not leak into search/export/business logic;
 - import runs must be observable, restartable and auditable;
-- Phase 1 is CLI-first, local-first and read-only toward the source;
+- the shipped product is a Windows desktop application: local-first and read-only toward the source;
 - Phase 1 does not preserve binary image/audio/video/file payloads;
 - exported chat data is a plain-text dataset for scripts, LLMs and Harness workflows.
 
@@ -20,8 +20,9 @@ Normative message semantics are defined in [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md
 
 ```mermaid
 flowchart LR
-    U[User / CLI]
-    C[Command Layer]
+    U[User]
+    W[WPF App / MVVM]
+    C[Application Services]
     O[Import Orchestrator]
     A[Source Adapter]
     N[Normalizer]
@@ -31,7 +32,8 @@ flowchart LR
     E[Machine Exporter]
     X[JSONL + YAML/JSON Catalogs]
 
-    U --> C
+    U --> W
+    W --> C
     C --> O
     O --> A
     A --> N
@@ -39,42 +41,84 @@ flowchart LR
     V --> S
     S --> Q
     S --> E
-    Q --> C
     E --> X
 ```
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
+`Search / Query` is a target component: the MVP archives and exports but does not index or query.
+
 ## 3. Layering
 
-### 3.1 Presentation / CLI
+The implementation is one .NET solution, `WeArchive.sln`, with four projects. Dependencies point in one direction only:
+
+```text
+WeArchive.App (WPF)
+    ↓
+WeArchive.Infrastructure
+    ↓
+WeArchive.Core
+```
+
+`tests/WeArchive.Tests` references `Core`, `Infrastructure` and `WeArchive.App` (the view models are tested directly, without a WPF dispatcher or a running WeChat client).
+
+### 3.1 Presentation — `src/WeArchive.App`
+
+WPF, MVVM, `net10.0-windows`, assembly name `WeArchive.exe`.
 
 Responsibilities:
 
-- parse user intent;
-- select source/account/conversations/time ranges;
-- display progress and diagnostics;
-- expose export-by-conversation/alias/collection workflows;
-- never contain source-format logic.
+- render the environment/status panel, account selection, conversation list, conversation preview, export progress and diagnostics;
+- collect user intent (conversation, output directory) and forward it to application services;
+- display progress counters, cancellation and the result summary;
+- observe recoverable source failures itself: a conversation-list load that fails for an expected reason (for example the WeChat client is not running, so the local archive key cannot be recovered from its memory — already reported by source discovery as `source_not_running`) is shown in the conversation panel as a status, never allowed to escape the fire-and-forget load as an unobserved task exception that writes a crash log;
+- discard a conversation-list load that is superseded by a later account selection: each selection stamps a monotonically increasing generation and cancels the previous load, so a slow load for account A that completes after the user selected B never publishes A's conversations or persists A's profile id — the UI never shows one account's list while an export uses another account's `SourceProfileId`;
+- never contain source-format logic and never touch WeChat data directly.
 
-### 3.2 Application / orchestration
+The single screen of the MVP is `MainWindow.xaml` with `MainViewModel`. The observable state (busy/cancel, progress stage and counters, result summary, diagnostics, update status) lives in the view model; the view is declarative.
+
+### 3.2 Application / orchestration — `src/WeArchive.Core/Services`
 
 Responsibilities:
 
 - coordinate source adapter, normalization, archive transaction and checkpoint update;
+- stage one conversation's records in a single archive transaction and publish them only once
+  the source was read to the end (section 3.2.1);
 - create import-run records;
 - enforce read-only source boundaries;
 - aggregate metrics and warnings;
 - invoke machine-oriented exports from normalized archive data only.
 
-Planned modules:
+Key services:
 
 ```text
-src/wearchive/importer/
-src/wearchive/services/
+SourceCatalogService   # describe source, list accounts, list conversations, describe one conversation
+ImportService          # adapter -> normalizer -> archive, with diagnostics
+ArchiveWorkflow        # user-facing export/import coordination and archive statistics
 ```
 
-### 3.3 Source adapter layer
+#### 3.2.1 Import publication
+
+One import stages exactly one conversation — its conversation row and every message batch —
+inside a single archive transaction (`IArchiveStore.BeginConversationImportAsync`). The
+transaction is committed when the source was read to the end, or when the user deliberately
+cancelled the run; a run that fails source coverage is rolled back instead.
+
+The rule exists because the archive is the system of record. Committing whatever a failed run
+happened to read before the failure would leave a partial conversation that cannot be told apart
+from a complete one. A rolled-back run therefore records zero inserted/updated/skipped records in
+`import_runs`; `records_scanned` still shows what it read, so the audit trail never claims
+archived records the archive does not hold.
+
+Cancellation is the deliberate exception, and the only one: the user stopped the run, archive
+writes are idempotent by stable ID, and the application tells the user the records written so far
+are kept (docs/PRD.md section 9.1).
+
+Account and participant rows are not part of this transaction. They are account-level identity
+metadata refreshed by every import rather than per-conversation coverage data, and they carry no
+message timeline that could be mistaken for a complete conversation.
+
+### 3.3 Source adapter layer — `src/WeArchive.Core/Abstractions`
 
 Responsibilities:
 
@@ -83,24 +127,72 @@ Responsibilities:
 - stream source messages/events;
 - expose source/client version and freshness metadata;
 - expose locally available semantic fields needed by the canonical schema;
-- translate source-specific failures into typed diagnostics.
+- translate source-specific failures into typed diagnostics;
+- cheaply describe one conversation so a UI can preview a selection.
 
-Interface sketch:
+The contract (`ISourceAdapter`, C#):
 
-```python
-class SourceAdapter(Protocol):
-    def describe_source(self) -> SourceDescriptor: ...
-    def list_conversations(self) -> Iterable[SourceConversation]: ...
-    def iter_messages(
-        self,
-        conversation_id: str,
-        checkpoint: SourceCheckpoint | None = None,
-    ) -> Iterable[SourceMessage]: ...
+```csharp
+public interface ISourceAdapter
+{
+    string AdapterName { get; }
+
+    string AdapterVersion { get; }
+
+    Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+        string sourceProfileId,
+        CancellationToken cancellationToken);
+
+    IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+        string sourceProfileId,
+        string sourceConversationId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+        string sourceProfileId,
+        CancellationToken cancellationToken);
+
+    Task<SourceConversationDetail> DescribeConversationAsync(
+        string sourceProfileId,
+        string sourceConversationId,
+        CancellationToken cancellationToken);
+}
 ```
 
-This layer is the only place where upstream client/version assumptions may exist.
+`ReadMessagesAsync` is an async stream in ascending time order. A record the parser cannot interpret is still emitted with `SourceContentKind.Unknown`; it is never dropped. `DescribeConversationAsync` is the cheap path (record count, time range, participants) used for previews, and must not read message bodies.
 
-### 3.4 Normalization layer
+Implementations:
+
+- `WeArchive.Infrastructure/Fixtures/FixtureSourceAdapter` — synthetic fixture source used by the test suite.
+- `WeArchive.Infrastructure/WeChat/WeChatWindowsSourceAdapter` — the real WeChat 4.x adapter.
+
+This layer, together with the WeChat compatibility namespace below, is the only place where upstream client/version assumptions may exist.
+
+#### 3.3.1 WeChat compatibility boundary
+
+```text
+src/WeArchive.Infrastructure/WeChat/
+├─ Compatibility/     WeChat4Schema   (table names, column names, numeric type codes, conversation classification)
+├─ Parsers/           WeChatContentParser, WeChatXml  (wire payloads -> source-neutral content)
+├─ Crypto/            SqlCipherPageCipher  (SQLCipher 4 page format)
+├─ KeyAcquisition/    ProcessMemoryReader, WcdbCipherConfigKeyAcquirer, WeChatKeySet
+├─ WeChatClient.cs / WeChatDataLocator.cs / WeChatAccountReader.cs
+├─ WeChatContentDecoder.cs
+└─ SqlCipherDatabaseCache.cs
+```
+
+Rules:
+
+1. Every WeChat version-specific table name, column name and numeric type code lives in `Compatibility/WeChat4Schema`. A future client version adds a sibling type in this namespace rather than editing call sites.
+2. `Core` never learns a WeChat version number, a WeChat table name or a WeChat type code. If a WeChat fact must reach the domain, it arrives as an already-translated source-neutral value.
+3. Key acquisition and page cryptography never leave `KeyAcquisition/` and `Crypto/`; nothing outside them knows that the databases are encrypted.
+4. Decryption is materialized only into `%LOCALAPPDATA%\WeArchive\scratch` and is deleted when the adapter is disposed.
+
+### 3.4 Normalization layer — `src/WeArchive.Core/Normalization`
 
 Responsibilities:
 
@@ -111,14 +203,9 @@ Responsibilities:
 - build `text`, `payload`, `reply_to` and `source` according to `MESSAGE_SCHEMA.md`;
 - preserve unknown records instead of silently dropping them.
 
-Planned modules:
+`MessageNormalizer` derives the canonical message and its deterministic stable IDs; `SemanticText` produces the LLM/search-first `text` for every type.
 
-```text
-src/wearchive/domain/
-src/wearchive/normalize/
-```
-
-### 3.5 Validation / diagnostics
+### 3.5 Validation / diagnostics — `src/WeArchive.Core/Domain/Diagnostics.cs`
 
 Responsibilities:
 
@@ -130,7 +217,9 @@ Responsibilities:
 - report partial link/app-share parsing;
 - produce machine-readable warnings rather than silently losing data.
 
-### 3.6 Archive persistence
+Severities are `Fatal`, `Partial` and `Info`. Diagnostics carry structured codes (for example `unknown_message_type`, `unresolved_reply_target`, `link_wrapper_url_only`, `key_acquisition_failed`, `wal_frames_rejected`) and are rolled up by `(code, source type, source subtype)` with a count, so a conversation with thousands of unparsed records yields one counted row rather than thousands. Diagnostics never carry chat content — only identifiers, upstream type codes and short engineering explanations.
+
+### 3.6 Archive persistence — `src/WeArchive.Infrastructure/Archive`
 
 SQLite is the system of record for normalized archive data.
 
@@ -138,6 +227,7 @@ Responsibilities:
 
 - migrations;
 - idempotent upserts;
+- single-transaction publication of one imported conversation (section 3.2.1);
 - checkpoints;
 - import-run audit trail;
 - canonical message semantics;
@@ -147,7 +237,9 @@ Responsibilities:
 
 Phase 1 archive storage is text/metadata oriented. Binary media copies are outside scope.
 
-### 3.7 Query and export
+The MVP ships migration 1 and records applied migrations in `schema_migrations`; the schema version is also mirrored into SQLite's `user_version`. `search indexes` is a target item — no FTS index exists yet.
+
+### 3.7 Query and export — `src/WeArchive.Infrastructure/Export`
 
 Search and exporters consume normalized archive models only, never upstream source files directly.
 
@@ -158,8 +250,8 @@ manifest.json
 identities.yaml
 conversations.yaml
 collections.yaml
-chats/direct/<stable-id>/<year>/<month>.jsonl
-chats/groups/<stable-id>/<year>/<month>.jsonl
+chats/direct/<stable-id>/<year>/<year>-<MM>.jsonl
+chats/groups/<stable-id>/<year>/<year>-<MM>.jsonl
 ```
 
 This guarantees that downstream LLM/Harness workflows remain stable when the upstream client format changes.
@@ -169,86 +261,107 @@ This guarantees that downstream LLM/Harness workflows remain stable when the ups
 ```mermaid
 sequenceDiagram
     actor User
-    participant CLI
-    participant Importer
+    participant App as WPF App
+    participant Workflow as ArchiveWorkflow
     participant Adapter
     participant Normalizer
     participant Archive
     participant Exporter
 
-    User->>CLI: wearchive sync
-    CLI->>Importer: start import
-    Importer->>Archive: create ImportRun
-    Importer->>Archive: load checkpoint
-    Importer->>Adapter: iterate records since checkpoint
+    User->>App: 选择会话并导出
+    App->>Workflow: ExportConversationAsync
+    Workflow->>Adapter: DescribeConversationAsync / ReadMessagesAsync
     loop each source record
-        Adapter-->>Importer: SourceMessage
-        Importer->>Normalizer: normalize
-        Normalizer-->>Importer: canonical Message + provenance
-        Importer->>Archive: idempotent upsert
+        Adapter-->>Workflow: SourceMessage
+        Workflow->>Normalizer: normalize
+        Normalizer-->>Workflow: canonical Message + provenance
+        Workflow->>Archive: idempotent upsert
     end
-    Importer->>Archive: validate and update checkpoint
-    Importer->>Archive: finish ImportRun
-    Importer-->>CLI: counters + warnings
-
-    User->>CLI: export selected conversations/collection
-    CLI->>Exporter: export from archive
+    Workflow->>Exporter: export from archive
     Exporter->>Archive: query normalized data
-    Exporter-->>CLI: JSONL + catalogs + manifest
+    Exporter-->>App: JSONL + catalogs + manifest
+    Workflow-->>App: counters + diagnostics
 ```
 
-## 5. Repository structure target
+The exporter reads the archive only; it never reopens the source.
+
+## 5. Repository structure
 
 ```text
-src/wearchive/
-├─ cli.py
-├─ config.py
-├─ domain/
-│  ├─ account.py
-│  ├─ conversation.py
-│  ├─ participant.py
-│  ├─ message.py
-│  └─ provenance.py
-├─ adapters/
-│  ├─ base.py
-│  └─ fixtures.py
-├─ normalize/
-├─ importer/
-├─ archive/
-│  ├─ db.py
-│  ├─ migrations/
-│  └─ repository.py
-├─ search/
-├─ export/
-│  ├─ dataset_exporter.py
-│  ├─ catalogs.py
-│  └─ manifest.py
-└─ diagnostics/
+WeArchive.sln
+src/
+├─ WeArchive.Core/                 (net10.0, no package or project references)
+│  ├─ Abstractions/                ISourceAdapter, IArchiveStore, IDatasetExporter
+│  ├─ Domain/                      CanonicalMessage, CanonicalMessageType, Conversation,
+│  │                               SourceRecords, SourceMessageContent, SourceProvenance,
+│  │                               ImportRun, Diagnostics, StableIds
+│  ├─ Export/                      ExportModels (request, manifest, result)
+│  ├─ Normalization/               MessageNormalizer, SemanticText
+│  └─ Services/                    SourceCatalogService, ImportService, ArchiveWorkflow
+├─ WeArchive.Infrastructure/       (net10.0-windows)
+│  ├─ Archive/                     ArchiveMigrations, SqliteArchiveStore
+│  ├─ Export/                      JsonlDatasetExporter, YamlCatalogs
+│  ├─ Fixtures/                    FixtureSourceAdapter
+│  ├─ Settings/                    SettingsStore
+│  ├─ WeChat/                      adapter, compatibility, parsers, crypto, key acquisition
+│  ├─ ServiceCollectionExtensions.cs
+│  └─ SystemClock.cs
+└─ WeArchive.App/                  (net10.0-windows, WinExe, WPF; assembly name WeArchive)
+   ├─ App.xaml / App.xaml.cs
+   ├─ MainWindow.xaml / MainWindow.xaml.cs
+   ├─ Services/                    FolderPicker, UpdateService
+   └─ ViewModels/                  MainViewModel, ConversationItemViewModel, ...
+tests/
+└─ WeArchive.Tests/                (net10.0-windows, xUnit v2 on VSTest)
 ```
+
+Build properties are centralized in `Directory.Build.props` (C# 14, nullable, warnings-as-errors, deterministic builds) and package versions in `Directory.Packages.props` (central package management).
 
 ## 6. Adapter contract
 
 Every adapter must provide:
 
-- `adapter_name`;
-- `adapter_version`;
-- `source_version`;
-- `source_profile_id`;
-- stable conversation IDs;
-- stable participant IDs where available;
-- stable message/source IDs where available;
-- source timestamps;
-- source partition references where applicable;
+- `AdapterName`;
+- `AdapterVersion`;
+- the upstream `SourceVersion` (and product name) through `SourceDescriptor`;
+- `SourceAccount.SourceProfileId` for each locally available profile;
+- stable conversation IDs (`SourceConversation.SourceConversationId`);
+- stable participant IDs where available (`SourceParticipant.SourceUserId`);
+- stable message/source IDs (`SourceMessage.SourceMessageId`), using the documented
+  composite strategy when upstream provides no single id;
+- source timestamps (`SourceMessage.OccurredAt`);
+- source partition references where applicable (`SourceMessage.SourcePartition`);
+- an upstream order key (`SourceMessage.SourceOrderKey`) so a merged timeline stays stable;
+- verbatim upstream type/subtype codes for provenance and diagnostics;
 - explicit completeness/freshness diagnostics;
 - locally obtainable semantic data for supported message types.
 
-An adapter must not:
+An adapter must be read-only towards the source. An adapter must not:
 
 - write exports directly;
 - bypass the archive model for convenience;
 - hide unsupported source records;
 - fabricate identities, URLs, amounts or message content;
 - require binary-media preservation for Phase 1 correctness.
+
+### 6.1 Upstream message identity
+
+An upstream record frequently has no single stable identifier. Adapters must therefore
+supply a documented composite identity strategy rather than falling back to a content hash,
+because repeated identical messages are valid data:
+
+```text
+server id present -> s:<server_id>
+otherwise         -> l:<partition>:<local_id>
+```
+
+If an adapter cannot provide either a native or documented composite message identity for
+a source record, it is a source-coverage failure: the import records a Fatal diagnostic and
+the workflow does not export a dataset. It must not skip the record or fabricate an identity,
+and it publishes nothing to the archive (section 3.2.1).
+
+The adapter hands this string to `StableIds.Message(conversationId, sourceMessageId)`. Reply
+references are addressed the same way so the archive can resolve them.
 
 ## 7. Canonical message boundary
 
@@ -279,10 +392,10 @@ stable user id (u_...)
     ├─ source user id
     ├─ latest remark
     ├─ nickname
-    └─ user-maintained display_name
+    └─ user-maintained display_name_override
 ```
 
-Default exported `display_name` uses the latest available remark. If no remark exists, it remains blank; nickname is metadata only.
+Default exported `display_name` uses the latest available remark. If no remark exists, it remains blank; nickname is metadata only. The user-maintained `display_name_override` wins over the generated default when it is non-empty.
 
 Conversation physical paths use stable IDs, never mutable names.
 
@@ -317,32 +430,53 @@ Rules:
 2. replay from an older checkpoint remains idempotent;
 3. adapter-version changes may explicitly invalidate checkpoints.
 
+Status: the `source_checkpoints` table and these rules exist in the schema, but the MVP importer neither reads nor advances checkpoints. Every import is a full, idempotent re-read of the selected conversation. Incremental refresh is M1 completion work.
+
 ## 11. Error model
 
 ### Fatal
 
 Import/export cannot safely continue.
 
+Diagnostic severity `Fatal`.
+
 Examples:
 
 - archive schema unavailable;
 - unsupported migration state;
-- source profile cannot be initialized.
+- source profile cannot be initialized;
+- WeChat keys cannot be recovered (`key_acquisition_failed`);
+- the imported conversation's message shard is missing or unreadable, so no records can be
+  archived and the import fails rather than completing as an empty dataset
+  (`partition_missing`, `partition_unreadable`);
+- a record the adapter could not give a native or documented composite identity
+  (`source_message_id_unavailable`).
+
+A Fatal source-coverage failure publishes nothing: the import transaction is rolled back, so the
+archive keeps the exact state it had before the run (section 3.2.1). A failed run must not leave
+records that a later reader could mistake for a complete conversation.
 
 ### Partial
 
 Operation can continue but completeness is uncertain.
 
+Diagnostic severity `Partial`.
+
 Examples:
 
-- one source partition unavailable;
-- one message type is unknown;
-- a reply target cannot be resolved;
-- app-share metadata lacks a confirmed original URL.
+- within a multi-partition conversation, one source partition unavailable or unreadable
+  while the others are still read (`partition_missing`, `partition_unreadable`);
+- one message type is unknown (`unknown_message_type`);
+- a reply target cannot be resolved (`unresolved_reply_target`, `reply_snapshot_only`);
+- app-share metadata lacks a confirmed original URL (`link_wrapper_url_only`, `link_metadata_missing`);
+- a filename or voice duration is unavailable;
+- a write-ahead-log frame failed verification (`wal_frames_rejected`).
 
 ### Informational
 
 No correctness impact.
+
+Diagnostic severity `Info`.
 
 Examples:
 
@@ -371,6 +505,32 @@ flowchart TB
 
 Core archive/export workflows do not require external network access.
 
+### Local source confidentiality
+
+WeChat's local databases are SQLCipher 4 encrypted (`AES-256-CBC` payloads with a
+`HMAC-SHA512` page authentication tag, 4096-byte pages, 80-byte reserve). Reading them
+requires a per-database key that only the running, signed-in client holds.
+
+Rules:
+
+1. The key is recovered **only** from the running client's own process memory, read-only
+   (`PROCESS_QUERY_INFORMATION | PROCESS_VM_READ`). No code injection, hooking, API
+   patching, debugger attachment or version-specific code offsets are used.
+2. Every candidate key is **cryptographically verified** against a real database's page-1
+   HMAC before use. A candidate that does not open a real database is discarded, so the
+   implementation fails closed rather than producing plausible-looking garbage.
+3. Source databases are opened read-only with `FileShare.ReadWrite`; nothing under the
+   WeChat data directory is written, renamed or deleted.
+4. Decrypted plaintext copies exist only transiently under
+   `%LOCALAPPDATA%\WeArchive\scratch\<random>` for the duration of a read, and are deleted
+   when the adapter is disposed. **No decrypted source data persists.**
+5. The key is never persisted, logged or exported, and there is no key file or
+   "remember my key" setting.
+6. Chat content is never logged. Diagnostics carry identifiers, upstream type codes and
+   short engineering explanations only.
+
+See [adr/0005-wechat-local-key-acquisition.md](adr/0005-wechat-local-key-acquisition.md).
+
 ## 13. Architecture decisions
 
 Major design changes must be recorded under `docs/adr/`.
@@ -382,7 +542,8 @@ Changes that require ADR consideration include:
 - adding binary-media persistence;
 - adding remote content crawling to canonical export;
 - adding a derived LLM/chunk layer;
-- changing the archive system of record.
+- changing the archive system of record;
+- changing how local WeChat data is accessed or decrypted.
 
 ## 14. Definition of architectural compliance
 
@@ -393,6 +554,9 @@ A code change is architecture-compliant when:
 3. normalizer output follows `MESSAGE_SCHEMA.md`;
 4. search/export consume normalized archive models only;
 5. mutable names never define stable identity or physical paths;
-6. new failure/unknown cases appear in diagnostics rather than disappearing;
-7. new persistent fields include migration/provenance implications;
-8. documentation is updated whenever behavior or architecture changes.
+6. no decrypted source data persists: plaintext exists only transiently under
+   `%LOCALAPPDATA%\WeArchive\scratch` and is removed when the adapter is disposed, and keys
+   are never persisted, logged or exported;
+7. new failure/unknown cases appear in diagnostics rather than disappearing;
+8. new persistent fields include migration/provenance implications;
+9. documentation is updated whenever behavior or architecture changes.

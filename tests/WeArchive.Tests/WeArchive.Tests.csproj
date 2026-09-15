@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>WeArchive.Tests</RootNamespace>
+    <AssemblyName>WeArchive.Tests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!--
+      xUnit.net v2 on the VSTest platform.
+
+      xUnit v3 (Microsoft.Testing.Platform) was evaluated first, but on the .NET 10 SDK its
+      MTP mode of `dotnet test` discovers zero tests for this project while the same assembly
+      runs all tests when launched directly. v2 on VSTest gives a reliable `dotnet test` both
+      locally and in CI, which is what the MVP requires.
+    -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WeArchive.Core\WeArchive.Core.csproj" />
+    <ProjectReference Include="..\..\src\WeArchive.Infrastructure\WeArchive.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\WeArchive.App\WeArchive.App.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

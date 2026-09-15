@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one CI run per ref; a newer push supersedes an in-flight build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  build-and-test:
+    name: Restore, build, test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Report SDK
+        run: dotnet --info
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      # The real-WeChat adapter tests skip automatically when no local WeChat client
+      # is present, so this step is green on a clean runner.
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+      - name: Publish self-contained win-x64
+        run: >
+          dotnet publish src/WeArchive.App/WeArchive.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -o artifacts/publish/win-x64
+
+      - name: Assert self-contained output
+        shell: pwsh
+        run: |
+          $exe = 'artifacts/publish/win-x64/WeArchive.exe'
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          # A self-contained publish ships the runtime next to the app.
+          if (-not (Test-Path 'artifacts/publish/win-x64/hostfxr.dll')) { throw 'not self-contained' }
+          Write-Host "WeArchive.exe produced: $((Get-Item $exe).Length) bytes"
+
+      - name: Build portable ZIP
+        shell: pwsh
+        run: ./scripts/pack-portable.ps1 -Version 0.0.0-ci
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: WeArchive-win-x64-ci
+          path: artifacts/WeArchive-win-x64.zip
+          if-no-files-found: error

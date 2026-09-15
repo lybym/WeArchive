@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WeArchive.Core is the long-lived domain layer.
+
+    It must not depend on WPF, on SQLite, on the file system or on any WeChat-specific
+    concept. Package and project references are therefore deliberately empty.
+    See docs/ARCHITECTURE.md section 3 and docs/adr/0003-dotnet-wpf-mvp.md.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>WeArchive.Core</RootNamespace>
+    <AssemblyName>WeArchive.Core</AssemblyName>
+  </PropertyGroup>
+
+</Project>

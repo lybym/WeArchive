@@ -24,9 +24,9 @@ Every exported message uses the same envelope:
 
 ```json
 {
-  "id": "m_01JXYZ...",
-  "conversation_id": "g_01fd893a",
-  "sender_id": "u_7a19d382",
+  "id": "m_01f3c7a95e2b48d1",
+  "conversation_id": "g_01fd893a7b21c054",
+  "sender_id": "u_7a19d3824b6c0f91",
   "time": "2026-09-13T14:32:17+08:00",
   "type": "text",
   "text": "这个方案我下午再确认一下。",
@@ -36,10 +36,14 @@ Every exported message uses the same envelope:
     "source_message_id": "...",
     "source_type": "...",
     "source_subtype": "...",
-    "source_partition": "..."
+    "source_partition": "...",
+    "source_order_key": "..."
   }
 }
 ```
+
+Stable IDs use a 16-hex-character prefix, not the 8 characters shown in earlier revisions of
+these documents; see [DATA_MODEL.md](DATA_MODEL.md) section 16.1.
 
 The three semantic layers are:
 
@@ -63,6 +67,14 @@ The schema must not mirror upstream WeChat XML/database structures directly.
 - `time`: canonical message/event timestamp in ISO 8601 with timezone.
 - `type`: normalized semantic message type.
 - `text`: compact semantic representation suitable for search and LLM consumption.
+
+Every line also carries `sender_id`, `reply_to`, `payload` and `source` as keys, written as
+`null` when the value is genuinely absent. A consumer therefore never has to distinguish a
+missing key from a known-empty value.
+
+`is_partial` is an archive-level flag: a partially parsed record is still exported with its
+best available semantics and is counted through `manifest.json`'s `partial_count` rather than
+carrying a per-line marker.
 
 ### 3.2 Sender
 
@@ -122,6 +134,17 @@ unknown
 
 Unknown upstream types must map to `unknown`; they must never be silently discarded.
 
+The mapping from upstream WeChat evidence (numeric type codes, app-message XML and other wire
+payloads) onto these canonical types is an implementation concern, not a requirement of this
+document: it lives in `src/WeArchive.Infrastructure/WeChat/Parsers` with the upstream numeric
+codes isolated in `src/WeArchive.Infrastructure/WeChat/Compatibility`. This document defines the
+canonical side of that mapping only, and no downstream consumer may depend on the upstream codes.
+
+One consequence is worth stating as product behaviour rather than as a parser detail: a record
+is only normalized to `red_packet`, `transfer`, `location` or `contact_card` when the local
+record carries the semantics that identify it. Otherwise the record lands in `app_share` or
+`unknown` instead of being guessed into a more specific type.
+
 ---
 
 ## 5. Text message
@@ -161,6 +184,11 @@ Rules:
 2. `reply_to.text` preserves the locally available quote snapshot when present.
 3. If the original cannot be resolved, `message_id` remains null while the available quoted sender/text may still be retained.
 4. The system must not fabricate a target message ID.
+
+Resolution timing: `message_id` is null at normalization time. The archive fills it in when the
+referenced record is present, on insert and through a backfill pass for records imported later.
+The upstream identifier used for that resolution is retained inside the archive and is never
+exported, so an unresolved reply exports as `message_id: null` plus whatever snapshot exists.
 
 This supports both conversation graph analysis and semantic fallback when historical source data is incomplete.
 
@@ -361,7 +389,10 @@ Rules:
 - nested sender identity may be unresolved;
 - `sender_name` should be retained as presented in the forwarded record;
 - add `sender_id` only when identity resolution is sufficiently reliable;
-- nested unsupported item types must not cause the whole bundle to be dropped.
+- nested unsupported item types must not cause the whole bundle to be dropped;
+- `items[].time` may legitimately be null: WeChat 4.x does not always persist a per-item
+  timestamp, and a missing time must stay null rather than being replaced by the bundle's own
+  time or by an inferred value.
 
 ---
 
@@ -576,4 +607,8 @@ Phase 1 message normalization is complete when:
 7. media events remain textual and do not require binary export;
 8. forwarded bundles preserve available nested textual content;
 9. unknown records are retained and counted;
-10. no parser invents unavailable identities, URLs, amounts or content.
+10. no parser invents unavailable identities, URLs, amounts or content;
+11. a partially parsed record is still exported with its available semantics and is counted through `partial_count`.
+
+All of these criteria are met by the shipped normalizer for the types listed in section 4, as
+covered by the normalizer and parser tests.
