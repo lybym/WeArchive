@@ -15,14 +15,15 @@ Before making any non-trivial code change, read the following documents in order
 
 ## Stack
 
-The implementation is a Windows desktop application, not a script collection:
+The target product is a Windows command-line application for humans, scripts and agents:
 
-- **C# 14** on **.NET 10 LTS** (`net10.0` for `WeArchive.Core`; `net10.0-windows` for `WeArchive.Infrastructure`, `WeArchive.App` and `tests/WeArchive.Tests`), `win-x64`, self-contained.
-- **WPF** (MVVM) is the only presentation technology.
-- **xUnit v2 on the VSTest platform** is the test runner. xUnit v3 / Microsoft.Testing.Platform was evaluated and rejected: on the .NET 10 SDK its `dotnet test` mode discovered zero tests.
-- Dependencies are centrally pinned in `Directory.Packages.props`; `WeArchive.Core` has no package and no project references at all.
+- **C# 14** on **.NET 10 LTS** (`net10.0` for `WeArchive.Core`; `net10.0-windows` for Windows infrastructure, CLI and tests), `win-x64`, self-contained.
+- **`gh`-style command CLI** is the primary product surface. Do not build a full-screen TUI, conversational shell, embedded LLM or second GUI surface unless docs/ADR explicitly authorize it.
+- The historical WPF project may exist only during migration; it is not a second first-class product surface.
+- **xUnit v2 on VSTest** is the test runner.
+- Dependencies are centrally pinned; `WeArchive.Core` must remain free of presentation and source-specific implementation concerns.
 
-Layout and dependency direction are normative in `docs/ARCHITECTURE.md` and `docs/adr/0003-dotnet-wpf-mvp.md`.
+Layout and dependency direction are normative in `docs/ARCHITECTURE.md` and `docs/adr/0006-cli-first-product-surface.md`.
 
 ## Mandatory rules
 
@@ -30,50 +31,104 @@ Layout and dependency direction are normative in `docs/ARCHITECTURE.md` and `doc
 - Do not invent product requirements from existing code.
 - Do not change architecture implicitly through implementation.
 - Every feature must map to a PRD requirement and Roadmap milestone.
+- Every non-trivial implementation should map to a GitHub Issue with explicit acceptance criteria.
 - Source/client-specific behavior must remain behind the adapter boundary.
 - Normalizer output must follow `docs/MESSAGE_SCHEMA.md`.
 - Export behavior and physical dataset layout must follow `docs/EXPORT_PRD.md`.
 - Export, search and archive layers must depend on normalized domain models, not source-specific structures.
+- CLI commands must be thin adapters over application services; command parsing/output must not duplicate archive/import/export business rules.
+- In `--json` mode, stdout is a machine contract: exactly one final JSON document, with no progress bars, ANSI decoration, prompts or localized explanatory prose.
+- Progress/human diagnostics belong on stderr. `--no-input` must never prompt.
 - Stable IDs, not mutable names, determine canonical identity and physical export paths.
 - Unknown or unsupported source records must be preserved as explicit `unknown`/diagnostic states; do not silently drop them.
-- Do not fabricate unavailable identities, URLs, amounts, filenames or message content merely to avoid null/unknown states.
-- Phase 1 does not require binary image/audio/video/file preservation, OCR, ASR or an LLM-specific derived/chunk dataset.
-- Persistent schema changes require an update to `docs/DATA_MODEL.md`, a migration and tests.
-- Canonical message-schema changes require an update to `docs/MESSAGE_SCHEMA.md` and schema-version consideration.
+- Do not fabricate unavailable identities, URLs, amounts, filenames, timestamps or message content merely to avoid null/unknown states.
+- Phase 1 does not require binary media preservation, OCR, ASR or an LLM-specific derived/chunk dataset.
+- Persistent schema changes require `docs/DATA_MODEL.md`, a migration and tests.
+- Canonical message-schema changes require `docs/MESSAGE_SCHEMA.md` and schema-version consideration.
 - Product/architecture changes require documentation changes in the same PR.
 - New major architectural choices require an ADR.
 - Preserve the local-first and read-only-source principles unless documentation explicitly changes them.
 - Do not commit real personal chat data, real archives, exports, secrets or machine-private datasets.
-- WeChat key acquisition, SQLCipher decryption and the WeChat schema/parser compatibility code must stay inside `src/WeArchive.Infrastructure/WeChat` (`Compatibility`, `Schema`, `Parsers`, `Crypto`, `KeyAcquisition`). Nothing outside that boundary may know that WeChat is encrypted, which databases exist, or which upstream type codes mean what.
-- No decrypted WeChat data may be left on disk. Plaintext scratch copies live only under `%LOCALAPPDATA%\WeArchive\scratch` for the duration of a read and are deleted when the adapter is disposed. Keys are never persisted, logged or exported.
+- WeChat key acquisition, SQLCipher decryption and compatibility/parsing code must stay inside `src/WeArchive.Infrastructure/WeChat`.
+- No database key may be persisted, logged or exported. Decrypted source material must remain transient according to the source-adapter contract.
+
+## Reliability: mandatory hard-stop rule
+
+**This is a hard stop, not a suggestion.**
+
+When fixing a review finding would require introducing any of the following:
+
+- a new persistent journal;
+- a commit marker or recovery marker;
+- a new transaction protocol outside the already documented SQLite transaction boundary;
+- persistent rollback/recovery state;
+- distributed or multi-process coordination;
+- a cross-file/package commit protocol;
+- a complex persistent state machine whose purpose is crash/restart recovery;
+
+**STOP CODING FIRST.**
+
+Before implementing that mechanism, verify that the reliability property it is trying to satisfy is explicitly required by the current `PRD`, specialized PRD, GitHub Issue acceptance criteria or Roadmap milestone.
+
+If there is no explicit requirement:
+
+1. do **not** silently upgrade the implementation's reliability level;
+2. do **not** treat a reviewer phrase such as “safe”, “atomic”, “durable” or “recoverable” as authorization for a stronger protocol;
+3. report the mismatch and identify the currently documented Reliability Level in `docs/DEVELOPMENT.md`;
+4. ask for / propose a requirement or Issue change before implementing R3+ recovery machinery.
+
+The goal is to prevent review-driven reliability scope creep from turning a bounded feature into an undocumented journal/transaction/state-machine project.
+
+### Current reliability anchors
+
+- **Phase 1 Export = R1**: normal success publishes complete new output; caught cancellation/I/O failures attempt in-process restoration where possible; process crash and OS/power loss are not guaranteed recovery classes. SQLite is the system of record and export can be regenerated.
+- **Conversation Import = R2**: a Fatal source-coverage failure must roll back the entire conversation transaction. Do not publish a partial conversation that can be mistaken for a complete one.
+- **R3+** crash-recovery protocols require explicit product authorization.
+
+Read `docs/DEVELOPMENT.md` section “Reliability Levels” before changing file/database publication behavior.
 
 ## When docs and code disagree
 
-During early development, treat the current docs as authoritative.
+Treat current docs as authoritative.
 
-Do not silently alter implementation direction to preserve old provisional code. Either:
+Do not silently alter implementation direction to preserve provisional code. Either:
 
 1. align code to docs, or
-2. propose and document a deliberate change to the docs/ADR before implementing it.
+2. propose/document a deliberate change to docs/ADR/Issue before implementing it.
 
 ## Task workflow
 
 For each implementation task:
 
-1. Identify the PRD requirement(s).
-2. Identify the Roadmap milestone.
-3. Check `EXPORT_PRD.md` / `MESSAGE_SCHEMA.md` when relevant.
-4. Check architecture/data-model implications.
-5. Define acceptance criteria.
-6. Implement the smallest compliant change.
-7. Add/update tests.
-8. Update docs when behavior or architecture changes.
-9. Verify that diagnostics/provenance are not weakened.
+1. Identify PRD requirement(s).
+2. Identify Roadmap milestone.
+3. Identify the GitHub Issue and acceptance criteria.
+4. Check `EXPORT_PRD.md` / `MESSAGE_SCHEMA.md` when relevant.
+5. Check architecture/data-model implications.
+6. Identify the applicable Reliability Level when persistence/files/transactions are touched.
+7. Implement the smallest compliant change.
+8. Add/update tests, including failure-semantics tests where relevant.
+9. Update docs when behavior, CLI contract, reliability or architecture changes.
+10. Verify that diagnostics/provenance are not weakened.
+11. Verify the implementation did not silently add stronger recovery guarantees than required.
 
 ## Current priority
 
-Current priority: **M0 is implemented, and the MVP slice of M1 is implemented.** The next work is the rest of M1 (incremental checkpoints, full partition-coverage reporting) and then M2.
+Current priority is **M0.5 — CLI product-surface migration**.
 
-The foundation this milestone was gated on now exists and must not be weakened: the generic adapter contract, the canonical message schema, normalized models, archive persistence, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic JSONL exports.
+Required initial command family:
 
-Because the implementation shipped ahead of its documentation, **docs under `docs/`, `README.md` and this file must be corrected in the same change as any further behavior change** — a feature is not done until the documents that describe it agree with what the program does.
+```text
+wearchive doctor
+wearchive account list
+wearchive conversation list
+wearchive conversation show <id-or-alias>
+wearchive sync --conversation <id-or-alias>
+wearchive export --conversation <id-or-alias>
+```
+
+Do not add TUI/chat/embedded-agent/MCP scope to this migration.
+
+After M0.5, finish M1 incremental checkpoints and full partition-coverage reporting, then continue M2/M3/M4.
+
+The foundation must not be weakened: generic adapter contract, canonical message schema, normalized models, SQLite archive, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic JSONL export.
