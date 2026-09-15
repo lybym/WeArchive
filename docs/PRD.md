@@ -8,7 +8,7 @@ The product is designed around one core idea: **the archive is the product; coll
 
 The target product surface is a **Windows `gh`-style command-line application** for WeChat for Windows 4.x. It is designed to be called directly by humans, scripts, Harness workflows and AI agents. The CLI is an explicit command interface, not a conversational shell, TUI or embedded agent runtime. See [adr/0006-cli-first-product-surface.md](adr/0006-cli-first-product-surface.md).
 
-The repository currently contains the historical WPF MVP while the CLI migration is implemented. That WPF surface is transitional and must not be expanded as a second first-class product surface.
+The repository currently contains the historical WPF MVP while the CLI migration is in progress and not yet shipped. That WPF surface is transitional and must not be expanded as a second first-class product surface.
 
 ## 2. Target user and caller
 
