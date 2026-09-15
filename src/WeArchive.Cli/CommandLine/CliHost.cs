@@ -1,4 +1,4 @@
-using WeArchive.Cli.Commands;
+using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
 
 namespace WeArchive.Cli.CommandLine;
@@ -6,6 +6,11 @@ namespace WeArchive.Cli.CommandLine;
 /// <summary>
 /// Top-level CLI entry point logic, separated from <c>Program.Main</c> so it is testable
 /// with in-memory <see cref="TextWriter"/> writers instead of <c>Console</c>.
+/// <para>
+/// Every path — help, usage error, cancellation or runtime failure — honours the
+/// <c>--json</c> contract: stdout receives exactly one JSON document and human
+/// diagnostics stay on stderr. docs/PRD.md FR-22, docs/ARCHITECTURE.md section 3.1.1.
+/// </para>
 /// </summary>
 public static class CliHost
 {
@@ -21,9 +26,14 @@ public static class CliHost
         ArgumentNullException.ThrowIfNull(stderr);
         ArgumentNullException.ThrowIfNull(services);
 
+        // Seeded with the default options so the failure handlers below still know whether
+        // the caller asked for machine output even if parsing itself failed.
+        var options = GlobalOptions.Default;
+
         try
         {
-            var (options, remaining) = CommandLineParser.Parse(args);
+            IReadOnlyList<string> remaining;
+            (options, remaining) = CommandLineParser.Parse(args);
 
             if (options.ShowVersion)
             {
@@ -31,30 +41,31 @@ public static class CliHost
                 return ExitCode.Success;
             }
 
+            var router = new CommandRouter(services);
+
             if (options.ShowHelp || remaining.Count == 0)
             {
-                WriteHelp(stdout, services);
+                router.WriteHelp(stdout, options);
                 return ExitCode.Success;
             }
 
-            var router = new CommandRouter(services);
             var context = new CliContext(stdout, stderr, options);
             return await router.ExecuteAsync(remaining, context, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (CliUsageException ex)
         {
-            stderr.WriteLine($"error: {ex.Message}");
+            CliErrors.Write(stdout, stderr, options, CliErrorCode.UsageError, ex.Message);
             return ExitCode.UsageError;
         }
         catch (OperationCanceledException)
         {
-            stderr.WriteLine("error: operation cancelled.");
+            CliErrors.Write(stdout, stderr, options, CliErrorCode.Cancelled, "operation cancelled.");
             return ExitCode.Cancelled;
         }
         catch (Exception ex)
         {
-            stderr.WriteLine($"error: {ex.Message}");
+            CliErrors.Write(stdout, stderr, options, CliErrorCode.Failure, ex.Message);
             return ExitCode.Failure;
         }
     }
@@ -70,7 +81,7 @@ public static class CliHost
 
         if (options.Json)
         {
-            stdout.WriteLine(Output.CliJson.Serialize(dto));
+            stdout.WriteLine(CliJson.Serialize(dto));
         }
         else
         {
@@ -78,12 +89,6 @@ public static class CliHost
             stdout.WriteLine($"  framework: {dto.Framework}");
             stdout.WriteLine($"  platform:  {dto.Platform}");
         }
-    }
-
-    private static void WriteHelp(TextWriter stdout, IServiceProvider services)
-    {
-        var router = new CommandRouter(services);
-        router.WriteHelp(stdout, new CliContext(stdout, TextWriter.Null, GlobalOptions.Default));
     }
 
     private static string GetVersionString()

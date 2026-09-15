@@ -264,6 +264,16 @@ Every automation-relevant command shall support:
 - `--no-input`: never prompt; fail when required input is missing;
 - deterministic exit semantics: `0` success, `1` runtime/operation failure, `2` usage/configuration validation failure, `130` user cancellation/interrupt.
 
+The `--json` contract covers every invocation, not only successful command results:
+
+- help (`--help --json` and a bare `wearchive --json`) emits a JSON help document
+  (`usage`, `commands`, `options`) on stdout with exit `0`;
+- a failed invocation emits a JSON error document (`error.code`, `error.message`) on
+  stdout, with `error.code` mirroring the documented exit-code family
+  (`usage_error` = 2, `failure` = 1, `cancelled` = 130);
+- human diagnostics, including the help text printed alongside an invalid command, stay
+  on stderr.
+
 Exact JSON schemas are versioned implementation contracts and must be covered by contract tests. A command may return exit `0` with Partial diagnostics only when the corresponding product requirement explicitly permits a valid partial result.
 
 ## 7. Non-functional requirements

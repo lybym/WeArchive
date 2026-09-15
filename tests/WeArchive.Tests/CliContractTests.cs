@@ -133,8 +133,9 @@ public sealed class CliContractTests
         // JSON must start with the opening brace — no leading ANSI or BOM.
         Assert.Equal('{', output.TrimStart()[0]);
 
-        // No CSI escape sequences (the real ANSI decoration pattern).
-        Assert.DoesNotContain("\u001b[", output);
+        // No ANSI escape. The check is ordinal: a culture-sensitive substring search
+        // treats ESC as an ignorable character and would match unrelated text.
+        Assert.False(output.Contains('\u001b'), "JSON stdout must not carry ANSI escapes");
     }
 
     // ---- --version / --help top-level flags via CliHost ----
@@ -165,6 +166,165 @@ public sealed class CliContractTests
 
         Assert.Equal(ExitCode.Success, exit);
         Assert.Contains("Usage:", stdout.ToString());
+    }
+
+    // ---- --json contract on help / usage-error / failure paths ----
+    // docs/PRD.md FR-22, docs/ARCHITECTURE.md section 3.1.1: with --json, stdout must
+    // contain exactly one JSON document on every path — never prose, never emptiness.
+
+    [Fact]
+    public async Task HostHelpJsonEmitsExactlyOneDocument()
+    {
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["--help", "--json"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.Success, exit);
+
+        using var doc = ParseStdoutAsSingleJsonDocument(stdout);
+        Assert.Equal("wearchive <command> [options]", doc.RootElement.GetProperty("usage").GetString());
+
+        var commands = doc.RootElement.GetProperty("commands")
+            .EnumerateArray()
+            .Select(c => c.GetProperty("name").GetString()!)
+            .ToList();
+        Assert.Contains("version", commands);
+        Assert.Contains("doctor", commands);
+
+        var options = doc.RootElement.GetProperty("options")
+            .EnumerateArray()
+            .Select(o => o.GetProperty("name").GetString()!)
+            .ToList();
+        Assert.Contains("--json", options);
+
+        // Human prose stays out of the machine stream.
+        Assert.DoesNotContain("Usage:", stdout.ToString());
+
+        // Help is a successful result, so nothing is reported as a diagnostic.
+        Assert.Empty(stderr.ToString());
+    }
+
+    [Fact]
+    public async Task HostNoCommandJsonEmitsExactlyOneDocument()
+    {
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["--json"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.Success, exit);
+
+        using var doc = ParseStdoutAsSingleJsonDocument(stdout);
+        Assert.True(doc.RootElement.TryGetProperty("usage", out _));
+        Assert.Empty(stderr.ToString());
+    }
+
+    [Fact]
+    public async Task HostHelpWithoutJsonStaysHumanReadable()
+    {
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["--help"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.Success, exit);
+        var output = stdout.ToString();
+        Assert.Contains("Usage:", output);
+        Assert.Contains("Commands:", output);
+        Assert.DoesNotContain("{", output);
+        Assert.Empty(stderr.ToString());
+    }
+
+    [Fact]
+    public async Task HostUnknownCommandJsonEmitsErrorEnvelopeOnStdout()
+    {
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["bogus", "--json"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.UsageError, exit);
+
+        using var doc = ParseStdoutAsSingleJsonDocument(stdout);
+        var error = doc.RootElement.GetProperty("error");
+        Assert.Equal(CliErrorCode.UsageError, error.GetProperty("code").GetString());
+        Assert.Contains("unknown command", error.GetProperty("message").GetString()!.ToLowerInvariant());
+
+        // Human diagnostics — the error line and the help text — remain on stderr.
+        var stderrContent = stderr.ToString();
+        Assert.Contains("error:", stderrContent);
+        Assert.Contains("Usage:", stderrContent);
+        Assert.DoesNotContain("{\"error\"", stderrContent);
+    }
+
+    [Fact]
+    public async Task HostUnknownCommandWithoutJsonKeepsStdoutEmpty()
+    {
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["bogus"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.UsageError, exit);
+        Assert.Empty(stdout.ToString());
+        Assert.Contains("Usage:", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task HostUnknownCommandJsonIgnoresQuietForErrorDocument()
+    {
+        // A failure is essential output, not suppressible progress: --quiet must not
+        // empty the machine contract.
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["bogus", "--json", "--quiet"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.UsageError, exit);
+        using var doc = ParseStdoutAsSingleJsonDocument(stdout);
+        Assert.Equal(CliErrorCode.UsageError, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("error:", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task HostRuntimeFailureJsonEmitsErrorEnvelopeOnStdout()
+    {
+        // A provider without ISourceAdapter makes the doctor factory throw (exit 1).
+        var provider = new ServiceCollection().BuildServiceProvider();
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await CliHost.RunAsync(["doctor", "--json"], stdout, stderr, provider);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var doc = ParseStdoutAsSingleJsonDocument(stdout);
+        Assert.Equal(CliErrorCode.Failure, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("error:", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task HostCancellationJsonEmitsErrorEnvelopeOnStdout()
+    {
+        var provider = BuildProvider(new StubSourceAdapter(), new StubArchiveStore());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var exit = await CliHost.RunAsync(["doctor", "--json"], stdout, stderr, provider, cts.Token);
+
+        Assert.Equal(ExitCode.Cancelled, exit);
+        using var doc = ParseStdoutAsSingleJsonDocument(stdout);
+        Assert.Equal(CliErrorCode.Cancelled, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("cancel", stderr.ToString().ToLowerInvariant());
     }
 
     // ---- Doctor command: stdout/stderr separation ----
@@ -353,6 +513,22 @@ public sealed class CliContractTests
     }
 
     // ---- Helpers and stubs ----
+
+    /// <summary>
+    /// Asserts stdout carries exactly one JSON document: no trailing prose, no extra
+    /// lines and no ANSI decoration (docs/ARCHITECTURE.md section 3.1.1).
+    /// </summary>
+    private static JsonDocument ParseStdoutAsSingleJsonDocument(StringWriter stdout)
+    {
+        var output = stdout.ToString().TrimEnd();
+        Assert.NotEmpty(output);
+
+        // Ordinal char checks: a culture-sensitive substring search treats ESC as an
+        // ignorable character and would silently match unrelated text.
+        Assert.False(output.Contains('\n'), "stdout must contain exactly one document, not multiple lines");
+        Assert.False(output.Contains('\u001b'), "stdout must not carry ANSI escape decoration");
+        return JsonDocument.Parse(output);
+    }
 
     private static ServiceProvider BuildProvider(ISourceAdapter adapter, IArchiveStore store)
     {

@@ -1,5 +1,6 @@
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using WeArchive.Cli.Output;
+using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Abstractions;
 
 namespace WeArchive.Cli.CommandLine;
@@ -11,6 +12,22 @@ namespace WeArchive.Cli.CommandLine;
 /// </summary>
 public sealed class CommandRouter
 {
+    /// <summary>Usage line shared by the human and the machine-readable help renderings.</summary>
+    public const string Usage = "wearchive <command> [options]";
+
+    /// <summary>
+    /// Global options documented by help. Declared once so the human help text and the
+    /// JSON help document cannot drift apart.
+    /// </summary>
+    private static readonly IReadOnlyList<HelpOptionDto> DocumentedOptions =
+    [
+        new() { Name = "--json", Description = "Emit exactly one JSON document on stdout" },
+        new() { Name = "--quiet", Description = "Suppress non-essential progress on stderr" },
+        new() { Name = "--no-input", Description = "Never prompt; fail when required input is missing" },
+        new() { Name = "--version", Description = "Print the product version and exit" },
+        new() { Name = "--help, -h", Description = "Show this help and exit" },
+    ];
+
     private readonly IServiceProvider _services;
     private readonly Dictionary<string, Func<IServiceProvider, ICliCommand>> _factories;
 
@@ -34,17 +51,22 @@ public sealed class CommandRouter
         CliContext context,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(context);
+
         if (args.Count == 0)
         {
-            WriteHelp(context.Stdout, context);
+            WriteHelp(context.Stdout, context.Options);
             return ExitCode.Success;
         }
 
         var name = args[0];
         if (!_factories.TryGetValue(name, out var factory))
         {
-            context.Stderr.WriteLine($"error: unknown command '{name}'");
-            WriteHelp(context.Stderr, context);
+            // A machine caller gets the error envelope on stdout; the human explanation
+            // (including the help text) stays on stderr.
+            context.WriteError(CliErrorCode.UsageError, $"unknown command '{name}'");
+            WriteHumanHelp(context.Stderr);
             return ExitCode.UsageError;
         }
 
@@ -54,23 +76,70 @@ public sealed class CommandRouter
             .ConfigureAwait(false);
     }
 
-    [SuppressMessage("Usage", "CA1841:Favor Dictionary methods over calling ContainsKey")]
-    internal void WriteHelp(TextWriter writer, CliContext context)
+    /// <summary>
+    /// Builds the machine-readable help document. Stable field names are pinned by
+    /// <c>[JsonPropertyName]</c> (docs/PRD.md FR-22).
+    /// </summary>
+    public HelpResultDto DescribeHelp()
     {
-        writer.WriteLine("Usage: wearchive <command> [options]");
+        var commands = new List<HelpCommandDto>(_factories.Count);
+        foreach (var entry in _factories)
+        {
+            commands.Add(new HelpCommandDto
+            {
+                Name = entry.Key,
+                Description = entry.Value(_services).Description,
+            });
+        }
+
+        return new HelpResultDto
+        {
+            Usage = Usage,
+            Commands = commands,
+            Options = DocumentedOptions,
+        };
+    }
+
+    /// <summary>
+    /// Writes help in the mode requested by <paramref name="options"/>: exactly one JSON
+    /// document when <c>--json</c> is set, human-readable prose otherwise.
+    /// docs/ARCHITECTURE.md section 3.1.1.
+    /// </summary>
+    public void WriteHelp(TextWriter writer, GlobalOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (options.Json)
+        {
+            writer.WriteLine(CliJson.Serialize(DescribeHelp()));
+            return;
+        }
+
+        WriteHumanHelp(writer);
+    }
+
+    /// <summary>
+    /// Writes human-readable help. Used directly by diagnostic paths that must keep
+    /// stderr human-readable even in <c>--json</c> mode.
+    /// </summary>
+    public void WriteHumanHelp(TextWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteLine($"Usage: {Usage}");
         writer.WriteLine();
         writer.WriteLine("Commands:");
-        foreach (var name in _factories.Keys)
+        foreach (var entry in _factories)
         {
-            var command = _factories[name](_services);
-            writer.WriteLine($"  {name,-12} {command.Description}");
+            writer.WriteLine($"  {entry.Key,-12} {entry.Value(_services).Description}");
         }
+
         writer.WriteLine();
         writer.WriteLine("Options:");
-        writer.WriteLine("  --json        Emit exactly one JSON document on stdout");
-        writer.WriteLine("  --quiet       Suppress non-essential progress on stderr");
-        writer.WriteLine("  --no-input    Never prompt; fail when required input is missing");
-        writer.WriteLine("  --version     Print the product version and exit");
-        writer.WriteLine("  --help, -h    Show this help and exit");
+        foreach (var option in DocumentedOptions)
+        {
+            writer.WriteLine($"  {option.Name,-14}{option.Description}");
+        }
     }
 }

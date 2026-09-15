@@ -1,3 +1,5 @@
+using WeArchive.Cli.Output;
+
 namespace WeArchive.Cli.CommandLine;
 
 /// <summary>
@@ -35,6 +37,15 @@ public sealed class CliContext
         if (!Options.Quiet)
             Stderr.WriteLine(message);
     }
+
+    /// <summary>
+    /// Reports a failure: a human diagnostic on stderr plus, in <c>--json</c> mode, exactly
+    /// one JSON error document on stdout. Commands and the router must use this instead of
+    /// writing to <see cref="Stderr"/> directly, so the machine contract cannot be bypassed.
+    /// docs/PRD.md FR-22, docs/ARCHITECTURE.md section 3.1.1.
+    /// </summary>
+    public void WriteError(string code, string message) =>
+        CliErrors.Write(Stdout, Stderr, Options, code, message);
 
     /// <summary>
     /// Throws <see cref="CliUsageException"/> when <c>--no-input</c> is set, because the
