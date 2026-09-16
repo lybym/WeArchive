@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Services;
 
 namespace WeArchive.Cli.CommandLine;
 
@@ -40,6 +41,10 @@ public sealed class CommandRouter
             ["doctor"] = sp => new Commands.DoctorCommand(
                 sp.GetRequiredService<ISourceAdapter>(),
                 sp.GetRequiredService<IArchiveStore>()),
+            ["account"] = sp => new Commands.AccountCommand(
+                sp.GetRequiredService<SourceCatalogService>()),
+            ["conversation"] = sp => new Commands.ConversationCommand(
+                sp.GetRequiredService<SourceCatalogService>()),
         };
     }
 

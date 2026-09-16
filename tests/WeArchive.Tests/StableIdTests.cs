@@ -70,6 +70,61 @@ public sealed class StableIdTests
         Assert.StartsWith("u_", StableIds.Participant(account, "wxid_x"), StringComparison.Ordinal);
         Assert.StartsWith("m_", StableIds.Message(account, "s:1"), StringComparison.Ordinal);
     }
+
+    // ---- Conversation derivation (single source of truth for CLI + importer) ----
+
+    [Fact]
+    public void ConversationGroupUsesGroupPrefix()
+    {
+        var account = StableIds.Account("wechat-windows", "acct");
+
+        Assert.Equal(
+            StableIds.GroupConversation(account, "100200300@chatroom"),
+            StableIds.Conversation(account, ConversationKind.Group, "100200300@chatroom", peerSourceUserId: null));
+    }
+
+    [Fact]
+    public void ConversationNonGroupUsesPeerIdentity()
+    {
+        var account = StableIds.Account("wechat-windows", "acct");
+
+        // Direct/official/system/unknown all derive like a direct conversation: the peer's u_ id.
+        foreach (var kind in new[]
+        {
+            ConversationKind.Direct,
+            ConversationKind.Official,
+            ConversationKind.System,
+            ConversationKind.Unknown,
+        })
+        {
+            Assert.Equal(
+                StableIds.DirectConversation(account, "wxid_carol"),
+                StableIds.Conversation(account, kind, "ignored-when-peer-present", "wxid_carol"));
+        }
+    }
+
+    [Fact]
+    public void ConversationFallsBackToSourceIdWhenPeerIsAbsent()
+    {
+        var account = StableIds.Account("wechat-windows", "acct");
+
+        // Mirrors ImportService.ResolveConversationId: peer = PeerSourceUserId ?? SourceConversationId.
+        Assert.Equal(
+            StableIds.DirectConversation(account, "direct-session-456"),
+            StableIds.Conversation(account, ConversationKind.Direct, "direct-session-456", peerSourceUserId: null));
+    }
+
+    [Fact]
+    public void ConversationStableIdIsDeterministicAndNameIndependent()
+    {
+        var account = StableIds.Account("wechat-windows", "acct");
+
+        var first = StableIds.Conversation(account, ConversationKind.Group, "room-1", peerSourceUserId: null);
+        var second = StableIds.Conversation(account, ConversationKind.Group, "room-1", peerSourceUserId: null);
+
+        Assert.Equal(first, second);
+        Assert.StartsWith("g_", first, StringComparison.Ordinal);
+    }
 }
 
 /// <summary>docs/EXPORT_PRD.md section 5.1 — the default display-name rule.</summary>

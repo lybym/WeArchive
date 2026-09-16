@@ -29,12 +29,15 @@ public sealed class CliContext
     public GlobalOptions Options { get; }
 
     /// <summary>
-    /// Writes a progress/diagnostic line to stderr unless <c>--quiet</c> suppressed it.
-    /// Use this for all non-essential progress so <c>--quiet</c> behaves consistently.
+    /// Writes a progress/diagnostic line to stderr unless <c>--quiet</c> or <c>--json</c>
+    /// suppressed it. <c>--json</c> suppresses progress so machine-readable stdout is never
+    /// interleaved with human progress on the same terminal, matching the documented CLI
+    /// contract (docs/PRD.md FR-22, docs/ARCHITECTURE.md section 3.1.1). Errors are never
+    /// suppressed; see <see cref="WriteError"/>.
     /// </summary>
     public void ReportProgress(string message)
     {
-        if (!Options.Quiet)
+        if (!Options.Quiet && !Options.Json)
             Stderr.WriteLine(message);
     }
 

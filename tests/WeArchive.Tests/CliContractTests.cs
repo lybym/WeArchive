@@ -4,6 +4,7 @@ using WeArchive.Cli.CommandLine;
 using WeArchive.Cli.Commands;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
+using WeArchive.Core.Services;
 using WeArchive.Cli.Output.Dto;
 
 namespace WeArchive.Tests;
@@ -535,6 +536,10 @@ public sealed class CliContractTests
         var services = new ServiceCollection();
         services.AddSingleton(adapter);
         services.AddSingleton(store);
+        // The discovery commands (account, conversation) are constructed while rendering help,
+        // so the minimal test provider must expose the catalog service just as AddWeArchiveCore
+        // does in production. Otherwise DescribeHelp() would throw while reading descriptions.
+        services.AddSingleton(sp => new SourceCatalogService(sp.GetRequiredService<ISourceAdapter>()));
         return services.BuildServiceProvider();
     }
 
