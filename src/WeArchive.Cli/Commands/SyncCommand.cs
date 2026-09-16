@@ -54,9 +54,26 @@ public sealed class SyncCommand : ICliCommand
         var (account, source) = resolved.Value;
 
         CliReporting.Progress(context, $"Probing '{source.SourceConversationId}'…");
-        var detail = await _catalog
-            .DescribeConversationAsync(account.SourceProfileId, source.SourceConversationId, cancellationToken)
-            .ConfigureAwait(false);
+        SourceConversationDetail detail;
+        try
+        {
+            detail = await _catalog
+                .DescribeConversationAsync(account.SourceProfileId, source.SourceConversationId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The probe only fills the progress total, but a source that fails it after the
+            // conversation resolved is the same condition `conversation show` reports as
+            // `conversation_describe_failed`. Surface that granular code instead of letting
+            // CliHost collapse it to a generic `failure` (docs/CLI.md error table).
+            context.WriteError(CliErrorCode.ConversationDescribeFailed, ex.Message);
+            return ExitCode.Failure;
+        }
 
         var request = new ImportRequest
         {

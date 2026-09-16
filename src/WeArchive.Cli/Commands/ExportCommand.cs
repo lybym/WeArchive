@@ -51,7 +51,7 @@ public sealed class ExportCommand : ICliCommand
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(args);
 
-        var (conversation, output) = ParseArgs(args, _defaults);
+        var (conversation, output) = ParseArgs(args);
 
         CliReporting.Progress(context, $"Resolving conversation '{conversation}'…");
         var resolved = await _resolver.ResolveAsync(context, conversation, cancellationToken)
@@ -60,6 +60,15 @@ public sealed class ExportCommand : ICliCommand
             return ExitCode.Failure;
         var (account, source) = resolved.Value;
 
+        // --output is a single-conversation package root: the exporter rebuilds manifest.json,
+        // conversations.yaml and identities.yaml from this invocation's conversation only, so a
+        // shared root would de-index a previously exported conversation. When the caller does
+        // not name a root, give each conversation its own stable-id root so the default
+        // destination is always a self-consistent, standalone package and exporting one
+        // conversation can never damage another's output (docs/EXPORT_PRD.md section 3.2,
+        // docs/CLI.md "export").
+        var resolvedOutput = output ?? DefaultOutputDirectory(account.SourceProfileId, source);
+
         var request = new ExportConversationRequest
         {
             SourceProfileId = account.SourceProfileId,
@@ -67,14 +76,25 @@ public sealed class ExportCommand : ICliCommand
             Kind = source.Kind,
             PeerSourceUserId = source.PeerSourceUserId,
             ConversationTitle = source.Title,
-            OutputDirectory = output,
+            OutputDirectory = resolvedOutput,
         };
 
-        CliReporting.Progress(context, $"Exporting '{source.SourceConversationId}' to {output}…");
+        CliReporting.Progress(context, $"Exporting '{source.SourceConversationId}' to {resolvedOutput}…");
         var progress = new CliProgress<OperationProgress>(context, FormatProgress);
         var result = await _workflow
             .ExportConversationAsync(request, progress, cancellationToken)
             .ConfigureAwait(false);
+
+        // A Core exporter contract allows Succeeded=false without throwing. That must never be
+        // reported as a successful process: surface the documented failure document (exit 1)
+        // instead of a result document that claims a package was published.
+        if (!result.Succeeded)
+        {
+            context.WriteError(
+                CliErrorCode.Failure,
+                result.FailureReason ?? "The export did not complete; no package was published.");
+            return ExitCode.Failure;
+        }
 
         var dto = new ExportResultDto
         {
@@ -103,9 +123,11 @@ public sealed class ExportCommand : ICliCommand
         return ExitCode.Success;
     }
 
-    private static (string Conversation, string Output) ParseArgs(
-        IReadOnlyList<string> args,
-        CliExportDefaults defaults)
+    /// <summary>
+    /// Parses the command options. <c>--output</c> stays <c>null</c> when omitted because the
+    /// default destination depends on the resolved conversation's stable id.
+    /// </summary>
+    private static (string Conversation, string? Output) ParseArgs(IReadOnlyList<string> args)
     {
         string? conversation = null;
         string? output = null;
@@ -133,12 +155,24 @@ public sealed class ExportCommand : ICliCommand
         if (string.IsNullOrWhiteSpace(conversation))
             throw new CliUsageException("export requires --conversation <id-or-alias>.");
 
-        // --no-input never prompts: --output is optional and defaults to a host-supplied path.
-        var resolvedOutput = string.IsNullOrWhiteSpace(output)
-            ? defaults.DefaultOutputDirectory
-            : output;
+        // --no-input never prompts: --output is optional and defaults to a host-supplied root.
+        return (conversation, string.IsNullOrWhiteSpace(output) ? null : output);
+    }
 
-        return (conversation, resolvedOutput);
+    /// <summary>
+    /// The per-conversation default package root: the host-supplied exports directory plus the
+    /// conversation's canonical stable id. Deriving the folder name from the stable id (never a
+    /// mutable title) keeps the default destination addressable across renames, and giving each
+    /// conversation its own root keeps that root a self-consistent single-conversation package
+    /// (docs/EXPORT_PRD.md sections 3.1, 3.2 and 4, docs/DATA_MODEL.md section 16).
+    /// </summary>
+    private string DefaultOutputDirectory(string sourceProfileId, SourceConversation source)
+    {
+        var accountId = StableIds.Account(_catalog.AdapterName, sourceProfileId);
+        var conversationId = StableIds.Conversation(
+            accountId, source.Kind, source.SourceConversationId, source.PeerSourceUserId);
+
+        return Path.Combine(_defaults.DefaultOutputDirectory, conversationId);
     }
 
     private static void WriteResult(CliContext context, ExportResultDto result)

@@ -5,6 +5,7 @@ using WeArchive.Cli.CommandLine;
 using WeArchive.Cli.Commands;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
+using WeArchive.Core.Export;
 using WeArchive.Core.Services;
 using WeArchive.Infrastructure.Archive;
 using WeArchive.Infrastructure.Export;
@@ -366,6 +367,28 @@ public sealed class SyncExportCliTests
     }
 
     [Fact]
+    public async Task SyncDescribeFailureEmitsConversationDescribeFailedCode()
+    {
+        // The metadata probe above the import is not the operation's real read, but when it
+        // fails after the conversation resolved the documented code is the granular
+        // `conversation_describe_failed` — the same one `conversation show` emits — rather than
+        // a generic `failure`.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp, new DescribeFailingSource());
+        var stdout = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["sync", "--conversation", DescribeFailingSource.ConversationId, "--json"],
+            stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(
+            CliErrorCode.ConversationDescribeFailed,
+            doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task SyncCancellationExits130()
     {
         using var temp = new TempDirectory();
@@ -505,8 +528,9 @@ public sealed class SyncExportCliTests
     public async Task ExportUsesTheArchiveStableIdMechanism()
     {
         // Both commands resolve the selector through the source catalog by the upstream
-        // conversation id, and the workflow derives the stable archive id exactly as the
-        // importer does — no second alias/id store is introduced by the CLI.
+        // conversation id or the canonical stable archive id, and the workflow derives the
+        // stable archive id exactly as the importer does — no second alias/id store is
+        // introduced by the CLI.
         using var temp = new TempDirectory();
         using var harness = CreateHarness(temp);
         var output = temp.Combine("out");
@@ -539,6 +563,141 @@ public sealed class SyncExportCliTests
         Assert.Equal(ExitCode.Success, exit);
         using var doc = ParseSingleJson(stdout);
         Assert.Equal(stableId, doc.RootElement.GetProperty("conversation_ids")[0].GetString());
+    }
+
+    [Fact]
+    public async Task ExportDefaultsToAPerConversationRootUnderTheHostExportsDirectory()
+    {
+        // The documented default when --output is omitted: a stable-id subdirectory of the
+        // host exports directory, so the default destination is a self-consistent
+        // single-conversation package (docs/CLI.md "export").
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var stdout = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
+            stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Success, exit);
+
+        var stableId = GroupStableId(harness.Adapter);
+        var expectedRoot = Path.Combine(temp.Combine("export"), stableId);
+
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(expectedRoot, doc.RootElement.GetProperty("output_directory").GetString());
+
+        Assert.True(File.Exists(Path.Combine(expectedRoot, "manifest.json")));
+        Assert.True(File.Exists(Path.Combine(expectedRoot, "conversations.yaml")));
+        Assert.True(File.Exists(Path.Combine(expectedRoot, "chats", "groups", stableId, "2026", "2026-01.jsonl")));
+    }
+
+    [Fact]
+    public async Task ExportShortOutputOptionFormWritesToTheRequestedRoot()
+    {
+        // docs/CLI.md documents `-o, --output <dir>`; the short form must not be a dead option.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var output = temp.Combine("short");
+        var stdout = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "-o", output, "--json"],
+            stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Success, exit);
+
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(output, doc.RootElement.GetProperty("output_directory").GetString());
+        Assert.True(File.Exists(Path.Combine(output, "manifest.json")));
+    }
+
+    [Fact]
+    public async Task ExportDefaultsKeepDifferentConversationsInSeparateSelfConsistentRoots()
+    {
+        // A regression guard for the shared-root hazard: --output is a single-conversation
+        // package root, so exporting two conversations must not de-index the first. The
+        // documented default gives each conversation its own stable-id root, and each root's
+        // manifest must still describe exactly its own conversation.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var exportsRoot = temp.Combine("export");
+
+        var firstExit = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
+            new StringWriter(), TextWriter.Null);
+        Assert.Equal(ExitCode.Success, firstExit);
+
+        var secondExit = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.DirectConversation, "--json"],
+            new StringWriter(), TextWriter.Null);
+        Assert.Equal(ExitCode.Success, secondExit);
+
+        var adapter = harness.Adapter;
+        var accountId = StableIds.Account(adapter.AdapterName, FixtureSourceAdapter.FixtureAccountId);
+        var groupId = StableIds.Conversation(
+            accountId, ConversationKind.Group, FixtureSourceAdapter.GroupConversation, null);
+        var directId = StableIds.Conversation(
+            accountId, ConversationKind.Direct, FixtureSourceAdapter.DirectConversation, FixtureSourceAdapter.Alice);
+
+        Assert.NotEqual(groupId, directId);
+
+        var groupManifest = await ReadManifestAsync(Path.Combine(exportsRoot, groupId));
+        var directManifest = await ReadManifestAsync(Path.Combine(exportsRoot, directId));
+
+        // The group was exported first; the later direct-conversation default export must not
+        // have touched it.
+        Assert.Equal([groupId], ManifestIds(groupManifest, "conversations", "conversation_id"));
+        Assert.Equal([directId], ManifestIds(directManifest, "conversations", "conversation_id"));
+        Assert.Equal([groupId], ManifestIds(groupManifest, "conversation_ids", null));
+        Assert.Equal([directId], ManifestIds(directManifest, "conversation_ids", null));
+
+        // Each root still carries its own timeline partition.
+        Assert.True(File.Exists(Path.Combine(exportsRoot, groupId, "chats", "groups", groupId, "2026", "2026-01.jsonl")));
+        Assert.True(File.Exists(Path.Combine(exportsRoot, directId, "chats", "direct", directId, "2026", "2026-01.jsonl")));
+    }
+
+    [Fact]
+    public async Task ExportReportsFailureWhenTheExporterReturnsNotSucceeded()
+    {
+        // ExportResult is a Core contract that may report Succeeded=false without throwing.
+        // That must never surface as process success with a result document: the CLI maps it to
+        // exit 1 plus the documented failure document carrying the exporter's reason.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp, exporterFactory: _ => new FailingExporter());
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
+            stdout, stderr);
+
+        Assert.Equal(ExitCode.Failure, exit);
+
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(CliErrorCode.Failure, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal("disk full", doc.RootElement.GetProperty("error").GetProperty("message").GetString());
+        Assert.False(doc.RootElement.TryGetProperty("succeeded", out _));
+
+        Assert.Contains("disk full", stderr.ToString());
+    }
+
+    private static async Task<string> ReadManifestAsync(string root) =>
+        await File.ReadAllTextAsync(Path.Combine(root, "manifest.json")).ConfigureAwait(false);
+
+    /// <summary>
+    /// The conversation ids of a manifest, read either from the top-level
+    /// <c>conversation_ids</c> array or from the <c>conversations[]</c> entries.
+    /// </summary>
+    private static IReadOnlyList<string?> ManifestIds(string manifestJson, string property, string? itemProperty)
+    {
+        using var doc = JsonDocument.Parse(manifestJson);
+        var element = doc.RootElement.GetProperty(property);
+        return
+        [
+            .. element.EnumerateArray().Select(item =>
+                itemProperty is null ? item.GetString() : item.GetProperty(itemProperty).GetString()),
+        ];
     }
 
     // ---- export: R1 caught failure restores prior output, exit 1 ----
@@ -647,9 +806,12 @@ public sealed class SyncExportCliTests
     [Fact]
     public async Task ExportIsIdempotentAcrossSuccessfulRuns()
     {
-        // Two consecutive *successful* exports must produce byte-identical output, proving the
-        // R1 "re-export is the recovery path" claim: a clean re-export neither corrupts nor
-        // non-deterministically rewrites the prior package.
+        // docs/EXPORT_PRD.md section 15 / docs/CLI.md "export": given the same archive state and
+        // exporter version, two successful exports are byte-identical except for the explicitly
+        // generated metadata. This is asserted with the clock *advanced between the runs* — the
+        // shipped SystemClock is real wall time, so a frozen clock would make the claim
+        // unfalsifiable. Every file other than manifest.json must be byte-identical, and inside
+        // manifest.json `created_at` must be the only field that differs.
         using var temp = new TempDirectory();
         using var harness = CreateHarness(temp);
         var output = temp.Combine("out");
@@ -660,6 +822,10 @@ public sealed class SyncExportCliTests
         Assert.Equal(ExitCode.Success, first);
 
         var snapshot = SnapshotExportFiles(output);
+        var firstManifest = System.Text.Encoding.UTF8.GetString(snapshot["manifest.json"]);
+
+        // Advance the clock so the export timestamp genuinely changes, as it does in production.
+        ((FixedClock)harness.Clock).UtcNow = harness.Clock.UtcNow.AddHours(3);
 
         var second = await RunAsync(harness.Provider,
             ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--output", output, "--json"],
@@ -672,14 +838,49 @@ public sealed class SyncExportCliTests
         {
             Assert.True(after.TryGetValue(relativePath, out var afterBytes),
                 $"file disappeared on re-export: {relativePath}");
+
+            if (relativePath == "manifest.json")
+            {
+                continue;
+            }
+
             Assert.True(bytes.SequenceEqual(afterBytes),
                 $"file content changed on re-export: {relativePath}");
         }
+
+        // The re-export regenerated nothing but the generated metadata: `created_at` is the only
+        // differing manifest field.
+        var secondManifest = System.Text.Encoding.UTF8.GetString(after["manifest.json"]);
+        Assert.NotEqual(firstManifest, secondManifest);
+        Assert.Equal(
+            ["created_at"],
+            DifferingManifestFields(firstManifest, secondManifest));
     }
 
     private static Dictionary<string, byte[]> SnapshotExportFiles(string root) =>
         Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
             .ToDictionary(f => Path.GetRelativePath(root, f), File.ReadAllBytes);
+
+    /// <summary>
+    /// The names of the top-level manifest fields whose values differ between two exports.
+    /// </summary>
+    private static IReadOnlyList<string> DifferingManifestFields(string firstJson, string secondJson)
+    {
+        using var first = JsonDocument.Parse(firstJson);
+        using var second = JsonDocument.Parse(secondJson);
+
+        var differing = new List<string>();
+        foreach (var property in first.RootElement.EnumerateObject())
+        {
+            var other = second.RootElement.GetProperty(property.Name);
+            if (!string.Equals(property.Value.GetRawText(), other.GetRawText(), StringComparison.Ordinal))
+            {
+                differing.Add(property.Name);
+            }
+        }
+
+        return differing;
+    }
 
     // ---- no R3+ recovery machinery ----
 
@@ -898,6 +1099,74 @@ public sealed class SyncExportCliTests
             string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
             Task.FromResult(new SourceConversationDetail { SourceConversationId = sourceConversationId });
 
+        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceParticipant>>([]);
+
+        public IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// An <see cref="IDatasetExporter"/> that reports <c>Succeeded = false</c> without throwing,
+    /// exercising the CLI's handling of the Core contract's failure flag (a false success would
+    /// otherwise be reported as exit 0).
+    /// </summary>
+    private sealed class FailingExporter : IDatasetExporter
+    {
+        public string ExporterVersion => "0.0.0-test";
+
+        public Task<ExportResult> ExportAsync(
+            ExportRequest request,
+            IProgress<ExportProgress>? progress,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new ExportResult
+            {
+                Succeeded = false,
+                FailureReason = "disk full",
+                OutputDirectory = request.OutputDirectory,
+            });
+    }
+
+    /// <summary>
+    /// A source whose conversation resolves but whose metadata probe fails, so <c>sync</c> must
+    /// emit the granular <c>conversation_describe_failed</c> code rather than a generic failure.
+    /// </summary>
+    private sealed class DescribeFailingSource : ISourceAdapter
+    {
+        public const string ProfileId = "describe_account";
+        public const string ConversationId = "describe_conv";
+
+        public string AdapterName => "describe";
+        public string AdapterVersion => "1.0.0";
+
+        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new SourceDescriptor
+            {
+                AdapterName = AdapterName,
+                AdapterVersion = AdapterVersion,
+                SourceVersion = "describe-1",
+                SourceProductName = "describe source",
+                IsAvailable = true,
+            });
+
+        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceAccount>>(
+            [
+                new SourceAccount { SourceProfileId = ProfileId, DisplayName = "describe account", IsCurrent = true },
+            ]);
+
+        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceConversation>>(
+            [
+                new SourceConversation { SourceConversationId = ConversationId, Kind = ConversationKind.Group, Title = "describe" },
+            ]);
+
+        public Task<SourceConversationDetail> DescribeConversationAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("source became unavailable while describing");
         public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
             string sourceProfileId, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<SourceParticipant>>([]);

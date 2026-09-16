@@ -217,8 +217,9 @@ re-read completes the conversation without duplicates) and exits 130. SQLite is 
 record.
 
 Exits `1` with `failure` (Fatal import did not complete), `source_unavailable`,
-`no_accounts`, `conversation_list_failed` or `conversation_not_found` on the corresponding
-failure; `2` on a usage error; `130` on cancellation.
+`no_accounts`, `conversation_list_failed`, `conversation_not_found` or
+`conversation_describe_failed` on the corresponding failure; `2` on a usage error; `130` on
+cancellation.
 
 JSON shape (exit 0):
 
@@ -266,9 +267,22 @@ Options:
 
 ```text
 --conversation <id-or-alias>   Required. Stable archive id (g_/u_) or upstream source id.
--o, --output <dir>             Optional. Output directory. Defaults to the per-user
-                               application data exports/ directory when omitted.
+-o, --output <dir>             Optional. Output directory. Defaults to a per-conversation
+                               subdirectory of the per-user application data exports/
+                               directory when omitted.
 ```
+
+`--output` is always a **single-conversation package root**: the exporter rebuilds
+`manifest.json`, `conversations.yaml` and `identities.yaml` from the conversation(s) named by
+that invocation, and `conversations.yaml`/`identities.yaml` keep only the entries belonging to
+them (plus any user-maintained entries, per [EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2, 5.4 and
+15). Pointing two different conversations at one explicit `--output` root therefore leaves the
+second export's catalogs describing only the second conversation — its JSONL partitions remain
+on disk but are no longer indexed. **The default destination avoids that**: when `--output` is
+omitted, each conversation is published to its own root, `<exports>/<stable-id>/`, so the
+default destination is always a self-consistent, standalone package and exporting one
+conversation can never de-index another. Pass `--output` explicitly only when the whole package
+at that root is meant to describe the conversation(s) of that single invocation.
 
 Reliability — **R1** (Export): a normal success publishes the complete documented output per
 [EXPORT_PRD.md](EXPORT_PRD.md) section 3. A caught cancellation or I/O failure attempts
@@ -276,10 +290,12 @@ in-process restoration of the prior package where possible; process crash and OS
 are **not** guaranteed recovery classes. SQLite remains the system of record and re-export is
 the recovery path. No commit marker, journal or rollback ledger is persisted.
 
-Exits `1` with `failure` (export operation failure or Fatal source-coverage failure during the
-re-import phase), `source_unavailable`, `no_accounts`, `conversation_list_failed` or
-`conversation_not_found` on the corresponding failure; `2` on a usage error; `130` on
-cancellation.
+Exits `1` with `failure` (export operation failure, an exporter that reported
+`succeeded: false`, or a Fatal source-coverage failure during the re-import phase),
+`source_unavailable`, `no_accounts`, `conversation_list_failed` or `conversation_not_found` on
+the corresponding failure; `2` on a usage error; `130` on cancellation. A failed export writes
+the failure document, never the result document above; the exporter's own `failure_reason`, when
+it supplies one, is carried in `error.message`.
 
 JSON shape (exit 0):
 
@@ -296,7 +312,6 @@ JSON shape (exit 0):
     "last_message_at": "2026-02-04T09:00:00+08:00"
   },
   "files": [
-    { "path": "manifest.json", "kind": "manifest", "record_count": 0 },
     { "path": "identities.yaml", "kind": "identities", "record_count": 4 },
     { "path": "conversations.yaml", "kind": "conversations", "record_count": 1 },
     { "path": "collections.yaml", "kind": "collections", "record_count": 0 },
@@ -309,10 +324,16 @@ JSON shape (exit 0):
 }
 ```
 
-`files[].kind` is a stable wire name (`manifest`, `identities`, `conversations`,
-`collections`, `timeline`). A repeated export is idempotent: two successful exports produce
-byte-identical output (the manifest `created_at` is derived from the host clock, not wall
-time, so it is stable within a process).
+`files[].kind` is a stable wire name (`identities`, `conversations`, `collections`,
+`timeline`). `manifest.json` is published last and is described by the manifest itself, so it
+is not listed in `files[]`.
+
+Re-export is deterministic except for the explicitly generated metadata: given the same archive
+state, export configuration and exporter version, every field of the package is byte-identical
+between two successful exports **except** `manifest.json`'s `created_at` (and
+`exporter_version` across builds), matching [EXPORT_PRD.md](EXPORT_PRD.md) section 15. A
+repeated export never rewrites or corrupts a timeline partition, so re-export from the SQLite
+archive remains the recovery path.
 
 ## Failure document (`--json`)
 
