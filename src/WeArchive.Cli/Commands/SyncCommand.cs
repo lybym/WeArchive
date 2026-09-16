@@ -47,8 +47,11 @@ public sealed class SyncCommand : ICliCommand
         var conversation = ParseArgs(args);
 
         CliReporting.Progress(context, $"Resolving conversation '{conversation}'…");
-        var (account, source) = await _resolver.ResolveAsync(conversation, cancellationToken)
+        var resolved = await _resolver.ResolveAsync(context, conversation, cancellationToken)
             .ConfigureAwait(false);
+        if (resolved is null)
+            return ExitCode.Failure;
+        var (account, source) = resolved.Value;
 
         CliReporting.Progress(context, $"Probing '{source.SourceConversationId}'…");
         var detail = await _catalog

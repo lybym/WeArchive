@@ -54,8 +54,11 @@ public sealed class ExportCommand : ICliCommand
         var (conversation, output) = ParseArgs(args, _defaults);
 
         CliReporting.Progress(context, $"Resolving conversation '{conversation}'…");
-        var (account, source) = await _resolver.ResolveAsync(conversation, cancellationToken)
+        var resolved = await _resolver.ResolveAsync(context, conversation, cancellationToken)
             .ConfigureAwait(false);
+        if (resolved is null)
+            return ExitCode.Failure;
+        var (account, source) = resolved.Value;
 
         var request = new ExportConversationRequest
         {

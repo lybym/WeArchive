@@ -1,6 +1,8 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.CommandLine;
+using WeArchive.Cli.Commands;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.Services;
@@ -296,8 +298,61 @@ public sealed class SyncExportCliTests
     }
 
     [Fact]
-    public async Task SyncConversationNotFoundExitsOne()
+    public async Task SyncResolvesByStableArchiveId()
     {
+        // `--conversation` must accept the canonical stable archive id (g_/u_) the discovery
+        // surface reports, not only the upstream source id — consistent with `conversation show`
+        // and "Stable IDs determine canonical identity" (docs/DATA_MODEL.md section 16).
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var stdout = new StringWriter();
+
+        var stableId = GroupStableId(harness.Adapter);
+
+        var exit = await RunAsync(harness.Provider,
+            ["sync", "--conversation", stableId, "--json"], stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(stableId, doc.RootElement.GetProperty("conversation_id").GetString());
+    }
+
+    [Fact]
+    public async Task SyncNoAccountsEmitsNoAccountsCode()
+    {
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp, new ResolutionFailureSource { NoAccounts = true });
+        var stdout = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["sync", "--conversation", "any", "--json"], stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(CliErrorCode.NoAccounts, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task SyncSourceUnavailableEmitsSourceUnavailableCode()
+    {
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp, new ResolutionFailureSource { AccountListingFails = true });
+        var stdout = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["sync", "--conversation", "any", "--json"], stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(CliErrorCode.SourceUnavailable, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task SyncConversationNotFoundEmitsGranularCodeAndExitsOne()
+    {
+        // Resolution failures must surface the documented granular code, not a generic
+        // failure, so the machine contract is consistent with `conversation show`
+        // (docs/CLI.md failure-document table).
         using var temp = new TempDirectory();
         using var harness = CreateHarness(temp);
         var stdout = new StringWriter();
@@ -307,7 +362,7 @@ public sealed class SyncExportCliTests
 
         Assert.Equal(ExitCode.Failure, exit);
         using var doc = ParseSingleJson(stdout);
-        Assert.Equal(CliErrorCode.Failure, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(CliErrorCode.ConversationNotFound, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
     [Fact]
@@ -328,6 +383,38 @@ public sealed class SyncExportCliTests
         Assert.Equal(ExitCode.Cancelled, exit);
         using var doc = ParseSingleJson(stdout);
         Assert.Equal(CliErrorCode.Cancelled, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task SyncMidStreamCancellationKeepsAlreadyReadRecordsAndExits130()
+    {
+        // Unlike the pre-cancelled-token test, this cancels *after* the importer has flushed a
+        // full batch, exercising the R2 "keeps already-read records" path through the CLI:
+        // cancellation exits 130 and the already-flushed records survive in the archive, so a
+        // later full re-read completes without duplicates.
+        using var temp = new TempDirectory();
+        using var cts = new CancellationTokenSource();
+        var source = new LargeMessageSource(() => cts.Cancel());
+        using var harness = CreateHarness(temp, source);
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+
+        var exit = await RunAsync(harness.Provider,
+            ["sync", "--conversation", LargeMessageSource.ConversationId, "--json"],
+            stdout, stderr, cts.Token);
+
+        Assert.Equal(ExitCode.Cancelled, exit);
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(CliErrorCode.Cancelled, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+
+        var conversationId = StableIds.GroupConversation(
+            StableIds.Account(source.AdapterName, LargeMessageSource.ProfileId),
+            LargeMessageSource.ConversationId);
+
+        // The conversation row and the flushed batch survive a cooperative cancellation.
+        Assert.NotNull(await harness.Store.GetConversationAsync(conversationId, CancellationToken.None));
+        var kept = await harness.Store.ReadMessagesAsync(conversationId, CancellationToken.None);
+        Assert.Equal(LargeMessageSource.FlushedBeforeCancellation, kept.Count);
     }
 
     // ---- export: happy path, documented package, JSON ----
@@ -433,6 +520,27 @@ public sealed class SyncExportCliTests
         Assert.Equal(GroupStableId(harness.Adapter), doc.RootElement.GetProperty("conversation_ids")[0].GetString());
     }
 
+    [Fact]
+    public async Task ExportResolvesByStableArchiveId()
+    {
+        // `--conversation` must accept the canonical stable archive id (g_/u_), not only the
+        // upstream source id, mirroring `conversation show` and `sync`.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var output = temp.Combine("out");
+        var stdout = new StringWriter();
+
+        var stableId = GroupStableId(harness.Adapter);
+
+        var exit = await RunAsync(harness.Provider,
+            ["export", "--conversation", stableId, "--output", output, "--json"],
+            stdout, TextWriter.Null);
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var doc = ParseSingleJson(stdout);
+        Assert.Equal(stableId, doc.RootElement.GetProperty("conversation_ids")[0].GetString());
+    }
+
     // ---- export: R1 caught failure restores prior output, exit 1 ----
 
     [Fact]
@@ -536,6 +644,43 @@ public sealed class SyncExportCliTests
         Assert.False(Directory.Exists(output));
     }
 
+    [Fact]
+    public async Task ExportIsIdempotentAcrossSuccessfulRuns()
+    {
+        // Two consecutive *successful* exports must produce byte-identical output, proving the
+        // R1 "re-export is the recovery path" claim: a clean re-export neither corrupts nor
+        // non-deterministically rewrites the prior package.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var output = temp.Combine("out");
+
+        var first = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--output", output, "--json"],
+            new StringWriter(), TextWriter.Null);
+        Assert.Equal(ExitCode.Success, first);
+
+        var snapshot = SnapshotExportFiles(output);
+
+        var second = await RunAsync(harness.Provider,
+            ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--output", output, "--json"],
+            new StringWriter(), TextWriter.Null);
+        Assert.Equal(ExitCode.Success, second);
+
+        var after = SnapshotExportFiles(output);
+        Assert.Equal(snapshot.Count, after.Count);
+        foreach (var (relativePath, bytes) in snapshot)
+        {
+            Assert.True(after.TryGetValue(relativePath, out var afterBytes),
+                $"file disappeared on re-export: {relativePath}");
+            Assert.True(bytes.SequenceEqual(afterBytes),
+                $"file content changed on re-export: {relativePath}");
+        }
+    }
+
+    private static Dictionary<string, byte[]> SnapshotExportFiles(string root) =>
+        Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .ToDictionary(f => Path.GetRelativePath(root, f), File.ReadAllBytes);
+
     // ---- no R3+ recovery machinery ----
 
     [Fact]
@@ -606,6 +751,44 @@ public sealed class SyncExportCliTests
         Assert.Contains("export", commands);
     }
 
+    // ---- help description stays in sync with command Description properties ----
+
+    [Fact]
+    public void CommandRouterDescriptionsMatchCommandDescriptions()
+    {
+        // After the CommandEntry refactor each command's one-line description lives in two
+        // places: the CommandRouter registration string and the command's Description property.
+        // If they drift, --help (rendered from the router) would differ from a direct
+        // command.Description read. This guard keeps them in sync.
+        using var temp = new TempDirectory();
+        using var harness = CreateHarness(temp);
+        var sp = harness.Provider;
+
+        var router = new CommandRouter(sp);
+        var registered = router.DescribeHelp().Commands
+            .ToDictionary(c => c.Name, c => c.Description);
+
+        ICliCommand[] commands =
+        [
+            new VersionCommand(),
+            new DoctorCommand(sp.GetRequiredService<ISourceAdapter>(), sp.GetRequiredService<IArchiveStore>()),
+            new AccountCommand(sp.GetRequiredService<SourceCatalogService>()),
+            new ConversationCommand(sp.GetRequiredService<SourceCatalogService>()),
+            new SyncCommand(sp.GetRequiredService<SourceCatalogService>(), sp.GetRequiredService<ImportService>()),
+            new ExportCommand(
+                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<ArchiveWorkflow>(),
+                sp.GetRequiredService<CliExportDefaults>()),
+        ];
+
+        foreach (var command in commands)
+        {
+            Assert.True(registered.TryGetValue(command.Name, out var description),
+                $"no registration for command '{command.Name}'");
+            Assert.Equal(command.Description, description);
+        }
+    }
+
     // ---- stubs ----
 
     /// <summary>
@@ -673,6 +856,144 @@ public sealed class SyncExportCliTests
             }
 
             base.DurableCommit(directory);
+        }
+    }
+
+    /// <summary>
+    /// A source whose account listing can be configured to fail or be empty, so the granular
+    /// resolution error codes (<c>no_accounts</c>, <c>source_unavailable</c>) are exercised
+    /// through the CLI rather than collapsed to a generic failure.
+    /// </summary>
+    private sealed class ResolutionFailureSource : ISourceAdapter
+    {
+        public bool NoAccounts { get; init; }
+        public bool AccountListingFails { get; init; }
+
+        public string AdapterName => "resolution";
+        public string AdapterVersion => "1.0.0";
+
+        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new SourceDescriptor
+            {
+                AdapterName = AdapterName,
+                AdapterVersion = AdapterVersion,
+                SourceVersion = "resolution-1",
+                SourceProductName = "resolution source",
+                IsAvailable = true,
+            });
+
+        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken)
+        {
+            if (AccountListingFails)
+                throw new InvalidOperationException("source listing failed");
+            return Task.FromResult<IReadOnlyList<SourceAccount>>(
+                NoAccounts ? [] : [new SourceAccount { SourceProfileId = "rf_account", IsCurrent = true }]);
+        }
+
+        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceConversation>>([]);
+
+        public Task<SourceConversationDetail> DescribeConversationAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            Task.FromResult(new SourceConversationDetail { SourceConversationId = sourceConversationId });
+
+        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceParticipant>>([]);
+
+        public IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// A source with more messages than one import batch, so a cooperative cancellation after
+    /// the first batch is flushed exercises the R2 "keeps already-read records" path through
+    /// the CLI: the flushed batch survives a mid-stream cancellation and the CLI exits 130.
+    /// </summary>
+    private sealed class LargeMessageSource : ISourceAdapter
+    {
+        // Matches ImportService.BatchSize so exactly one full batch is flushed before the
+        // cancellation is signalled.
+        public const int BatchSize = 2048;
+        public const int TotalMessages = BatchSize + 2;
+        public const int FlushedBeforeCancellation = BatchSize;
+
+        public const string ProfileId = "large_account";
+        public const string ConversationId = "large_conv";
+
+        private readonly Action _cancelAfterFlush;
+
+        public LargeMessageSource(Action cancelAfterFlush) => _cancelAfterFlush = cancelAfterFlush;
+
+        public string AdapterName => "large";
+        public string AdapterVersion => "1.0.0";
+
+        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new SourceDescriptor
+            {
+                AdapterName = AdapterName,
+                AdapterVersion = AdapterVersion,
+                SourceVersion = "large-1",
+                SourceProductName = "large fixture source",
+                IsAvailable = true,
+            });
+
+        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceAccount>>(
+            [
+                new SourceAccount { SourceProfileId = ProfileId, DisplayName = "large account", IsCurrent = true },
+            ]);
+
+        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceConversation>>(
+            [
+                new SourceConversation { SourceConversationId = ConversationId, Kind = ConversationKind.Group, Title = "large" },
+            ]);
+
+        public Task<SourceConversationDetail> DescribeConversationAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            Task.FromResult(new SourceConversationDetail
+            {
+                SourceConversationId = sourceConversationId,
+                MessageCount = TotalMessages,
+                ParticipantCount = 1,
+            });
+
+        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<SourceParticipant>>([new SourceParticipant { SourceUserId = ProfileId, Nickname = "large" }]);
+
+        public async IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+            string sourceProfileId,
+            string sourceConversationId,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            for (var i = 1; i <= TotalMessages; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return new SourceMessage
+                {
+                    SourceConversationId = sourceConversationId,
+                    SenderSourceUserId = ProfileId,
+                    OccurredAt = FixtureSourceAdapter.Base.AddSeconds(i),
+                    SourceType = "1",
+                    SourcePartition = "large_0",
+                    SourceMessageId = $"l:large_0:{i}",
+                    SourceOrderKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Content = SourceMessageContent.PlainText($"message {i}"),
+                };
+
+                // After the (BatchSize+1)th message is consumed, the first full batch has been
+                // flushed into the import session. Signal the test to cancel so the importer's
+                // cancellation path commits the already-read records (R2) and the CLI exits 130.
+                if (i == BatchSize + 1)
+                    _cancelAfterFlush();
+
+                await Task.Yield();
+            }
         }
     }
 }

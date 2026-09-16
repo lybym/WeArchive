@@ -1,11 +1,11 @@
 # WeArchive CLI contract
 
-This document records the additive command, JSON and exit-code contract for the discovery
-commands delivered by the M0.5 CLI product-surface migration (Issue #7). It refines the
-high-level CLI contract in [`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md)
-section 3.1.1 and [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is the primary
-product surface; this file is normative for the command shapes and machine-readable output
-described here.
+This document records the additive command, JSON and exit-code contract for the M0.5 CLI
+product-surface migration. It covers the read-only discovery commands (Issue #7) and the
+`sync`/`export` commands (Issue #8). It refines the high-level CLI contract in
+[`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
+[ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is the primary product surface;
+this file is normative for the command shapes and machine-readable output described here.
 
 Field names in every JSON result are pinned by `[JsonPropertyName]` attributes in
 `src/WeArchive.Cli/Output/Dto/`, so a C# property rename cannot silently change the wire
@@ -186,6 +186,134 @@ JSON shape (exit 0):
 }
 ```
 
+## Commands (sync/export family — Issue #8 / M0.5)
+
+These commands publish to the archive or to a derived dataset. They are thin transport
+adapters over `ImportService` (`sync`) and `ArchiveWorkflow` (`export`); they contain no
+source-format, normalization or transaction logic. Both reuse the documented R2 import and
+R1 export reliability levels — no R3+ crash-recovery machinery is introduced (see
+[DEVELOPMENT.md](DEVELOPMENT.md) “Reliability Levels”).
+
+### `wearchive sync --conversation <id-or-alias>`
+
+Imports one conversation from the local source into the SQLite archive (FR-04/FR-08/FR-09,
+FR-14). Resolution is identical to `conversation show`: the `<id-or-alias>` matches the
+canonical stable archive id (`g_…`/`u_…`) **or** the upstream `source_id`; the current source
+account is auto-selected (no prompt, safe under `--no-input`). `StableIds.Conversation` is
+the single derivation shared with `ImportService`, so a caller may refer to the same id before
+and after import.
+
+Options:
+
+```text
+--conversation <id-or-alias>   Required. Stable archive id (g_/u_) or upstream source id.
+```
+
+Reliability — **R2** (Import): a normal success commits under the existing conversation
+transaction. A Fatal source-coverage failure rolls back the entire conversation transaction,
+so no partial conversation is published; the CLI surfaces it as exit 1. A cooperative
+cancellation keeps the already-read records (they are committed by stable id and a later full
+re-read completes the conversation without duplicates) and exits 130. SQLite is the system of
+record.
+
+Exits `1` with `failure` (Fatal import did not complete), `source_unavailable`,
+`no_accounts`, `conversation_list_failed` or `conversation_not_found` on the corresponding
+failure; `2` on a usage error; `130` on cancellation.
+
+JSON shape (exit 0):
+
+```json
+{
+  "conversation_id": "g_<16-hex>",
+  "account_id": "a_<16-hex>",
+  "source_profile_id": "wxid_...",
+  "source_conversation_id": "100200300@chatroom",
+  "records_scanned": 24,
+  "counters": {
+    "inserted": 18,
+    "updated": 0,
+    "unchanged": 0,
+    "unknown": 1,
+    "partial": 0
+  },
+  "first_message_at": "2026-01-15T09:00:00+08:00",
+  "last_message_at": "2026-02-04T09:00:00+08:00",
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "unknown_message_type",
+      "message": "...",
+      "count": 1,
+      "source_type": "1000007",
+      "source_subtype": null
+    }
+  ]
+}
+```
+
+`conversation_id` mirrors `StableIds.Conversation` exactly. `counters` describes committed
+state only (a rolled-back Fatal run produces an error document, not this result). A repeated
+sync is idempotent by stable id (`unchanged` grows on the second run).
+
+### `wearchive export --conversation <id-or-alias> [--output <dir>]`
+
+Publishes one conversation's JSONL dataset (FR-12, [EXPORT_PRD.md](EXPORT_PRD.md)). Resolution
+is identical to `sync`. The command delegates the whole source → archive → dataset operation
+to `ArchiveWorkflow`, which re-imports idempotently (by stable id) and then exports from the
+SQLite archive, so the manifest carries ingested diagnostics.
+
+Options:
+
+```text
+--conversation <id-or-alias>   Required. Stable archive id (g_/u_) or upstream source id.
+-o, --output <dir>             Optional. Output directory. Defaults to the per-user
+                               application data exports/ directory when omitted.
+```
+
+Reliability — **R1** (Export): a normal success publishes the complete documented output per
+[EXPORT_PRD.md](EXPORT_PRD.md) section 3. A caught cancellation or I/O failure attempts
+in-process restoration of the prior package where possible; process crash and OS/power loss
+are **not** guaranteed recovery classes. SQLite remains the system of record and re-export is
+the recovery path. No commit marker, journal or rollback ledger is persisted.
+
+Exits `1` with `failure` (export operation failure or Fatal source-coverage failure during the
+re-import phase), `source_unavailable`, `no_accounts`, `conversation_list_failed` or
+`conversation_not_found` on the corresponding failure; `2` on a usage error; `130` on
+cancellation.
+
+JSON shape (exit 0):
+
+```json
+{
+  "succeeded": true,
+  "output_directory": "C:\\...\\exports\\...",
+  "conversation_ids": ["g_<16-hex>"],
+  "record_count": 24,
+  "unknown_count": 1,
+  "partial_count": 0,
+  "time_range": {
+    "first_message_at": "2026-01-15T09:00:00+08:00",
+    "last_message_at": "2026-02-04T09:00:00+08:00"
+  },
+  "files": [
+    { "path": "manifest.json", "kind": "manifest", "record_count": 0 },
+    { "path": "identities.yaml", "kind": "identities", "record_count": 4 },
+    { "path": "conversations.yaml", "kind": "conversations", "record_count": 1 },
+    { "path": "collections.yaml", "kind": "collections", "record_count": 0 },
+    { "path": "chats/groups/g_<16-hex>/2026/2026-01.jsonl", "kind": "timeline", "record_count": 22 }
+  ],
+  "conversation_paths": ["chats/groups/g_<16-hex>"],
+  "diagnostics": [
+    { "severity": "warning", "code": "unknown_message_type", "message": "...", "count": 1 }
+  ]
+}
+```
+
+`files[].kind` is a stable wire name (`manifest`, `identities`, `conversations`,
+`collections`, `timeline`). A repeated export is idempotent: two successful exports produce
+byte-identical output (the manifest `created_at` is derived from the host clock, not wall
+time, so it is stable within a process).
+
 ## Failure document (`--json`)
 
 In `--json` mode a non-zero exit still writes exactly one JSON document to stdout so callers can
@@ -211,6 +339,8 @@ Stable `error.code` values:
 
 ## Not yet implemented
 
-`wearchive sync --conversation <id-or-alias>` and `wearchive export --conversation <id-or-alias>`
-are part of the M0.5 command family but are delivered by separate issues; they retain the
-existing R2 import and R1 export reliability levels. See [ROADMAP.md](ROADMAP.md) M0.5.
+The `--conversation <id-or-alias>` selector resolves by the canonical stable archive id
+(`g_…`/`u_…`) or the upstream `source_id`; resolution by the export-catalog `alias` and
+collection/time-range selection is a forward refinement layered on the same export engine
+([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5. See
+[ROADMAP.md](ROADMAP.md) M0.5/M1.
