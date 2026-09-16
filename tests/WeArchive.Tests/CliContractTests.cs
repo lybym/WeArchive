@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using WeArchive.Cli;
 using WeArchive.Cli.CommandLine;
 using WeArchive.Cli.Commands;
 using WeArchive.Core.Abstractions;
@@ -16,6 +17,12 @@ namespace WeArchive.Tests;
 /// </summary>
 public sealed class CliContractTests
 {
+    /// <summary>
+    /// A released version: three numeric parts plus an optional SemVer prerelease suffix, with
+    /// no build metadata (docs/CLI.md documents `--version` as the product version).
+    /// </summary>
+    private const string VersionPattern = @"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$";
+
     // ---- Command-line parser ----
 
     [Fact]
@@ -98,7 +105,11 @@ public sealed class CliContractTests
         // stdout must be a single valid JSON document with no extra content.
         var output = stdout.ToString().TrimEnd();
         using var doc = JsonDocument.Parse(output);
-        Assert.Equal("0.1.0", doc.RootElement.GetProperty("version").GetString());
+        // The version is whatever this build was stamped with, so it is compared against the
+        // running assembly rather than a literal. Pinning a literal here made the release
+        // workflow fail for every version except the default (Issue #9 review, P1 #1).
+        Assert.Equal(ProductVersion.Current, doc.RootElement.GetProperty("version").GetString());
+        Assert.Matches(VersionPattern, doc.RootElement.GetProperty("version").GetString());
         Assert.Equal("net10.0-windows", doc.RootElement.GetProperty("framework").GetString());
         Assert.Equal("win-x64", doc.RootElement.GetProperty("platform").GetString());
 
@@ -153,7 +164,9 @@ public sealed class CliContractTests
         Assert.Equal(ExitCode.Success, exit);
         var output = stdout.ToString().TrimEnd();
         using var doc = JsonDocument.Parse(output);
-        Assert.Equal("0.1.0", doc.RootElement.GetProperty("version").GetString());
+        // Must agree with the `version` command surface and with the running build's stamp.
+        Assert.Equal(ProductVersion.Current, doc.RootElement.GetProperty("version").GetString());
+        Assert.Matches(VersionPattern, doc.RootElement.GetProperty("version").GetString());
     }
 
     [Fact]

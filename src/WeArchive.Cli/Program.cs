@@ -27,8 +27,8 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         // Build the production service provider: archive, exporter, application services
-        // and the Windows WeChat source adapter. The CLI does not add a second composition
-        // model — it reuses the same Infrastructure extensions as the transitional WPF host.
+        // and the Windows WeChat source adapter. The CLI is the only product surface, so
+        // this is the only composition root — it reuses the Infrastructure extensions.
         var services = new ServiceCollection();
         services.AddWeArchiveCore(ArchivePath);
         services.AddWeChatWindowsSource();

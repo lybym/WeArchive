@@ -12,11 +12,12 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <RootNamespace>WeArchive.Cli</RootNamespace>
     <!--
-      During M0.5 the historical WPF project (WeArchive.App) still produces an assembly
-      named WeArchive. The CLI uses WeArchive.Cli until the WPF surface is removed, at
-      which point a follow-up issue can rename this assembly to WeArchive.
+      The shipped executable is WeArchive.exe, so scripts and agents invoke `wearchive`
+      from PATH exactly as docs/CLI.md documents. The assembly was named WeArchive.Cli only
+      while the historical WPF project (WeArchive.App) also produced an assembly named
+      WeArchive; that collision is gone now that the WPF surface is retired (Issue #9).
     -->
-    <AssemblyName>WeArchive.Cli</AssemblyName>
+    <AssemblyName>WeArchive</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
   </PropertyGroup>
@@ -28,6 +29,16 @@
   <ItemGroup>
     <ProjectReference Include="..\WeArchive.Core\WeArchive.Core.csproj" />
     <ProjectReference Include="..\WeArchive.Infrastructure\WeArchive.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!--
+    The version-resolution rule is internal (it is not part of the CLI's product API); the test
+    project pins its behavior against synthetic assembly attributes.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>WeArchive.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
 </Project>

@@ -8,7 +8,7 @@ The product is designed around one core idea: **the archive is the product; coll
 
 The target product surface is a **Windows `gh`-style command-line application** for WeChat for Windows 4.x. It is designed to be called directly by humans, scripts, Harness workflows and AI agents. The CLI is an explicit command interface, not a conversational shell, TUI or embedded agent runtime. See [adr/0006-cli-first-product-surface.md](adr/0006-cli-first-product-surface.md).
 
-The repository currently contains the historical WPF MVP while the CLI migration is in progress and not yet shipped. That WPF surface is transitional and must not be expanded as a second first-class product surface.
+The historical WPF MVP has been removed, and the CLI migration is delivered (see section 9.2 and section 10, M0.5). The repository maintains exactly one first-class product surface and must not grow a second one.
 
 ## 2. Target user and caller
 
@@ -365,9 +365,11 @@ wearchive export --conversation g_01fd893a7b21c054 --json --no-input
 
 The CLI is not a TUI and does not host an LLM.
 
-### 9.2 Transitional surface — historical WPF MVP
+It is distributed as a self-contained `win-x64` executable (`WeArchive.exe`) inside `WeArchive-win-x64.zip`, with no .NET runtime prerequisite, no installer and no auto-updater (NFR-01). See [ADR 0007](adr/0007-cli-self-contained-distribution.md).
 
-The repository currently contains the WPF MVP described by superseded ADR 0003. It exists only until the CLI migration reaches the acceptance criteria tracked in GitHub Issues. New product features must target the CLI/application-service path rather than extend WPF-specific behavior.
+### 9.2 Historical surface — retired WPF MVP
+
+The historical WPF MVP described by superseded ADR 0003 has been removed. The repository maintains exactly one first-class product surface, the command CLI, and no new product features target a GUI.
 
 ## 10. Milestone acceptance criteria
 
@@ -382,15 +384,15 @@ The repository currently contains the WPF MVP described by superseded ADR 0003. 
 
 The historical WPF shell was an implementation vehicle, not part of the enduring M0 contract.
 
-### M0.5 — CLI product-surface migration
+### M0.5 — CLI product-surface migration (met)
 
-- `WeArchive.Cli` (or equivalent console entry point) is the primary executable.
+- `WeArchive.Cli` is the primary executable (assembly `WeArchive`, shipped as `WeArchive.exe`).
 - Required FR-22 commands are implemented over existing application services.
 - Human and `--json` output modes have contract tests.
 - stdout/stderr separation and exit codes are tested.
 - `--no-input` never prompts.
 - Required sync/export behavior retains the existing archive/export semantics and reliability levels.
-- WPF-specific product code is removed after parity; the project does not carry two first-class presentation layers.
+- WPF-specific product code is removed; the project does not carry two first-class presentation layers.
 - Portable self-contained `win-x64` release is produced and smoke-tested from GitHub Actions/Release artifacts.
 
 ### M1 — First real local source adapter (MVP slice met; milestone incomplete)

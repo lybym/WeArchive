@@ -6,7 +6,7 @@ Requirements and architecture lead implementation. Code must not become the de f
 
 The roadmap is milestone-based rather than date-based. A milestone is complete only when its acceptance criteria are met and its documentation matches shipped behavior.
 
-The product-surface decision changed on 2026-09-15: WeArchive is now **CLI-first**, with a `gh`-style command interface designed for humans, scripts and agents. See [ADR 0006](adr/0006-cli-first-product-surface.md).
+The product-surface decision changed on 2026-09-15: WeArchive is now **CLI-first**, with a `gh`-style command interface designed for humans, scripts and agents. See [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is distributed as a self-contained portable `win-x64` ZIP; see [ADR 0007](adr/0007-cli-self-contained-distribution.md).
 
 ## M0 — Archive foundation (complete)
 
@@ -41,7 +41,7 @@ Acceptance criteria — met:
 
 The historical WPF shell was an implementation vehicle and is not part of the enduring M0 product contract.
 
-## M0.5 — CLI product-surface migration (current priority)
+## M0.5 — CLI product-surface migration (delivered)
 
 **Goal:** replace the WPF-first product surface with a small `gh`-style command CLI while preserving the existing archive/source/export engine.
 
@@ -72,17 +72,17 @@ wearchive export --conversation <id-or-alias>
 - Conversation import remains `R2`: Fatal source-coverage failure rolls back the entire conversation transaction.
 - CLI migration must not introduce R3+ crash-recovery machinery unless a separate requirement explicitly authorizes it.
 
-### Acceptance criteria
+### Acceptance criteria — met
 
-- `WeArchive.Cli` or equivalent console entry point is the primary executable;
+- `WeArchive.Cli` is the primary executable (assembly `WeArchive`, producing `WeArchive.exe`);
 - all required commands call existing application services rather than duplicating business logic;
 - human and JSON output paths are tested;
 - stdout/stderr and exit semantics are tested;
 - `--no-input` is automation-safe;
 - sync/export retain existing archive/export semantics;
-- the WPF presentation layer is removed once required CLI parity is reached;
+- the WPF presentation layer is removed;
 - the repository does not maintain two first-class presentation layers;
-- self-contained `win-x64` portable release artifact is produced and smoke-tested from GitHub Actions/Release;
+- a self-contained `win-x64` portable release artifact is produced and smoke-tested from GitHub Actions/Release;
 - docs/README/AGENTS reflect the CLI product.
 
 ### Explicit non-goals
@@ -213,11 +213,11 @@ These items are intentionally not committed:
 
 ## Packaging and release
 
-Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets.
+Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets. That line is retired.
 
-For M0.5 the product requirement is simpler: a **self-contained `win-x64` CLI artifact** suitable for direct invocation by humans and agents. The implementation issue must decide the minimal release packaging needed for the CLI and update/supersede ADR 0004 where necessary. Do not preserve Velopack merely because the WPF line used it.
+The shipped artifact is a **self-contained `win-x64` CLI** published as `WeArchive-win-x64.zip`, which extracts to `WeArchive.exe` plus a `wearchive.cmd` PATH shim. There is no installer and no auto-updater. `scripts/pack-portable.ps1` builds it, `scripts/smoke-test-cli.ps1` executes the published artifact to verify `--version`, `--help` and a fixture-safe `doctor` run, and GitHub Actions/Release remains the source of test and release artifacts. See [ADR 0007](adr/0007-cli-self-contained-distribution.md).
 
-GitHub Actions/Release remains the source of test artifacts and release artifacts. Code signing remains separate work unless explicitly scheduled.
+Code signing remains separate work unless explicitly scheduled.
 
 ## Release discipline
 
@@ -232,9 +232,8 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-1. **M0.5 CLI product-surface migration.**
-2. Finish M1 incremental checkpoints and full partition-coverage reporting.
-3. Continue M2 semantic depth.
-4. Build M3 retrieval and M4 Harness workflows on the CLI contract.
+1. Finish M1 incremental checkpoints and full partition-coverage reporting.
+2. Continue M2 semantic depth.
+3. Build M3 retrieval and M4 Harness workflows on the CLI contract.
 
 The migration must preserve the foundation already delivered: generic adapter contract, canonical message schema, normalized models, SQLite system of record, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic export.

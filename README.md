@@ -26,11 +26,11 @@ Query / export
 CLI + JSONL/YAML/JSON machine interfaces
 ```
 
-The primary product surface is being migrated from the historical WPF MVP to a `gh`-style CLI. See [`docs/adr/0006-cli-first-product-surface.md`](docs/adr/0006-cli-first-product-surface.md).
+The primary product surface is the `gh`-style CLI described by [`docs/adr/0006-cli-first-product-surface.md`](docs/adr/0006-cli-first-product-surface.md), distributed as a self-contained portable ZIP per [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md). The historical WPF MVP has been retired.
 
-## Target CLI
+## CLI
 
-Initial command family:
+Command family:
 
 ```text
 wearchive doctor
@@ -56,7 +56,18 @@ exit 130    cancellation/user interrupt
 
 The CLI is intentionally **not** a full-screen TUI, conversational shell, embedded LLM or MCP server.
 
-The discovery commands (`doctor`, `account list`, `conversation list`, `conversation show <id-or-alias>`) are thin adapters over the existing application services; their command/JSON/exit contract is documented in [`docs/CLI.md`](docs/CLI.md). The `sync` and `export` commands are delivered by separate M0.5 issues.
+All six commands are thin adapters over the existing application services; their command/JSON/exit contract is documented in [`docs/CLI.md`](docs/CLI.md).
+
+## Install and run
+
+Download `WeArchive-win-x64.zip` from [Releases](https://github.com/lybym/WeArchive/releases), extract it anywhere and add the extracted folder to `PATH`:
+
+```powershell
+wearchive --version
+wearchive doctor
+```
+
+The package is self-contained: no .NET runtime is required. It contains `WeArchive.exe` and a `wearchive.cmd` shim. There is no installer and no auto-updater — upgrading means extracting a newer ZIP; see [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md).
 
 ## Current implementation status
 
@@ -71,7 +82,7 @@ The difficult archive/source/export engine is already implemented:
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
 
-The repository still contains the historical WPF application while **M0.5 CLI product-surface migration** is in progress. WPF is transitional and must not be expanded as a second first-class product surface.
+The M0.5 CLI product-surface migration is complete: the CLI is the only product surface and the historical WPF application has been removed.
 
 ## Reliability model
 
@@ -124,10 +135,10 @@ Target projects:
 |---|---|
 | `src/WeArchive.Core` | Domain, contracts, normalization, orchestration; presentation/source-format independent |
 | `src/WeArchive.Infrastructure` | WeChat compatibility/key acquisition/SQLCipher, SQLite archive, export, settings |
-| `src/WeArchive.Cli` | Command parsing, human/JSON rendering, stdout/stderr/exit-code contract |
+| `src/WeArchive.Cli` | Command parsing, human/JSON rendering, stdout/stderr/exit-code contract; assembly `WeArchive` |
 | `tests/WeArchive.Tests` | Unit, integration, CLI contract and compatibility tests |
 
-During migration, `src/WeArchive.App` may remain temporarily. It is not the target architecture.
+These are the only projects; the historical `src/WeArchive.App` WPF project has been removed.
 
 ## Current scope and limitations
 
@@ -137,11 +148,10 @@ In scope:
 - normalized text/metadata archive;
 - stable identity/conversation IDs;
 - selective machine export;
-- agent/script-friendly CLI migration.
+- an agent/script-friendly CLI as the only product surface.
 
 Not yet complete:
 
-- CLI product-surface migration itself;
 - incremental checkpoints;
 - complete partition-coverage reporting;
 - full-text archive search;
@@ -154,7 +164,13 @@ Out of current scope:
 - hosted/multi-user service;
 - macOS/Linux source support;
 - embedded AI provider;
-- full-screen TUI/GUI as primary surface.
+- full-screen TUI/GUI;
+- installer and auto-update distribution.
+
+Known limitations:
+
+- releases are unsigned, so Windows SmartScreen may warn until code signing is scheduled;
+- upgrading means extracting a newer ZIP over the previous one; there is no automatic update.
 
 ## Build and develop
 
@@ -164,7 +180,14 @@ dotnet build WeArchive.sln -c Release
 dotnet test WeArchive.sln
 ```
 
-The released product remains self-contained `win-x64`. M0.5 will simplify packaging around the CLI; the historical WPF/Velopack release path is not automatically preserved.
+Build and smoke-test the release artifact:
+
+```powershell
+./scripts/pack-portable.ps1 -Version 0.2.0
+./scripts/smoke-test-cli.ps1
+```
+
+The released product is a self-contained `win-x64` portable CLI. Packaging is deliberately minimal: no installer and no updater — see [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md).
 
 ## Documentation first
 
@@ -175,9 +198,9 @@ Read before coding:
 | [`docs/PRD.md`](docs/PRD.md) | Product definition and requirements |
 | [`docs/EXPORT_PRD.md`](docs/EXPORT_PRD.md) | Export layout and selection semantics |
 | [`docs/MESSAGE_SCHEMA.md`](docs/MESSAGE_SCHEMA.md) | Canonical message semantics |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical boundaries and CLI target architecture |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical boundaries and CLI architecture |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Archive model and schema evolution |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | M0.5 CLI migration and later milestones |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones and current priority |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Development/reliability/CLI governance |
 | [`docs/CLI.md`](docs/CLI.md) | CLI command/JSON/exit contract |
 | [`AGENTS.md`](AGENTS.md) | Mandatory agent rules and hard-stop conditions |

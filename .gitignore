@@ -490,6 +490,10 @@ $RECYCLE.BIN/
 
 # Local scratch/verification workspace used during development.
 /.probe/
+/.agent-scratch-*/
+
+# `git worktree` checkouts (short-lived feature branches) are never committed.
+/.worktrees/
 
 # Build and packaging outputs.
 /artifacts/
