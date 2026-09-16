@@ -16,20 +16,28 @@
     unavailability is its purpose), so this smoke test needs no source fixture and must not
     be affected by the runner's environment. No chat content is read or printed.
 
+    Version comparison ignores build metadata and is exact otherwise, so a prerelease
+    (`0.2.0-rc.1`) is checked as a prerelease rather than being accepted as `0.2.0`.
+
 .PARAMETER ArtifactDirectory
     Directory containing the published WeArchive.exe. Defaults to artifacts/publish/win-x64.
 
 .PARAMETER ExpectedVersion
-    Version the artifact must report, for example 0.1.0. Optional.
+    Version the artifact must report, for example 0.1.0 or 0.2.0-rc.1. Optional.
 
 .PARAMETER ExeName
     Executable name inside the artifact directory. Defaults to WeArchive.exe.
+
+.PARAMETER ViaShim
+    Invoke the artifact through its `wearchive.cmd` PATH shim instead of WeArchive.exe, so the
+    documented `wearchive` entry point is what gets exercised. Requires the shim to be present.
 #>
 [CmdletBinding()]
 param(
     [string] $ArtifactDirectory,
     [string] $ExpectedVersion,
-    [string] $ExeName = 'WeArchive.exe'
+    [string] $ExeName = 'WeArchive.exe',
+    [switch] $ViaShim
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,11 +45,20 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $ArtifactDirectory) { $ArtifactDirectory = Join-Path $repoRoot 'artifacts/publish/win-x64' }
+$ArtifactDirectory = (Resolve-Path $ArtifactDirectory).Path
 
 $exe = Join-Path $ArtifactDirectory $ExeName
 if (-not (Test-Path $exe)) { throw "Published artifact not found: $exe" }
 
-Write-Host "Smoke-testing $exe"
+# The entry point that actually gets invoked. `docs/CLI.md` documents the lower-case
+# `wearchive`, so `-ViaShim` proves the PATH shim resolves the exe, not just the exe itself.
+$target = $exe
+if ($ViaShim) {
+    $target = Join-Path $ArtifactDirectory 'wearchive.cmd'
+    if (-not (Test-Path $target)) { throw "PATH shim not found: $target" }
+}
+
+Write-Host "Smoke-testing $target"
 
 # A single JSON document: exactly one line, no ANSI decoration, parseable.
 function Invoke-Smoke {
@@ -51,7 +68,7 @@ function Invoke-Smoke {
         [int] $ExpectedExit = 0
     )
 
-    $output = & $exe @Arguments
+    $output = & $target @Arguments
     $exit = $LASTEXITCODE
     $text = ($output -join "`n").Trim()
 
@@ -71,8 +88,15 @@ function Invoke-Smoke {
 # 1. --version --json
 $version = Invoke-Smoke -Label '--version --json' -Arguments @('--version', '--json')
 if (-not $version.version) { throw '--version --json did not report a "version" field.' }
-if ($ExpectedVersion -and $version.version -ne $ExpectedVersion) {
-    throw "Artifact reports version '$($version.version)' but '$ExpectedVersion' was expected."
+
+if ($ExpectedVersion) {
+    # The CLI reports its informational version (src/WeArchive.Cli/ProductVersion.cs), which for
+    # a publishing build is the requested version. Build metadata is stripped from both sides so
+    # a local `-p:Version=0.1.0+<commit>` build still compares equal to `0.1.0`.
+    $expected = ($ExpectedVersion -split '\+')[0]
+    if ($version.version -ne $expected) {
+        throw "Artifact reports version '$($version.version)' but '$expected' was expected."
+    }
 }
 Write-Host "    version=$($version.version) framework=$($version.framework) platform=$($version.platform)"
 

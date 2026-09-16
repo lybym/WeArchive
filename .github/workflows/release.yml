@@ -53,8 +53,12 @@ jobs:
       - name: Restore
         run: dotnet restore
 
+      # Built and tested without a version stamp. `dotnet test --no-build` runs against exactly
+      # the assemblies this step produced, so stamping the release version here would make the
+      # suite depend on that version for no benefit; the version is applied to the artifact in
+      # the publish step below, and the smoke tests then assert the artifact carries it.
       - name: Build
-        run: dotnet build --no-restore -c Release -p:Version=${{ steps.version.outputs.value }}
+        run: dotnet build --no-restore -c Release
 
       # DoD: `dotnet test` must be green before a release is produced.
       - name: Test
@@ -76,7 +80,9 @@ jobs:
           if (-not (Test-Path $exe)) { throw "missing $exe" }
           if (-not (Test-Path 'artifacts/publish/win-x64/hostfxr.dll')) { throw 'not self-contained' }
 
-      # Verifies the artifact that is about to be published, not a development build.
+      # Verifies the artifact that is about to be published, not a development build. The
+      # expected version is the release version exactly, so a prerelease (0.2.0-rc.1) must
+      # report itself as that prerelease rather than as 0.2.0.
       - name: Smoke-test the release artifact
         shell: pwsh
         run: ./scripts/smoke-test-cli.ps1 -ExpectedVersion ${{ steps.version.outputs.value }}
@@ -84,6 +90,11 @@ jobs:
       - name: Build portable ZIP
         shell: pwsh
         run: ./scripts/pack-portable.ps1 -Version ${{ steps.version.outputs.value }} -SkipPublish
+
+      # The ZIP is the released object; verify its layout and the PATH shim as extracted.
+      - name: Smoke-test the extracted release package
+        shell: pwsh
+        run: ./scripts/smoke-test-package.ps1 -ExpectedVersion ${{ steps.version.outputs.value }}
 
       - name: Determine pre-release flag
         id: prerelease

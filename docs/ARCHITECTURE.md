@@ -330,11 +330,12 @@ The exporter reads the archive only; it never reopens the source.
 WeArchive.sln
 src/
 ├─ WeArchive.Core/                 net10.0; domain/contracts/services
-├─ WeArchive.Infrastructure/       net10.0-windows; WeChat/SQLite/export/settings
+├─ WeArchive.Infrastructure/       net10.0-windows; WeChat/SQLite/export
 └─ WeArchive.Cli/                  net10.0-windows; command parsing/output/composition root
 scripts/
 ├─ pack-portable.ps1               self-contained win-x64 publish -> WeArchive-win-x64.zip
-└─ smoke-test-cli.ps1              smoke test that runs the published artifact
+├─ smoke-test-cli.ps1              smoke test that runs the published artifact
+└─ smoke-test-package.ps1          extracts the portable ZIP and smoke tests the result
 tests/
 └─ WeArchive.Tests/                net10.0-windows; xUnit v2 on VSTest
 ```

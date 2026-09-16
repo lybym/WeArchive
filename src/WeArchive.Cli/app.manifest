@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="0.1.0.0" name="WeArchive.Cli" />
+  <!--
+    The identity must name the shipped assembly (WeArchive, so WeArchive.exe). The version here
+    is the manifest schema's required placeholder and is not the product version: the release
+    version is stamped by `-p:Version` and reported through ProductVersion (see
+    src/WeArchive.Cli/ProductVersion.cs and docs/CLI.md).
+  -->
+  <assemblyIdentity version="0.1.0.0" name="WeArchive" />
 
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>

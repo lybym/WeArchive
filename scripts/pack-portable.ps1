@@ -74,6 +74,20 @@ if (-not $SkipPublish) {
 $exe = Join-Path $publishDir $exeName
 if (-not (Test-Path $exe)) { throw "Expected $exe to exist after publish." }
 
+# Assert the artifact really is the requested version before it is packaged. Without this,
+# `-SkipPublish` on a stale publish directory (or a publish that ignored -p:Version) would
+# silently produce a ZIP whose contents disagree with the version in its name and release tag.
+# The CLI reports its informational version, so a prerelease compares correctly here.
+$reported = & $exe --version --json
+if ($LASTEXITCODE -ne 0) { throw "$exe --version --json failed with exit code $LASTEXITCODE" }
+$reportedVersion = ($reported | ConvertFrom-Json).version
+if (-not $reportedVersion) { throw "$exe --version --json did not report a version." }
+if ($reportedVersion -ne $Version) {
+    throw ("Publish directory '$publishDir' holds version '$reportedVersion' but '$Version' was requested. " +
+        "Re-run without -SkipPublish, or pass the version the directory was actually built with.")
+}
+Write-Host "  artifact version verified: $reportedVersion"
+
 # A self-contained publish is a folder. The PATH entry point documented in docs/CLI.md is
 # the lower-case `wearchive`, so the package carries a one-line shim for it; Windows also
 # resolves `WeArchive.exe` case-insensitively once the folder is on PATH.

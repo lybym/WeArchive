@@ -47,14 +47,25 @@ WPF line used it."
    portable ZIP as the release asset when a `v*` tag is pushed or the workflow is dispatched
    with an explicit version. The `AssemblyName` of `src/WeArchive.Cli` is `WeArchive`, so
    the produced executable is `WeArchive.exe`.
-5. **Release verification runs against the published artifact**, not a development build:
-   `scripts/smoke-test-cli.ps1` executes the artifact and asserts `--version --json`,
-   `--help --json` (required FR-22 command family) and a real fixture-safe command path
-   (`doctor --json --no-input`) that must exit `0` and emit exactly one JSON document.
-   `doctor` needs no local WeChat client, so the smoke test is environment-independent.
-6. **Code signing remains separate, unscheduled work.** Nothing in this decision prevents
+5. **Release verification runs against the published artifact and the shipped ZIP**, not a
+   development build. `scripts/smoke-test-cli.ps1` executes the artifact and asserts
+   `--version --json` (the exact release version), `--help --json` (required FR-22 command
+   family) and a real fixture-safe command path (`doctor --json --no-input`) that must exit `0`
+   and emit exactly one JSON document. `scripts/smoke-test-package.ps1` then asserts the ZIP's
+   layout, extracts it into a clean directory and runs the same contract against the extracted
+   executable and through the `wearchive.cmd` shim. `doctor` needs no local WeChat client, so the
+   smoke tests are environment-independent.
+6. **The reported product version is the release version, including a prerelease suffix.**
+   `--version` resolves the CLI assembly's informational version with build metadata removed
+   (`src/WeArchive.Cli/ProductVersion.cs`), because the SDK stamps `-p:Version=0.2.0-rc.1` as
+   `AssemblyVersion=0.2.0.0` and `AssemblyInformationalVersion=0.2.0-rc.1`. Reporting the numeric
+   assembly version would make a prerelease — a path this workflow deliberately publishes
+   (`--prerelease`) — indistinguishable from its final release. `pack-portable.ps1` asserts the
+   publish directory reports the requested version before packaging, so `-SkipPublish` cannot
+   package a stale directory under a version its contents do not carry.
+7. **Code signing remains separate, unscheduled work.** Nothing in this decision prevents
    adding Authenticode signing to the publish output later.
-7. **Source-control signing of the CLI contract is unchanged.** `docs/CLI.md` remains
+8. **Source-control signing of the CLI contract is unchanged.** `docs/CLI.md` remains
    normative for command syntax, JSON shapes and exit codes; this ADR changes only how the
    binary reaches a machine.
 
@@ -125,5 +136,6 @@ artifact name.
 - `docs/DEVELOPMENT.md` — stack, packaging and testing policy
 - `docs/adr/0004-distribution-velopack.md` (superseded)
 - `docs/adr/0006-cli-first-product-surface.md`
-- `scripts/pack-portable.ps1`, `scripts/smoke-test-cli.ps1`
+- `scripts/pack-portable.ps1`, `scripts/smoke-test-cli.ps1`, `scripts/smoke-test-package.ps1`
+- `src/WeArchive.Cli/ProductVersion.cs`
 - `.github/workflows/ci.yml`, `.github/workflows/release.yml`

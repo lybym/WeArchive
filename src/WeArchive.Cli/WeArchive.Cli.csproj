@@ -31,4 +31,14 @@
     <ProjectReference Include="..\WeArchive.Infrastructure\WeArchive.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!--
+    The version-resolution rule is internal (it is not part of the CLI's product API); the test
+    project pins its behavior against synthetic assembly attributes.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>WeArchive.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

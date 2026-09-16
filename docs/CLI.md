@@ -31,12 +31,27 @@ runtime, containing `WeArchive.exe` plus a `wearchive.cmd` shim. Add the extract
 case-insensitively). There is no installer and no auto-updater —
 see [ADR 0007](adr/0007-cli-self-contained-distribution.md).
 
-Release verification executes the published artifact rather than a development build:
+Release verification executes the published artifact rather than a development build, and then
+the shipped ZIP as extracted:
 
 ```powershell
-./scripts/smoke-test-cli.ps1                 # asserts --version, --help and doctor --json
-./scripts/smoke-test-cli.ps1 -ExpectedVersion 0.2.0
+./scripts/smoke-test-cli.ps1                    # asserts --version, --help and doctor --json
+./scripts/smoke-test-cli.ps1 -ExpectedVersion 0.2.0-rc.1
+./scripts/smoke-test-package.ps1                # extracts the ZIP and runs the same contract,
+                                                # including through the wearchive.cmd shim
 ```
+
+## Product version
+
+`--version` (and the `version` command) report the release version: the CLI assembly's
+informational version with build metadata removed, resolved by `src/WeArchive.Cli/ProductVersion.cs`.
+So `-p:Version=0.2.0-rc.1` reports `0.2.0-rc.1`, and a plain build reports `0.1.0` without the
+SDK's `+<commit>` suffix. Reporting the numeric assembly version instead would make a prerelease
+indistinguishable from its final release.
+
+`--version` is the only stable, script-consumable way to identify the build; the artifact smoke
+tests compare it exactly (ignoring build metadata) so a mis-stamped or mis-packaged release
+fails the pipeline rather than shipping.
 
 ## Global options
 

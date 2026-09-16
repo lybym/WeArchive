@@ -27,7 +27,7 @@ public sealed class VersionCommand : ICliCommand
     {
         var dto = new VersionResultDto
         {
-            Version = GetVersionString(),
+            Version = ProductVersion.Current,
             Framework = Framework,
             Platform = Platform,
         };
@@ -44,11 +44,5 @@ public sealed class VersionCommand : ICliCommand
         }
 
         return Task.FromResult(ExitCode.Success);
-    }
-
-    private static string GetVersionString()
-    {
-        var version = typeof(VersionCommand).Assembly.GetName().Version;
-        return version is null ? "0.0.0" : version.ToString(3);
     }
 }

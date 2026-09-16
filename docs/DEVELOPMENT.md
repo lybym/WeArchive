@@ -199,21 +199,34 @@ The CLI is a product API. Tests must cover at least:
 - stable JSON field names for released command contracts;
 - cancellation behavior;
 - Fatal vs Partial diagnostic mapping;
-- the released artifact shape: the CLI assembly is named `WeArchive`, the required command family is reachable, and the retired WPF/Velopack distribution surface is not reintroduced.
+- the released artifact shape: the CLI assembly is named `WeArchive`, the required command family is reachable, and the retired WPF/Velopack distribution surface is not reintroduced;
+- the product version contract: `--version` and the `version` command agree, report a released version, and strip build metadata (see `docs/CLI.md` "Product version").
 
 Tests must call CLI/application boundaries directly where practical; GUI automation is not part of the target test strategy.
 
 ### Release-artifact smoke tests
 
-A release is verified by executing the published artifact, never a local development build:
+A release is verified by executing the published artifact, never a local development build, and
+then by verifying the ZIP that actually ships:
 
 ```text
-scripts/smoke-test-cli.ps1   --version --json, --help --json (required command family) and
-                             doctor --json --no-input, each asserting exit 0 and exactly one
-                             JSON document on stdout
+scripts/smoke-test-cli.ps1       --version --json (exact version), --help --json (required
+                                 command family) and doctor --json --no-input, each asserting
+                                 exit 0 and exactly one JSON document on stdout
+scripts/smoke-test-package.ps1   asserts WeArchive.exe and wearchive.cmd sit at the ZIP root,
+                                 extracts it into a clean directory, and runs the same contract
+                                 against the extracted exe and through the wearchive.cmd shim
 ```
 
-`doctor` needs no local WeChat client, so the smoke test is environment-independent. CI builds and smoke-tests the artifact on every change (`cli-artifact` job); the release workflow runs the same script with `-ExpectedVersion` before publishing the ZIP.
+`doctor` needs no local WeChat client, so the smoke tests are environment-independent. CI builds
+and verifies the artifact and its ZIP on every change (`cli-artifact` job); the release workflow
+runs the same scripts with `-ExpectedVersion` before publishing.
+
+Version-stamped builds must be covered whenever the version contract changes: CI publishes with
+`-p:Version=0.0.0-ci` precisely so the artifact's reported version is asserted against a value
+that differs from the `VersionPrefix` default, and `CliPackagingTests` pins the resolution rule
+(informational version wins, build metadata stripped, numeric version as the fallback) against
+synthetic assemblies.
 
 ### Adapter compatibility tests
 
@@ -403,7 +416,9 @@ The released artifact is a self-contained `win-x64` portable ZIP (`WeArchive-win
 
 Do not reintroduce an installer, auto-updater or update feed without a new product decision: the CLI is invoked ad hoc and exits, so there is no process in which an update check or in-app prompt could run. See [ADR 0007](adr/0007-cli-self-contained-distribution.md).
 
-Do not replace the released-artifact smoke test (`scripts/smoke-test-cli.ps1`) with a local development-build check.
+Do not replace the released-artifact smoke tests (`scripts/smoke-test-cli.ps1` and `scripts/smoke-test-package.ps1`) with a local development-build check.
+
+`pack-portable.ps1` asserts the publish directory's executable reports the requested `-Version` before packaging, so `-SkipPublish` cannot silently package a stale or mis-stamped directory under a version its contents do not carry.
 
 ## 15. Security/privacy review
 

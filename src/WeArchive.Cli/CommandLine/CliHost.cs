@@ -74,7 +74,7 @@ public static class CliHost
     {
         var dto = new VersionResultDto
         {
-            Version = GetVersionString(),
+            Version = ProductVersion.Current,
             Framework = "net10.0-windows",
             Platform = "win-x64",
         };
@@ -89,11 +89,5 @@ public static class CliHost
             stdout.WriteLine($"  framework: {dto.Framework}");
             stdout.WriteLine($"  platform:  {dto.Platform}");
         }
-    }
-
-    private static string GetVersionString()
-    {
-        var version = typeof(CliHost).Assembly.GetName().Version;
-        return version is null ? "0.0.0" : version.ToString(3);
     }
 }

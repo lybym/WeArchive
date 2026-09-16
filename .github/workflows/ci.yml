@@ -61,10 +61,13 @@ jobs:
       - name: Restore
         run: dotnet restore
 
+      # Stamped with a distinct scratch version so the artifact-version assertions below are
+      # meaningful: an unstamped build would report the 0.1.0 VersionPrefix and prove nothing.
       - name: Publish self-contained win-x64 CLI
         run: >
           dotnet publish src/WeArchive.Cli/WeArchive.Cli.csproj
           -c Release -r win-x64 --self-contained true
+          -p:Version=0.0.0-ci
           -o artifacts/publish/win-x64
 
       - name: Assert self-contained output
@@ -76,14 +79,21 @@ jobs:
           if (-not (Test-Path 'artifacts/publish/win-x64/hostfxr.dll')) { throw 'not self-contained' }
           Write-Host "WeArchive.exe produced: $((Get-Item $exe).Length) bytes"
 
-      # Runs against the published artifact, never a development build (Issue #9).
+      # Runs against the published artifact, never a development build (Issue #9), and pins the
+      # version the build was stamped with.
       - name: Smoke-test the published artifact
         shell: pwsh
-        run: ./scripts/smoke-test-cli.ps1
+        run: ./scripts/smoke-test-cli.ps1 -ExpectedVersion 0.0.0-ci
 
       - name: Build portable ZIP
         shell: pwsh
         run: ./scripts/pack-portable.ps1 -Version 0.0.0-ci -SkipPublish
+
+      # The ZIP is what actually ships, so its layout and the PATH shim are verified as
+      # extracted rather than only as the publish folder they came from.
+      - name: Smoke-test the extracted portable ZIP
+        shell: pwsh
+        run: ./scripts/smoke-test-package.ps1 -ExpectedVersion 0.0.0-ci
 
       - name: Upload portable ZIP
         uses: actions/upload-artifact@v7

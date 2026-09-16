@@ -23,18 +23,17 @@ internal static class TestRepository
     /// <summary>
     /// Walks up from the test assembly directory (…/tests/WeArchive.Tests/bin/&lt;config&gt;/&lt;tfm&gt;)
     /// until the solution file is found, so packaging/architecture tests can assert on the
-    /// repository layout without an absolute machine-specific path. Returns <see langword="null"/>
-    /// when the assembly is not running from inside a checkout.
+    /// repository layout without an absolute machine-specific path.
     /// </summary>
-    public static string? TryFindRoot()
+    /// <exception cref="InvalidOperationException">
+    /// The test assembly is not running from inside a checkout. This throws instead of
+    /// returning null so a repository-layout guarantee can never become a vacuous assertion —
+    /// silently skipping is exactly how a reintroduced WPF/Velopack surface would slip through.
+    /// </exception>
+    public static string FindRoot()
     {
         var start = Path.GetDirectoryName(typeof(TestRepository).Assembly.Location);
-        if (string.IsNullOrEmpty(start))
-        {
-            return null;
-        }
-
-        var directory = new DirectoryInfo(start);
+        var directory = string.IsNullOrEmpty(start) ? null : new DirectoryInfo(start);
         while (directory is not null)
         {
             if (File.Exists(Path.Combine(directory.FullName, "WeArchive.sln")))
@@ -45,7 +44,9 @@ internal static class TestRepository
             directory = directory.Parent;
         }
 
-        return null;
+        throw new InvalidOperationException(
+            $"Could not locate WeArchive.sln above '{start}'. Repository-layout tests must run " +
+            "from the test project's output directory inside the checkout.");
     }
 }
 

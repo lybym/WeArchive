@@ -136,7 +136,9 @@ This ADR supersedes the WPF/presentation-surface decision in
 source-adapter constraint, project-layering principles and xUnit decision.
 
 ADR 0004 remains the historical distribution decision for the WPF line. CLI distribution changes
-must be made explicitly by the corresponding migration/release issue rather than inferred here.
+must be made explicitly by the corresponding migration/release issue rather than inferred here;
+that has since been done by [ADR 0007](0007-cli-self-contained-distribution.md), which
+supersedes ADR 0004 and ships the CLI as a self-contained portable ZIP.
 
 ## References
 
