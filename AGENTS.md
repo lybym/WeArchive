@@ -11,7 +11,8 @@ Before making any non-trivial code change, read the following documents in order
 5. `docs/DATA_MODEL.md`
 6. `docs/ROADMAP.md`
 7. `docs/DEVELOPMENT.md`
-8. relevant files under `docs/adr/`
+8. `docs/CLI.md` when the task touches CLI command syntax, options, JSON output or exit codes
+9. relevant files under `docs/adr/`
 
 ## Stack
 

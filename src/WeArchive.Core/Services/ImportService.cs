@@ -312,16 +312,11 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
         };
     }
 
-    private string ResolveConversationId(string accountId, ImportRequest request)
-    {
-        if (request.Kind == ConversationKind.Group)
-        {
-            return StableIds.GroupConversation(accountId, request.SourceConversationId);
-        }
-
-        var peer = request.PeerSourceUserId ?? request.SourceConversationId;
-        return StableIds.DirectConversation(accountId, peer);
-    }
+    // Delegates to StableIds.Conversation so the importer and the CLI discovery surface share
+    // one derivation (docs/DATA_MODEL.md section 16): a conversation's stable id is the same
+    // before and after import.
+    private static string ResolveConversationId(string accountId, ImportRequest request) =>
+        StableIds.Conversation(accountId, request.Kind, request.SourceConversationId, request.PeerSourceUserId);
 
     private static async Task<UpsertCounters> FlushAsync(
         IConversationImportSession session,

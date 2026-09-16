@@ -37,6 +37,40 @@ public static class StableIds
         "g_" + Digest("group", accountId, sourceRoomId);
 
     /// <summary>
+    /// Stable identity for a conversation, mirroring the importer's derivation exactly
+    /// (docs/DATA_MODEL.md section 16). Group conversations use the <c>g_</c> prefix; every
+    /// other kind (direct, official, system, unknown) uses the peer's <c>u_</c> identity,
+    /// because a direct conversation's stable ID <em>is</em> its peer's stable identity.
+    /// <para>
+    /// This is the single source of truth for the conversation derivation so the CLI discovery
+    /// surface and <see cref="Services.ImportService"/> cannot drift apart: a caller may refer
+    /// to a conversation by the same identifier before and after import.
+    /// </para>
+    /// </summary>
+    /// <param name="accountId">The account stable ID (<see cref="Account"/>).</param>
+    /// <param name="kind">The canonical conversation kind.</param>
+    /// <param name="sourceConversationId">
+    /// The upstream conversation identifier (a group room id, or for non-group conversations the
+    /// fallback peer when no explicit peer id is known).
+    /// </param>
+    /// <param name="peerSourceUserId">
+    /// For non-group conversations, the peer's upstream user id. When null, the
+    /// <paramref name="sourceConversationId"/> is used as the peer, matching the importer.
+    /// </param>
+    public static string Conversation(
+        string accountId,
+        ConversationKind kind,
+        string sourceConversationId,
+        string? peerSourceUserId)
+    {
+        if (kind == ConversationKind.Group)
+            return GroupConversation(accountId, sourceConversationId);
+
+        var peer = peerSourceUserId ?? sourceConversationId;
+        return DirectConversation(accountId, peer);
+    }
+
+    /// <summary>
     /// Stable message ID.
     /// <paramref name="sourceMessageId"/> must be stable for the upstream record;
     /// when upstream has no stable ID the adapter supplies a documented composite
