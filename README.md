@@ -56,6 +56,8 @@ exit 130    cancellation/user interrupt
 
 The CLI is intentionally **not** a full-screen TUI, conversational shell, embedded LLM or MCP server.
 
+The discovery commands (`doctor`, `account list`, `conversation list`, `conversation show <id-or-alias>`) are thin adapters over the existing application services; their command/JSON/exit contract is documented in [`docs/CLI.md`](docs/CLI.md). The `sync` and `export` commands are delivered by separate M0.5 issues.
+
 ## Current implementation status
 
 The difficult archive/source/export engine is already implemented:
@@ -177,6 +179,7 @@ Read before coding:
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Archive model and schema evolution |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | M0.5 CLI migration and later milestones |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Development/reliability/CLI governance |
+| [`docs/CLI.md`](docs/CLI.md) | CLI command/JSON/exit contract |
 | [`AGENTS.md`](AGENTS.md) | Mandatory agent rules and hard-stop conditions |
 
 Development flow:

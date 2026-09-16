@@ -49,6 +49,12 @@ public sealed class CommandRouter
                 sp.GetRequiredService<ISourceAdapter>(),
                 sp.GetRequiredService<IArchiveStore>()),
                 "Report source and archive readiness."),
+            ["account"] = new(sp => new Commands.AccountCommand(
+                sp.GetRequiredService<SourceCatalogService>()),
+                "List locally available source profiles (accounts)."),
+            ["conversation"] = new(sp => new Commands.ConversationCommand(
+                sp.GetRequiredService<SourceCatalogService>()),
+                "List conversations or show one (list | show <id-or-alias>)."),
             ["sync"] = new(sp => new Commands.SyncCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<ImportService>()),
