@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Services;
 
 namespace WeArchive.Cli.CommandLine;
 
@@ -29,17 +30,34 @@ public sealed class CommandRouter
     ];
 
     private readonly IServiceProvider _services;
-    private readonly Dictionary<string, Func<IServiceProvider, ICliCommand>> _factories;
+    private readonly Dictionary<string, CommandEntry> _factories;
+
+    /// <summary>
+    /// A command's lazy constructor plus its one-line description. The description is stored
+    /// separately so rendering help never constructs commands (some depend on the source
+    /// adapter or the archive, which a help-only caller has no reason to build).
+    /// </summary>
+    private sealed record CommandEntry(Func<IServiceProvider, ICliCommand> Factory, string Description);
 
     public CommandRouter(IServiceProvider services)
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));
         _factories = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["version"] = _ => new Commands.VersionCommand(),
-            ["doctor"] = sp => new Commands.DoctorCommand(
+            ["version"] = new(_ => new Commands.VersionCommand(), "Print the WeArchive version."),
+            ["doctor"] = new(sp => new Commands.DoctorCommand(
                 sp.GetRequiredService<ISourceAdapter>(),
                 sp.GetRequiredService<IArchiveStore>()),
+                "Report source and archive readiness."),
+            ["sync"] = new(sp => new Commands.SyncCommand(
+                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<ImportService>()),
+                "Import one conversation into the archive."),
+            ["export"] = new(sp => new Commands.ExportCommand(
+                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<ArchiveWorkflow>(),
+                sp.GetRequiredService<CliExportDefaults>()),
+                "Export one conversation to a JSONL dataset."),
         };
     }
 
@@ -61,7 +79,7 @@ public sealed class CommandRouter
         }
 
         var name = args[0];
-        if (!_factories.TryGetValue(name, out var factory))
+        if (!_factories.TryGetValue(name, out var entry))
         {
             // A machine caller gets the error envelope on stdout; the human explanation
             // (including the help text) stays on stderr.
@@ -70,7 +88,7 @@ public sealed class CommandRouter
             return ExitCode.UsageError;
         }
 
-        var command = factory(_services);
+        var command = entry.Factory(_services);
         var commandArgs = args.Skip(1).ToList();
         return await command.ExecuteAsync(context, commandArgs, cancellationToken)
             .ConfigureAwait(false);
@@ -88,7 +106,7 @@ public sealed class CommandRouter
             commands.Add(new HelpCommandDto
             {
                 Name = entry.Key,
-                Description = entry.Value(_services).Description,
+                Description = entry.Value.Description,
             });
         }
 
@@ -132,7 +150,7 @@ public sealed class CommandRouter
         writer.WriteLine("Commands:");
         foreach (var entry in _factories)
         {
-            writer.WriteLine($"  {entry.Key,-12} {entry.Value(_services).Description}");
+            writer.WriteLine($"  {entry.Key,-12} {entry.Value.Description}");
         }
 
         writer.WriteLine();

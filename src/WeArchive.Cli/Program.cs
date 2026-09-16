@@ -21,6 +21,9 @@ internal static class Program
 
     internal static string ArchivePath { get; } = Path.Combine(DataDirectory, "archive", "wearchive.db");
 
+    /// <summary>Default export package root when <c>--output</c> is omitted.</summary>
+    internal static string DefaultExportDirectory { get; } = Path.Combine(DataDirectory, "exports");
+
     private static async Task<int> Main(string[] args)
     {
         // Build the production service provider: archive, exporter, application services
@@ -29,6 +32,7 @@ internal static class Program
         var services = new ServiceCollection();
         services.AddWeArchiveCore(ArchivePath);
         services.AddWeChatWindowsSource();
+        services.AddSingleton(new CliExportDefaults { DefaultOutputDirectory = DefaultExportDirectory });
         await using var provider = services.BuildServiceProvider();
 
         var exitCode = await CliHost.RunAsync(
