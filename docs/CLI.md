@@ -1,9 +1,10 @@
 # WeArchive CLI contract
 
 This document records the additive command, JSON and exit-code contract for the M0.5 CLI
-product-surface migration. It covers the read-only discovery commands (Issue #7) and the
-`sync`/`export` commands (Issue #8). It refines the high-level CLI contract in
-[`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
+product-surface migration. It covers the read-only discovery commands (Issue #7), the
+`sync`/`export` commands (Issue #8) and the retired WPF surface (Issue #9). It refines the
+high-level CLI contract in [`PRD.md`](PRD.md) (FR-22),
+[`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
 [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is the primary product surface;
 this file is normative for the command shapes and machine-readable output described here.
 
@@ -13,13 +14,29 @@ contract.
 
 ## Entry point
 
-During the CLI migration the entry-point project is `src/WeArchive.Cli` (assembly
-`WeArchive.Cli`). The historical WPF project (`src/WeArchive.App`, assembly `WeArchive`) still
-exists, so the CLI is built as a distinct assembly to avoid a name collision while both surfaces
-coexist. Once the WPF presentation layer is retired, this project becomes the shipped
-`wearchive` / `WeArchive.exe` (see ADR 0006 transition rule). The composition root
-(`Program.cs`) reuses `AddWeArchiveCore` + `AddWeChatWindowsSource` — there is no second
-composition model.
+The entry-point project is `src/WeArchive.Cli` and its assembly is named `WeArchive`, so the
+shipped executable is `WeArchive.exe` — the product surface named `wearchive` throughout this
+document. Earlier M0.5 work used the assembly name `WeArchive.Cli` only to avoid a name
+collision with the historical WPF project's `WeArchive` assembly; Issue #9 removed that
+project and the collision along with it.
+
+The composition root (`Program.cs`) reuses `AddWeArchiveCore` + `AddWeChatWindowsSource` —
+there is no second composition model.
+
+## Distribution and invocation
+
+`WeArchive-win-x64.zip` extracts to a self-contained `win-x64` folder that needs no .NET
+runtime, containing `WeArchive.exe` plus a `wearchive.cmd` shim. Add the extracted folder to
+`PATH` and invoke `wearchive` (or `WeArchive.exe`; Windows resolves the name
+case-insensitively). There is no installer and no auto-updater —
+see [ADR 0007](adr/0007-cli-self-contained-distribution.md).
+
+Release verification executes the published artifact rather than a development build:
+
+```powershell
+./scripts/smoke-test-cli.ps1                 # asserts --version, --help and doctor --json
+./scripts/smoke-test-cli.ps1 -ExpectedVersion 0.2.0
+```
 
 ## Global options
 

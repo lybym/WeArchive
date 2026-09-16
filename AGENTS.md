@@ -19,8 +19,8 @@ Before making any non-trivial code change, read the following documents in order
 The target product is a Windows command-line application for humans, scripts and agents:
 
 - **C# 14** on **.NET 10 LTS** (`net10.0` for `WeArchive.Core`; `net10.0-windows` for Windows infrastructure, CLI and tests), `win-x64`, self-contained.
-- **`gh`-style command CLI** is the primary product surface. Do not build a full-screen TUI, conversational shell, embedded LLM or second GUI surface unless docs/ADR explicitly authorize it.
-- The historical WPF project may exist only during migration; it is not a second first-class product surface.
+- **`gh`-style command CLI** is the only product surface. Do not build a full-screen TUI, conversational shell, embedded LLM or second GUI surface unless docs/ADR explicitly authorize it.
+- The shipped artifact is `WeArchive-win-x64.zip` (self-contained, `WeArchive.exe` plus a `wearchive.cmd` shim). There is no installer and no auto-updater; do not reintroduce one without a new ADR/product decision (`docs/adr/0007-cli-self-contained-distribution.md`).
 - **xUnit v2 on VSTest** is the test runner.
 - Dependencies are centrally pinned; `WeArchive.Core` must remain free of presentation and source-specific implementation concerns.
 
@@ -121,9 +121,9 @@ If an agent discovers that a non-trivial PR has already been opened without a pr
 
 ## Current priority
 
-Current priority is **M0.5 — CLI product-surface migration**.
+**M0.5 — CLI product-surface migration** is complete. The CLI is the only product surface, and the historical WPF application has been removed.
 
-Required initial command family:
+Shipped command family:
 
 ```text
 wearchive doctor
@@ -134,8 +134,8 @@ wearchive sync --conversation <id-or-alias>
 wearchive export --conversation <id-or-alias>
 ```
 
-Do not add TUI/chat/embedded-agent/MCP scope to this migration.
+Do not add TUI/chat/embedded-agent/MCP scope. Do not reintroduce a GUI, installer or auto-updater.
 
-After M0.5, finish M1 incremental checkpoints and full partition-coverage reporting, then continue M2/M3/M4.
+Current priority is to finish **M1** incremental checkpoints and full partition-coverage reporting, then continue M2/M3/M4.
 
 The foundation must not be weakened: generic adapter contract, canonical message schema, normalized models, SQLite archive, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic JSONL export.

@@ -1,14 +1,17 @@
 <#
 .SYNOPSIS
-    Publishes WeArchive as a self-contained win-x64 application and produces the portable ZIP.
+    Publishes WeArchive as a self-contained win-x64 CLI and produces the portable ZIP.
 
 .DESCRIPTION
-    Implements the "Portable" artifact from docs/adr/0004-distribution-velopack.md:
-    a self-contained publish (no .NET runtime required on the target machine) packaged as
-    WeArchive-win-x64.zip, ready to extract and run.
+    Implements the distribution decision in docs/adr/0007-cli-self-contained-distribution.md:
+    a self-contained publish of src/WeArchive.Cli (no .NET runtime required on the target
+    machine) plus a `wearchive.cmd` PATH shim, packaged as WeArchive-win-x64.zip.
 
-    Publishing a solution with -o is not supported, so only the application project is
-    published.
+    There is no installer or auto-updater. The product is a command-line tool for humans,
+    scripts and agents, so a versioned portable ZIP that is extracted and invoked directly
+    is sufficient (Issue #9 non-goals).
+
+    Publishing a solution with -o is not supported, so only the CLI project is published.
 
 .PARAMETER Version
     Version stamped into the produced assembly. Defaults to the VersionPrefix in
@@ -43,11 +46,12 @@ if (-not $Version) {
     $Version = $props.Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1
 }
 
-$project = Join-Path $repoRoot 'src/WeArchive.App/WeArchive.App.csproj'
+$project = Join-Path $repoRoot 'src/WeArchive.Cli/WeArchive.Cli.csproj'
 $publishDir = Join-Path $OutputRoot 'publish/win-x64'
 $zipPath = Join-Path $OutputRoot 'WeArchive-win-x64.zip'
+$exeName = 'WeArchive.exe'
 
-Write-Host "WeArchive portable packaging"
+Write-Host "WeArchive portable CLI packaging"
 Write-Host "  version      : $Version"
 Write-Host "  configuration: $Configuration"
 Write-Host "  publish dir  : $publishDir"
@@ -67,8 +71,17 @@ if (-not $SkipPublish) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 }
 
-$exe = Join-Path $publishDir 'WeArchive.exe'
+$exe = Join-Path $publishDir $exeName
 if (-not (Test-Path $exe)) { throw "Expected $exe to exist after publish." }
+
+# A self-contained publish is a folder. The PATH entry point documented in docs/CLI.md is
+# the lower-case `wearchive`, so the package carries a one-line shim for it; Windows also
+# resolves `WeArchive.exe` case-insensitively once the folder is on PATH.
+$shim = Join-Path $publishDir 'wearchive.cmd'
+@"
+@echo off
+"%~dp0$exeName" %*
+"@ | Set-Content -Path $shim -Encoding ascii
 
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath -CompressionLevel Optimal

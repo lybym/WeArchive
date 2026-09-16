@@ -45,9 +45,25 @@ jobs:
       - name: Test
         run: dotnet test --no-build -c Release --verbosity normal
 
-      - name: Publish self-contained win-x64
+  cli-artifact:
+    name: Publish and smoke-test the win-x64 CLI artifact
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Publish self-contained win-x64 CLI
         run: >
-          dotnet publish src/WeArchive.App/WeArchive.App.csproj
+          dotnet publish src/WeArchive.Cli/WeArchive.Cli.csproj
           -c Release -r win-x64 --self-contained true
           -o artifacts/publish/win-x64
 
@@ -60,9 +76,14 @@ jobs:
           if (-not (Test-Path 'artifacts/publish/win-x64/hostfxr.dll')) { throw 'not self-contained' }
           Write-Host "WeArchive.exe produced: $((Get-Item $exe).Length) bytes"
 
+      # Runs against the published artifact, never a development build (Issue #9).
+      - name: Smoke-test the published artifact
+        shell: pwsh
+        run: ./scripts/smoke-test-cli.ps1
+
       - name: Build portable ZIP
         shell: pwsh
-        run: ./scripts/pack-portable.ps1 -Version 0.0.0-ci
+        run: ./scripts/pack-portable.ps1 -Version 0.0.0-ci -SkipPublish
 
       - name: Upload portable ZIP
         uses: actions/upload-artifact@v7

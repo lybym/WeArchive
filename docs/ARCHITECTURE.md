@@ -67,11 +67,11 @@ WeArchive.Core
 
 `tests/WeArchive.Tests` may reference all three for contract and integration testing.
 
-The historical `WeArchive.App` WPF project may exist temporarily during migration, but it is not a second supported product surface and must be removed when the CLI migration acceptance criteria are met.
+The historical `WeArchive.App` WPF project was removed by Issue #9 once CLI parity was reached. The repository maintains exactly one first-class product surface: the CLI.
 
 ### 3.1 Presentation — `src/WeArchive.Cli`
 
-Target: console executable, `net10.0-windows`, assembly name `WeArchive`.
+Console executable, `net10.0-windows`, assembly name `WeArchive`, producing `WeArchive.exe`.
 
 Responsibilities:
 
@@ -126,6 +126,18 @@ stay on stderr, and `--quiet` never suppresses a failure. The process exit code 
 authoritative outcome class.
 
 CLI JSON DTOs are presentation contracts. They may wrap Core domain results but must not expose unstable implementation internals such as raw WeChat table names or parser-specific types.
+
+### 3.1.2 Packaging and distribution
+
+The shipped artifact is a self-contained `win-x64` portable ZIP published from GitHub Releases:
+
+```text
+scripts/pack-portable.ps1   dotnet publish src/WeArchive.Cli -r win-x64 --self-contained -> WeArchive-win-x64.zip
+                            containing WeArchive.exe plus a wearchive.cmd PATH shim
+scripts/smoke-test-cli.ps1  runs the published artifact and asserts --version/--help/doctor contracts
+```
+
+There is no installer, no update feed and no in-app updater. `scripts/smoke-test-cli.ps1` verifies release artifacts, so release verification never substitutes a local development build. Distribution rationale is in [ADR 0007](adr/0007-cli-self-contained-distribution.md).
 
 ### 3.2 Application / orchestration — `src/WeArchive.Core/Services`
 
@@ -312,7 +324,7 @@ sequenceDiagram
 
 The exporter reads the archive only; it never reopens the source.
 
-## 5. Target repository structure
+## 5. Repository structure
 
 ```text
 WeArchive.sln
@@ -320,11 +332,14 @@ src/
 ├─ WeArchive.Core/                 net10.0; domain/contracts/services
 ├─ WeArchive.Infrastructure/       net10.0-windows; WeChat/SQLite/export/settings
 └─ WeArchive.Cli/                  net10.0-windows; command parsing/output/composition root
+scripts/
+├─ pack-portable.ps1               self-contained win-x64 publish -> WeArchive-win-x64.zip
+└─ smoke-test-cli.ps1              smoke test that runs the published artifact
 tests/
 └─ WeArchive.Tests/                net10.0-windows; xUnit v2 on VSTest
 ```
 
-During migration, `src/WeArchive.App` may still exist. It is transitional and should not receive new product behavior except work strictly required to keep the branch buildable until removal.
+There is one product project. `src/WeArchive.App` no longer exists, and no second presentation layer is expected to be added without a new product decision.
 
 ## 6. Adapter contract rules
 

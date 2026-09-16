@@ -26,7 +26,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\WeArchive.Core\WeArchive.Core.csproj" />
     <ProjectReference Include="..\..\src\WeArchive.Infrastructure\WeArchive.Infrastructure.csproj" />
-    <ProjectReference Include="..\..\src\WeArchive.App\WeArchive.App.csproj" />
     <ProjectReference Include="..\..\src\WeArchive.Cli\WeArchive.Cli.csproj" />
   </ItemGroup>
 

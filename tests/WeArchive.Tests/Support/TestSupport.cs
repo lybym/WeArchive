@@ -17,6 +17,38 @@ internal sealed class FixedClock(DateTimeOffset now) : IClock
     public TimeSpan LocalOffset => TimeSpan.FromHours(8);
 }
 
+/// <summary>Locates the repository root from the test assembly location.</summary>
+internal static class TestRepository
+{
+    /// <summary>
+    /// Walks up from the test assembly directory (…/tests/WeArchive.Tests/bin/&lt;config&gt;/&lt;tfm&gt;)
+    /// until the solution file is found, so packaging/architecture tests can assert on the
+    /// repository layout without an absolute machine-specific path. Returns <see langword="null"/>
+    /// when the assembly is not running from inside a checkout.
+    /// </summary>
+    public static string? TryFindRoot()
+    {
+        var start = Path.GetDirectoryName(typeof(TestRepository).Assembly.Location);
+        if (string.IsNullOrEmpty(start))
+        {
+            return null;
+        }
+
+        var directory = new DirectoryInfo(start);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "WeArchive.sln")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        return null;
+    }
+}
+
 /// <summary>Creates and disposes an isolated scratch directory for one test.</summary>
 internal sealed class TempDirectory : IDisposable
 {

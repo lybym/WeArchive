@@ -1,7 +1,14 @@
 # ADR 0004 — Packaging and update distribution via Velopack
 
-Status: accepted
+Status: superseded by [ADR 0007](0007-cli-self-contained-distribution.md)
 Date: 2026-03-01
+
+> Historical note: this ADR records the distribution decision for the historical WPF MVP
+> line. [ADR 0007](0007-cli-self-contained-distribution.md) supersedes it: the CLI product
+> surface ships as a self-contained `win-x64` portable ZIP with no installer and no
+> auto-updater, because a windowed installer/update feed serves no CLI/agent use case
+> (Issue #9). The self-contained `win-x64` publishing decision and the
+> `WeArchive-win-x64.zip` portable artifact name are retained by ADR 0007.
 
 ## Context
 
