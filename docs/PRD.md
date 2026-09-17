@@ -2,446 +2,505 @@
 
 ## 1. Product definition
 
-WeArchive is a local-first personal archive tool for organizing, preserving, searching and exporting the user's own WeChat desktop data.
+WeArchive is a local-first personal archive tool for preserving, normalizing, searching and exporting the user's own WeChat desktop data.
 
-The product is designed around one core idea: **the archive is the product; collection is only an input stage**. The system builds a durable, normalized, queryable personal message archive that remains useful even when upstream client versions change.
+The product is built around two complementary truths:
 
-The target product surface is a **Windows `gh`-style command-line application** for WeChat for Windows 4.x. It is designed to be called directly by humans, scripts, Harness workflows and AI agents. The CLI is an explicit command interface, not a conversational shell, TUI or embedded agent runtime. See [adr/0006-cli-first-product-surface.md](adr/0006-cli-first-product-surface.md).
+- the **Raw Vault** is the archival source of truth: high-fidelity preserved source evidence that should remain usable even if the live WeChat data later disappears or becomes unreadable;
+- `archive/wearchive.db` is the canonical operational system of record: a stable, source-independent, queryable interpretation of that evidence.
 
-The historical WPF MVP has been removed, and the CLI migration is delivered (see section 9.2 and section 10, M0.5). The repository maintains exactly one first-class product surface and must not grow a second one.
+The canonical database is intentionally rebuildable from the Raw Vault. Query/search/Harness/export behavior operates on the canonical layer rather than on Raw Vault internals.
 
-## 2. Target user and caller
+The target product surface is a Windows `gh`-style command-line application for WeChat for Windows 4.x. It is designed for humans, scripts, Harness workflows and AI agents. CLI is the only shipped first-class presentation surface. A future MCP server may be added as another transport over shared application/query services; it must not become a second business-logic implementation.
+
+This architecture decision is recorded in [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md). Preservation/rebuild semantics are defined by [RAW_VAULT.md](RAW_VAULT.md); Harness/query rules are defined by [HARNESS.md](HARNESS.md).
+
+## 2. Current versus target status
+
+The 0.2.x implementation already provides:
+
+- live WeChat 4.x discovery/read-only access;
+- normalization into canonical SQLite;
+- deterministic stable IDs and provenance;
+- CLI discovery/sync/export commands;
+- JSONL/YAML/JSON machine export.
+
+The following are accepted target requirements but are not yet shipped in 0.2.x:
+
+- Raw Vault capture/generations;
+- Raw-Vault-only canonical rebuild;
+- explicit capture and ingest checkpoints;
+- conversation/collection-scoped incremental synchronization;
+- `ArchiveQueryService` retrieval API;
+- FTS/search/context CLI commands;
+- MCP transport.
+
+Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
+
+## 3. Target users and callers
 
 Initial users/callers:
 
-- A Windows user of WeChat for Windows 4.x.
-- Scripts and local automation that need deterministic access to the user's own archive.
-- Harness/LLM workflows and AI agents that need stable machine-readable commands and outputs.
-- Technical users who prefer concise commands over a desktop workflow.
+- Windows users of WeChat for Windows 4.x who want durable personal preservation;
+- scripts/local automation needing deterministic archive/query operations;
+- Harness/LLM workflows and AI agents needing stable machine-readable retrieval;
+- technical users who prefer explicit CLI contracts over GUI automation.
 
-The product must not require an agent or AI provider. Humans and automation call the same underlying operations.
+The product must not require an AI provider. Humans and automation use the same underlying application services.
 
-## 3. Product goals
+## 4. Product goals
 
-### G1. Reliable local archive
+### G1. Durable source preservation
 
-Import supported local conversation data into a stable archive database with repeatable, idempotent runs.
+Preserve supported local WeChat source evidence in a versioned Raw Vault before source evolution/deletion can make that evidence unrecoverable.
 
-### G2. Preserve provenance
+### G2. Rebuildable canonical archive
 
-Every normalized record should retain enough source metadata to answer where it came from, when it was imported and whether parsing was complete.
+Maintain a normalized SQLite database whose stable identities and canonical semantics can be recreated from preserved Raw Vault evidence without accessing live WeChat.
 
-### G3. Incremental operation
+### G3. Preserve provenance and unknown evidence
 
-After the initial import, routine refreshes should process only new or changed data whenever possible.
+Canonical records retain provenance, while source fields not understood by the current parser remain preserved in the Raw Vault for future reinterpretation.
 
-### G4. Machine-oriented export
+### G4. Incremental operation
 
-Users shall be able to export selected direct/group chats or named collections as stable, plain-text, machine-readable datasets optimized for LLM/Harness analysis and secondary processing.
-
-Phase 1 export behavior is defined by [EXPORT_PRD.md](EXPORT_PRD.md).
+After initial baseline capture/ingest, routine refreshes should process only new/changed source material and only affected conversations/partitions whenever this can be done safely.
 
 ### G5. Stable message semantics
 
-Upstream message types shall be normalized into a stable semantic message contract independent of WeChat database/XML internals.
+Upstream message types are normalized into a source-independent semantic contract defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md).
 
-Canonical message behavior is defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md).
+### G6. Efficient machine retrieval
 
-### G6. Agent- and script-friendly CLI
+Interactive retrieval should use canonical SQLite indexes/FTS through `ArchiveQueryService`, not recursive scanning of large JSONL exports.
 
-All automation-relevant product operations shall have deterministic command syntax, stable exit semantics and a machine-readable JSON mode. Agents should call commands, not automate a GUI.
+### G7. Machine-oriented export
 
-### G7. Long-term maintainability
+Selected conversations/collections/time ranges can be exported as stable portable JSONL/YAML/JSON datasets. Export is derived/interchange state and must be regenerable from the canonical archive.
 
-Source-specific logic must be isolated behind adapters so that upstream client changes do not force a rewrite of the archive, search, export or CLI layers.
+### G8. Agent- and script-friendly interfaces
 
-### G8. Local-first privacy
+Automation-relevant operations have deterministic command syntax, stable exit semantics, pagination where appropriate and machine-readable JSON. Future MCP exposes the same application/query services rather than duplicating logic.
 
-Conversation content remains local by default. Any future external AI integration must be opt-in and separable from the core archive/export pipeline.
+### G9. Long-term maintainability
 
-## 4. Non-goals for initial milestones
+WeChat-version-specific schemas, cryptography and parsing remain behind source/capture-reader compatibility boundaries. Query/export/Harness callers must not depend on upstream schema details.
 
-The following are explicitly out of scope for the first phases:
+### G10. Local-first privacy
 
-- Sending messages or automating WeChat user interactions.
-- Remote account access.
-- Multi-user hosted service.
-- Cloud synchronization as a required dependency.
-- Social/CRM features.
-- A WPF/WinUI/Avalonia desktop GUI as a first-class product surface.
-- A full-screen TUI or interactive terminal menu.
-- A Claude Code-style conversational shell or embedded LLM/agent runtime.
-- MCP/server mode as part of the current CLI migration.
-- Human-oriented chat rendering as a core requirement.
-- Exporting or preserving binary image/audio/video/file payloads as part of the Phase 1 product.
-- OCR over images.
-- ASR over voice messages.
-- LLM-specific derived/chunk datasets.
-- Remote crawling of shared webpages as part of canonical export.
+Preservation, archive, query and export work locally/offline after required capture. External AI/provider integration is optional and separable.
 
-## 5. Primary user journeys
+## 5. Non-goals / separately scoped work
+
+Unless a later requirement explicitly changes scope, the following are not core requirements of the current milestones:
+
+- sending messages or automating WeChat user interactions;
+- remote account access or hosted multi-user service;
+- cloud synchronization as a required dependency;
+- GUI/full-screen TUI/conversational shell as first-class product surfaces;
+- embedding an LLM provider inside the core archive pipeline;
+- OCR/ASR/visual-derived datasets;
+- remote crawling of shared webpages as canonical semantics;
+- LLM-specific chunk/vector datasets as the canonical archive;
+- automatic preservation of every image/audio/video/file binary merely because Raw Vault exists.
+
+Binary media preservation requires its own Media Vault/product contract.
+
+## 6. Data-layer contract
+
+```text
+L0 Live Source
+   WeChat
+       │ capture
+       ▼
+L1 Preservation Layer
+   Raw Vault
+       │ reader/parser/normalizer
+       ▼
+L2 Semantic Layer
+   archive/wearchive.db
+       │
+       ▼
+L3 Access Layer
+   ArchiveQueryService -> CLI / future MCP
+       │
+       ▼
+L4 Interchange Layer
+   JSONL / YAML / JSON
+```
+
+Normal Harness/Agent operations consume L3 backed by L2. Raw Vault is not a general query surface.
+
+## 7. Primary user journeys
 
 ### Journey A — Diagnose and discover
 
-1. Start WeChat and sign in.
-2. Run `wearchive doctor` to inspect platform/source/archive readiness.
-3. Run `wearchive account list` when multiple local profiles exist.
-4. Run `wearchive conversation list` to obtain stable conversation identifiers and metadata.
-5. Automation uses the same commands with `--json --no-input`.
+1. Run `wearchive doctor`.
+2. Discover source accounts/conversations when live source is available.
+3. Inspect canonical archive/Raw Vault freshness when those features are implemented.
+4. Automation uses the same operations with `--json --no-input`.
 
-Success condition: the caller can determine readiness and address a conversation without GUI state.
+Success: caller can determine what source/archive data is available and address conversations using stable IDs.
 
-### Journey B — First archive/export
+### Journey B — First preservation and archive
 
-1. Resolve a conversation ID or alias.
-2. Run `wearchive sync --conversation <id-or-alias>`.
-3. Run `wearchive export --conversation <id-or-alias>`.
-4. Observe progress/diagnostics on stderr or consume the final JSON result from stdout.
-5. Inspect or process the generated machine-readable dataset.
+Target behavior:
 
-Success condition: the caller obtains a durable local archive and deterministic export without modifying source data.
+1. capture supported WeChat source evidence into Raw Vault baseline generation;
+2. parse/normalize preserved evidence into canonical SQLite;
+3. publish only under documented completeness/reliability rules;
+4. optionally export portable datasets.
+
+`wearchive sync` may orchestrate capture + ingest for ordinary usage.
+
+Success: canonical data is queryable and the preserved evidence remains available for future rebuild even if live WeChat later changes.
 
 ### Journey C — Incremental refresh
 
-1. Run sync for the same conversation again.
-2. Re-running the import over the same source range creates no duplicate logical records.
-3. Archive integrity checks run.
-4. The command returns concise counters and diagnostics.
+1. determine required live-source capture delta using capture checkpoint/evidence;
+2. publish a new immutable Raw Vault generation;
+3. determine affected canonical scopes using ingest checkpoints;
+4. ingest only new/changed records where supported;
+5. advance each successful conversation/scope independently.
 
-Only-new-record incremental refresh requires per-source checkpoints (FR-10) and is not yet delivered; the current importer performs a full, idempotent re-read.
+Source disappearance must not delete earlier Raw Vault generations or canonical history automatically.
 
-### Journey D — Search and retrieval
+### Journey D — Rebuild after parser/source-access change
 
-1. Search for a keyword, participant, group or date range.
-2. Retrieve matching normalized messages.
-3. Select relevant conversations/time ranges for downstream processing.
+1. start from preserved Raw Vault generations;
+2. select compatible/new readers for each source format/version;
+3. rebuild a fresh canonical SQLite database;
+4. rebuild derived FTS/index/statistics state;
+5. preserve deterministic stable IDs.
 
-Archive full-text search (FR-11 / M3) is not yet delivered. It must be exposed through CLI when implemented rather than through a separate GUI-only path.
+Success: rebuild does not access live WeChat or reacquire its original database key.
 
-### Journey E — LLM / Harness analysis
+### Journey E — Search and retrieval
 
-1. Resolve one or more direct/group conversations or a named collection.
-2. Export monthly JSONL timelines plus identity/conversation/collection catalogs.
-3. Point Harness/LLM workflows at stable conversation folders and date partitions.
-4. Resolve stable IDs through `identities.yaml`, `conversations.yaml` and `collections.yaml`.
+1. resolve account/conversation/collection to stable IDs;
+2. query by keyword/person/date/type through `ArchiveQueryService`;
+3. retrieve context windows around selected messages;
+4. page through large result sets.
 
-## 6. Functional requirements
+Harness callers should not recursively scan JSONL for this interactive workflow.
+
+### Journey F — Offline/export analysis
+
+1. select conversations/collections/time ranges;
+2. export JSONL plus catalogs/manifests;
+3. use the dataset for transfer, audit or batch/offline processing.
+
+JSONL remains first-class interchange output without becoming the primary runtime query database.
+
+## 8. Functional requirements
 
 ### FR-01 Source discovery
 
-The system shall expose available local source profiles through a common adapter interface and CLI commands.
+Expose available local source profiles through source/capture adapters and CLI commands.
 
 ### FR-02 Diagnostics
 
-The system shall report platform support, configuration, archive availability and adapter readiness without changing source data. `wearchive doctor` is the primary product command for this requirement.
+Report platform, source, Raw Vault, canonical archive and (when implemented) freshness/coverage status without modifying source data.
 
 ### FR-03 Conversation discovery
 
-The system shall enumerate supported conversations with stable source identifiers and display metadata where available. CLI enumeration must support machine-readable output.
+Enumerate supported conversations with stable source identifiers and source-neutral metadata.
 
-### FR-04 Message ingestion
+### FR-04 Raw Vault capture
 
-The system shall ingest messages through an adapter and convert them into the canonical semantic message model.
+Capture supported source evidence into an independently recoverable, versioned preservation layer.
 
-### FR-05 Participant normalization
+Capture must not intentionally modify WeChat data. A published generation records source version, artifact identity/checksums and completeness diagnostics.
 
-The system shall preserve stable participant identifiers separately from mutable display names.
+### FR-05 Immutable preservation
 
-### FR-06 Non-text event normalization
+Published Raw Vault generations are logically immutable. Source deletion/absence MUST NOT automatically delete preserved history.
 
-Image, voice, video, emoji, file and other non-text messages shall remain visible as semantic timeline events even when no binary content is preserved.
+### FR-06 Key-independent recoverability
 
-For file messages, the original filename shall be retained when locally available.
+A successful Raw Vault capture must remain readable without reacquiring the original WeChat database key. WeChat keys are never persisted.
 
-### FR-07 Archive persistence
+### FR-07 Message ingestion and normalization
 
-The system shall store normalized data in a local SQLite archive with schema migrations.
+Readers/adapters convert preserved/live source records into canonical semantic messages through the normalizer.
 
-### FR-08 Idempotency
+### FR-08 Participant normalization
 
-Re-running an import over the same source range shall not create duplicate logical records.
+Stable participant identifiers are separate from mutable display names/remarks/nicknames.
 
-### FR-09 Import runs
+### FR-09 Non-text event normalization
 
-Every ingestion operation shall produce an import-run record containing start/end time, adapter version, source version metadata, counters and warnings.
+Image, voice, video, emoji, file and other non-text messages remain visible as semantic timeline events even when binary payloads are not preserved.
 
-### FR-10 Checkpoints
+### FR-10 Canonical archive persistence
 
-The system shall store per-source checkpoints to enable incremental refresh.
+Store normalized data in local SQLite with migrations. The canonical database is the operational system of record for query/export/application behavior.
 
-The `source_checkpoints` table and its lifecycle rules are defined by [DATA_MODEL.md](DATA_MODEL.md) section 14, but the current importer does **not** yet read or advance checkpoints. This requirement is met at M1 completion.
+### FR-11 Canonical rebuild
 
-### FR-11 Search
+A fresh canonical archive can be rebuilt from Raw Vault only, without live WeChat/source-key access.
 
-The system shall support local full-text search over canonical semantic text and selected structured fields.
+Stable IDs for unchanged preserved source identities must remain unchanged across rebuild/parser upgrades.
 
-Not yet delivered (M3).
+### FR-12 Idempotency
 
-### FR-12 Selective export
+Replay/re-ingest over the same preserved source evidence must not create duplicate logical records.
 
-The system shall support selective machine-oriented export by conversation stable ID, alias or named collection.
+### FR-13 Capture and import audit
 
-Phase 1 export shall use stable conversation directories and monthly JSONL timeline files with separate identity/conversation/collection mapping files.
+Capture and ingest operations record enough metadata/counters/diagnostics to establish what evidence was acquired and what canonical records were published.
 
-Detailed behavior is defined by [EXPORT_PRD.md](EXPORT_PRD.md).
+### FR-14 Separate checkpoints
 
-### FR-13 Provenance
+Preservation progress and canonical-ingest progress are independent.
 
-Every archived message shall retain source account, conversation, source record ID, source type/subtype where available, source partition/shard if relevant and import run.
+Target model:
 
-### FR-14 Integrity reporting and import publication
+- capture checkpoint: live source -> Raw Vault;
+- ingest checkpoint: Raw Vault -> canonical archive, scoped to conversation/partition where appropriate.
 
-The system shall surface partial-read, stale-source, unknown-type and parsing warnings instead of silently dropping uncertain data.
+The shipped migration-1 generic `source_checkpoints` table is an earlier implementation and is not yet consumed by the importer.
 
-A **Fatal source-coverage failure must roll back the entire conversation import transaction**. No records from that failed conversation run may become usable archive state. Cancellation is not automatically equivalent to a source-coverage failure; its exact publication behavior follows the documented import reliability level in `DEVELOPMENT.md` and the architecture transaction contract.
+### FR-15 Search
 
-### FR-15 Link/app-share normalization
+Support local FTS over canonical semantic text and selected structured payload fields.
 
-When a message contains a link, third-party shared content or mini-program/card content, the system shall preserve all locally obtainable semantic metadata and expose the best locally obtainable original URL when available.
+### FR-16 Structured retrieval
 
-A wrapper/tracking URL must not be mislabeled as a confirmed original URL. Missing link metadata must not cause the message itself to be dropped.
+Expose message listing/filtering and context-window retrieval by stable conversation/person/date/message identifiers.
 
-### FR-16 Identity mapping
+Results are paginated/cursor-based for large result sets.
 
-The export shall include a user-maintainable stable-ID mapping.
+### FR-17 ArchiveQueryService
 
-Default display-name rule:
+All interactive query/search/context operations are implemented behind a source-independent application service. CLI and future MCP are transports over this service.
+
+Harnesses must not be required to know SQLite table layouts.
+
+### FR-18 Selective export
+
+Support machine-oriented export by conversation stable ID, alias or Collection, with time-range refinement where defined.
+
+Export consumes canonical archive data; it does not parse Raw Vault directly.
+
+Detailed packaging remains defined by [EXPORT_PRD.md](EXPORT_PRD.md).
+
+### FR-19 Provenance
+
+Canonical messages retain source account/conversation/message identity, type/subtype where available, source partition/order and reader/adapter/source-version metadata sufficient for traceability.
+
+### FR-20 Integrity and publication
+
+Fatal source/capture/coverage failures must not be silently converted into complete results. Unknown semantics are retained explicitly rather than dropped.
+
+Reliability guarantees are operation-specific and documented before implementation.
+
+### FR-21 Link/app-share normalization
+
+Preserve all locally obtainable semantic metadata without fabricating original URLs or other unavailable values.
+
+### FR-22 Identity mapping
+
+Exports include user-maintainable stable-ID display mappings. Mutable names do not define identity or physical paths.
+
+### FR-23 Collections
+
+Collection is the single reusable abstraction for a named set of conversations and may be used as a scope for:
 
 ```text
-latest remark exists -> display_name = latest remark
-no latest remark      -> display_name = ""
+sync
+query/search
+Harness analysis
+export
 ```
 
-Nickname is retained as metadata but does not automatically replace a missing remark.
+Do not introduce overlapping `sync-group`, `watch-list` or `harness-dataset` concepts unless they represent materially different semantics.
 
-The user-maintained hook is the `display_name_override` key in `identities.yaml`; when it is non-empty it wins over the generated default. See [EXPORT_PRD.md](EXPORT_PRD.md) section 5.
+### FR-24 Canonical message envelope
 
-### FR-17 Conversation catalog and collections
-
-The export shall include a conversation catalog and support user-maintainable aliases and reusable collections of direct/group conversations.
-
-### FR-18 Canonical message envelope
-
-Every normalized/exported timeline record shall conform to [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md) and expose:
+Every canonical/exported timeline event follows [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md):
 
 ```text
 common envelope + text + payload + reply_to + source
 ```
 
-### FR-19 Reply/quote relationship
+### FR-25 Reply/quote relationship
 
-Replies/quotes shall be represented structurally rather than flattened only into text.
+Replies/quotes are represented structurally rather than only flattened into text.
 
-### FR-20 Forwarded chat bundles
+### FR-26 Forwarded bundles
 
-Where locally parsable, merged/forwarded chat records shall preserve nested textual items, sender labels, times and normalized types.
+Where locally parsable, forwarded/merged chat records preserve nested available sender/time/type/text semantics.
 
-### FR-21 Unknown messages
+### FR-27 Unknown source records
 
-Unsupported or unrecognized source records shall be exported/archived as `unknown` semantic events with source type/subtype metadata where available. Unknown records must be counted and never silently discarded.
+Unsupported source records remain preserved in Raw Vault. Canonical ingestion emits `unknown` semantic events with available provenance/diagnostics instead of silently discarding them.
 
-### FR-22 CLI command contract
+### FR-28 CLI process contract
 
-The CLI is a first-class product API.
+The CLI remains a first-class machine API:
 
-Initial required command family:
+- concise default human output;
+- `--json`: exactly one final JSON document on stdout;
+- progress/human diagnostics on stderr;
+- `--quiet` suppresses non-essential progress;
+- `--no-input` never prompts;
+- deterministic exit semantics: `0` success, `1` runtime/operation failure, `2` usage/config validation failure, `130` cancellation.
+
+The exact shipped command/JSON contract is versioned in [CLI.md](CLI.md).
+
+### FR-29 Target preservation commands
+
+Planned additive commands include:
 
 ```text
-wearchive doctor
-wearchive account list
-wearchive conversation list
-wearchive conversation show <id-or-alias>
-wearchive sync --conversation <id-or-alias>
-wearchive export --conversation <id-or-alias>
+wearchive capture
+wearchive sync --collection <name>
+wearchive rebuild
 ```
 
-Every automation-relevant command shall support:
+`rebuild` must never implicitly fall back to live WeChat.
 
-- default concise human-readable output;
-- `--json`: one final JSON document on stdout, with no ANSI decoration or explanatory prose;
-- progress/human diagnostics on stderr;
-- `--quiet`: suppress non-essential progress;
-- `--no-input`: never prompt; fail when required input is missing;
-- deterministic exit semantics: `0` success, `1` runtime/operation failure, `2` usage/configuration validation failure, `130` user cancellation/interrupt.
+### FR-30 Target query commands
 
-The `--json` contract covers every invocation, not only successful command results:
+Planned query commands include message listing, keyword search and message-context retrieval with stable JSON pagination. Exact syntax becomes normative in `CLI.md` only when implemented.
 
-- help (`--help --json` and a bare `wearchive --json`) emits a JSON help document
-  (`usage`, `commands`, `options`) on stdout with exit `0`;
-- a failed invocation emits a JSON error document (`error.code`, `error.message`) on
-  stdout, with `error.code` mirroring the documented exit-code family
-  (`usage_error` = 2, `failure` = 1, `cancelled` = 130);
-- human diagnostics, including the help text printed alongside an invalid command, stay
-  on stderr.
+### FR-31 Future MCP transport
 
-Exact JSON schemas are versioned implementation contracts and must be covered by contract tests. A command may return exit `0` with Partial diagnostics only when the corresponding product requirement explicitly permits a valid partial result.
+A future stdio MCP server may expose `ArchiveQueryService` operations. It must not implement independent Raw Vault parsing or a second query engine.
 
-## 7. Non-functional requirements
+## 9. Non-functional requirements
 
 ### NFR-01 Local-first
 
-Core archive, search and export functions must work offline.
+Preservation, rebuild, canonical query and export work locally; rebuild/query/export do not require network access.
 
-### NFR-02 Read-only source boundary
+### NFR-02 Read-only upstream boundary
 
-Initial source adapters must not intentionally modify upstream application data.
+Source capture/access must not intentionally mutate WeChat data.
 
-### NFR-03 Determinism
+### NFR-03 Preservation fidelity
 
-Given the same source snapshot, export configuration and exporter version, normalized output should be reproducible except for explicitly documented generated metadata.
+Capture minimizes semantic transformation before preservation and does not discard source fields merely because current parsers do not understand them.
 
-### NFR-04 Observability
+### NFR-04 Determinism
 
-Long-running operations must emit structured progress, counters and warnings. In CLI mode, progress must not corrupt machine-readable stdout.
+Given the same preserved evidence, reader/normalizer version and configuration, canonical rebuild/export should be reproducible except for documented generated metadata.
 
-### NFR-05 Testability
+### NFR-05 Observability
 
-Archive/export layers must be testable using fixtures without requiring a running WeChat client. CLI parsing, stdout/stderr separation, JSON schemas and exit codes must also be testable without GUI automation.
+Long-running capture/ingest/rebuild/query/export operations emit structured progress, counters and diagnostics without polluting machine-readable stdout.
 
-### NFR-06 Version isolation
+### NFR-06 Testability
 
-Client-version-specific assumptions must remain inside source adapters or compatibility modules.
+Capture/rebuild/query layers must be testable with fixtures without a live WeChat client. Parser-upgrade rebuild scenarios must be covered.
 
-### NFR-07 Privacy
+### NFR-07 Version isolation
 
-Secrets, raw private datasets and generated personal archives must never be committed to the repository by default.
+Client-version-specific table/column/type/crypto assumptions remain within capture/reader compatibility modules.
 
-### NFR-08 Recoverability
+### NFR-08 Privacy
 
-Recoverability guarantees must be stated by operation and failure class, not described with unqualified words such as "safe", "durable" or "atomic". The normative reliability levels are defined in `docs/DEVELOPMENT.md`.
+Secrets and private Raw Vault/archive/export content are never committed to the repository by default. WeChat DB keys are never persisted.
 
-### NFR-09 Stable references
+### NFR-09 Recoverability
 
-Mutable human names shall not determine physical export paths. Harness workflows must be able to refer to stable conversation paths across remark/group-name changes.
+Recoverability guarantees are stated by operation/failure class. Unqualified claims such as "safe" or "atomic" are prohibited.
 
-### NFR-10 No fabricated semantics
+### NFR-10 Stable references
 
-The system must not invent unavailable identities, URLs, amounts, timestamps, filenames or message content merely to avoid null/unknown states.
+Parser/reader upgrades and canonical rebuilds do not change deterministic stable IDs solely because implementation versions changed.
 
-### NFR-11 Composability
+### NFR-11 No fabricated semantics
 
-CLI commands must be pipeable and automation-safe. Machine-readable stdout must not contain progress bars, prompts or localization-dependent prose.
+Unavailable identities, URLs, amounts, timestamps, filenames or message content are not invented to avoid null/unknown states.
 
-## 8. Normalized domain model
+### NFR-12 Composability
 
-Core entities:
+CLI commands remain pipeable and automation-safe; query results are paginated where unbounded output would be unsafe/inefficient.
+
+### NFR-13 Raw Vault isolation
+
+Normal Harness/Agent/query/export workflows do not depend on Raw Vault physical schemas or file layouts.
+
+## 10. Canonical domain model
+
+Canonical entities include:
 
 - `Account`
 - `Conversation`
 - `Participant`
-- `ConversationParticipant`
+- `ConversationParticipant` (conceptual; current migration uses narrower relations)
 - `Message`
 - `ImportRun`
-- `SourceCheckpoint`
-- optional source/provenance artifacts
+- checkpoint state
+- source provenance
 
-Phase 1 does not require a binary-media archive entity. Media/file semantics are represented through canonical messages and structured payload metadata.
-
-The archive implements `Account`, `Conversation`, `Participant`, `Message`, `ImportRun` and `SourceCheckpoint` as tables. `ConversationParticipant` is modelled today through the conversation's peer/owner participant references and per-conversation participant metadata; a full membership relation is not yet a table.
+Raw Vault generations/manifests belong to the preservation model, not to the canonical `Message` schema.
 
 See [DATA_MODEL.md](DATA_MODEL.md).
 
-## 9. Product surface
+## 11. Product/access surfaces
 
-### 9.1 Target surface — command CLI
+### 11.1 CLI
 
-The primary product surface is a single executable with `gh`-style subcommands. It must remain thin over application services and must not contain source-format logic.
+The CLI remains the shipped first-class product surface and thin transport over application services.
 
-Human example:
+### 11.2 ArchiveQueryService
 
-```text
-wearchive doctor
-wearchive conversation list
-wearchive export --conversation g_01fd893a7b21c054
-```
+This is the intended stable internal product API for retrieval/search/context. It shields callers from persistence/schema changes.
 
-Agent/script example:
+### 11.3 Future MCP
 
-```text
-wearchive doctor --json --no-input
-wearchive conversation list --json --no-input
-wearchive export --conversation g_01fd893a7b21c054 --json --no-input
-```
+MCP is an optional transport over shared services. Its introduction does not change the CLI-first product decision and does not embed an AI provider.
 
-The CLI is not a TUI and does not host an LLM.
+### 11.4 JSONL export
 
-It is distributed as a self-contained `win-x64` executable (`WeArchive.exe`) inside `WeArchive-win-x64.zip`, with no .NET runtime prerequisite, no installer and no auto-updater (NFR-01). See [ADR 0007](adr/0007-cli-self-contained-distribution.md).
+JSONL remains portable interchange/offline data rather than the default interactive agent query surface.
 
-### 9.2 Historical surface — retired WPF MVP
-
-The historical WPF MVP described by superseded ADR 0003 has been removed. The repository maintains exactly one first-class product surface, the command CLI, and no new product features target a GUI.
-
-## 10. Milestone acceptance criteria
+## 12. Milestone acceptance summary
 
 ### M0 — Archive foundation (met)
 
-- Canonical domain/message models are defined and tested.
-- SQLite archive schema and migrations exist.
-- A fixture/mock adapter can complete an end-to-end import.
-- Canonical Phase 1 JSONL export works from fixture/archive data.
-- Stable conversation paths, identity mappings and conversation catalog behavior are covered by tests.
-- Unknown message fixtures remain present and counted.
-
-The historical WPF shell was an implementation vehicle, not part of the enduring M0 contract.
+Canonical models, migration-1 SQLite, fixture imports, stable IDs and JSONL export are delivered.
 
 ### M0.5 — CLI product-surface migration (met)
 
-- `WeArchive.Cli` is the primary executable (assembly `WeArchive`, shipped as `WeArchive.exe`).
-- Required FR-22 commands are implemented over existing application services.
-- Human and `--json` output modes have contract tests.
-- stdout/stderr separation and exit codes are tested.
-- `--no-input` never prompts.
-- Required sync/export behavior retains the existing archive/export semantics and reliability levels.
-- WPF-specific product code is removed; the project does not carry two first-class presentation layers.
-- Portable self-contained `win-x64` release is produced and smoke-tested from GitHub Actions/Release artifacts.
+CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portable packaging are delivered.
 
-### M1 — First real local source adapter (MVP slice met; milestone incomplete)
+### M1 — Live WeChat source adapter (partial)
 
-Met:
+Core local-source discovery/parsing exists. Incremental checkpoint consumption and complete partition-coverage reporting remain outstanding.
 
-- A supported account/source can be discovered for a locally signed-in WeChat 4.x installation, together with the client version.
-- Conversations and text messages can be imported.
-- Multiple source partitions are merged into one stable logical timeline.
-- File/image/voice/video events are normalized without binary preservation.
-- Link/app-share/mini-program records preserve obtainable semantic metadata and original URLs.
-- Reply relationships are preserved where locally resolvable.
-- Latest available remarks populate default identity display names.
-- Unsupported records produce explicit diagnostics.
+### M1.5 — Preservation/rebuild foundation (target)
 
-Not yet met:
-
-- Incremental refresh works for supported records.
-- Missing partitions produce explicit, complete coverage reporting.
+- Raw Vault baseline/incremental capture;
+- immutable generations/manifests;
+- source deletion does not erase preserved history;
+- Raw-Vault-only canonical rebuild;
+- stable-ID rebuild invariant;
+- separate capture/ingest progress state.
 
 ### M2 — Semantic completeness
 
-Remaining work is depth rather than coverage: more reliable special-message semantics, better unknown-type diagnostics and reply-target resolution improvements.
+Improve parser depth/unknown handling and use rebuildability to reprocess preserved historical evidence.
 
-### M3 — Retrieval
+### M3 — Query/Harness foundation
 
-- Full-text search works.
-- Conversation/date/person filters work.
-- Archive statistics and timelines are available.
-- Retrieval is exposed through machine-readable CLI commands.
+- `ArchiveQueryService`;
+- message/date/conversation retrieval;
+- FTS/search/context;
+- Collection-backed scopes;
+- `docs/HARNESS.md` contract and CLI JSON query surface.
 
-### M4 — Harness workflows
+### M4 — MCP and advanced Harness workflows
 
-- Harness workflows can reliably select conversations/collections and date partitions from canonical export files and/or CLI JSON results.
-- Core archive/export remains fully functional without any AI provider.
-- No separate LLM-derived/chunk dataset is required.
+Optional MCP over QueryService, richer collection/query/export automation and status/freshness tooling.
 
-## 11. Product governance
+## 13. Product governance
 
 All implementation work must trace to documentation under `docs/`.
 
-Before code implementing a new capability is merged, at least one of the following must already describe the intended behavior:
+Architecture-changing work must update the relevant PRD/architecture/data-model/specialized specification/ADR before or with implementation.
 
-- `PRD.md`
-- specialized PRDs such as `EXPORT_PRD.md`
-- `MESSAGE_SCHEMA.md`
-- `ARCHITECTURE.md`
-- `DATA_MODEL.md`
-- `ROADMAP.md`
-- an ADR under `docs/adr/`
-
-If code changes intended product behavior, CLI contract, schema semantics or reliability level, update documentation in the same pull request.
+Shipped-status language must remain distinct from accepted target behavior. Documentation-first does not permit documentation to falsely claim unimplemented capabilities are available.
