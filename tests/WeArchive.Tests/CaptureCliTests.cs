@@ -62,7 +62,7 @@ public sealed class CaptureCliTests
         Assert.Equal("baseline", doc.RootElement.GetProperty("mode").GetString());
         Assert.Equal("complete", doc.RootElement.GetProperty("completeness").GetString());
         Assert.Equal(3, doc.RootElement.GetProperty("artifact_count").GetInt32());
-        Assert.True(doc.RootElement.GetProperty("generation_id").GetString()!.StartsWith("gen_"));
+        Assert.StartsWith("gen_", doc.RootElement.GetProperty("generation_id").GetString());
 
         // stdout must be exactly one JSON document with no trailing content.
         Assert.False(output.Contains('\n'));
@@ -82,7 +82,7 @@ public sealed class CaptureCliTests
         Assert.Contains("Captured", stdout);
         // Human progress goes to stderr, not stdout.
         Assert.NotEmpty(stderr);
-        Assert.False(stdout.Contains("Describing", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain("Describing", stdout, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
