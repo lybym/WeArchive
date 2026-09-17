@@ -1,10 +1,9 @@
 # WeArchive CLI contract
 
 This document records the additive command, JSON and exit-code contract for the M0.5 CLI
-product-surface migration. It covers the read-only discovery commands (Issue #7), the
-`sync`/`export` commands (Issue #8) and the retired WPF surface (Issue #9). It refines the
-high-level CLI contract in [`PRD.md`](PRD.md) (FR-22),
-[`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
+product-surface migration. It covers the read-only discovery commands (Issue #7) and the
+`sync`/`export` commands (Issue #8). It refines the high-level CLI contract in
+[`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
 [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is the primary product surface;
 this file is normative for the command shapes and machine-readable output described here.
 
@@ -14,44 +13,13 @@ contract.
 
 ## Entry point
 
-The entry-point project is `src/WeArchive.Cli` and its assembly is named `WeArchive`, so the
-shipped executable is `WeArchive.exe` — the product surface named `wearchive` throughout this
-document. Earlier M0.5 work used the assembly name `WeArchive.Cli` only to avoid a name
-collision with the historical WPF project's `WeArchive` assembly; Issue #9 removed that
-project and the collision along with it.
-
-The composition root (`Program.cs`) reuses `AddWeArchiveCore` + `AddWeChatWindowsSource` —
-there is no second composition model.
-
-## Distribution and invocation
-
-`WeArchive-win-x64.zip` extracts to a self-contained `win-x64` folder that needs no .NET
-runtime, containing `WeArchive.exe` plus a `wearchive.cmd` shim. Add the extracted folder to
-`PATH` and invoke `wearchive` (or `WeArchive.exe`; Windows resolves the name
-case-insensitively). There is no installer and no auto-updater —
-see [ADR 0007](adr/0007-cli-self-contained-distribution.md).
-
-Release verification executes the published artifact rather than a development build, and then
-the shipped ZIP as extracted:
-
-```powershell
-./scripts/smoke-test-cli.ps1                    # asserts --version, --help and doctor --json
-./scripts/smoke-test-cli.ps1 -ExpectedVersion 0.2.0-rc.1
-./scripts/smoke-test-package.ps1                # extracts the ZIP and runs the same contract,
-                                                # including through the wearchive.cmd shim
-```
-
-## Product version
-
-`--version` (and the `version` command) report the release version: the CLI assembly's
-informational version with build metadata removed, resolved by `src/WeArchive.Cli/ProductVersion.cs`.
-So `-p:Version=0.2.0-rc.1` reports `0.2.0-rc.1`, and a plain build reports `0.1.0` without the
-SDK's `+<commit>` suffix. Reporting the numeric assembly version instead would make a prerelease
-indistinguishable from its final release.
-
-`--version` is the only stable, script-consumable way to identify the build; the artifact smoke
-tests compare it exactly (ignoring build metadata) so a mis-stamped or mis-packaged release
-fails the pipeline rather than shipping.
+During the CLI migration the entry-point project is `src/WeArchive.Cli` (assembly
+`WeArchive.Cli`). The historical WPF project (`src/WeArchive.App`, assembly `WeArchive`) still
+exists, so the CLI is built as a distinct assembly to avoid a name collision while both surfaces
+coexist. Once the WPF presentation layer is retired, this project becomes the shipped
+`wearchive` / `WeArchive.exe` (see ADR 0006 transition rule). The composition root
+(`Program.cs`) reuses `AddWeArchiveCore` + `AddWeChatWindowsSource` — there is no second
+composition model.
 
 ## Global options
 
@@ -366,6 +334,58 @@ between two successful exports **except** `manifest.json`'s `created_at` (and
 `exporter_version` across builds), matching [EXPORT_PRD.md](EXPORT_PRD.md) section 15. A
 repeated export never rewrites or corrupts a timeline partition, so re-export from the SQLite
 archive remains the recovery path.
+
+## Commands (capture family — Issue #22 / M1.5)
+
+### `wearchive capture [--account <id>]`
+
+Captures a supported local WeChat account into a durable, versioned, immutable Raw Vault
+generation that remains readable without the original WeChat database key (FR-04/FR-05/FR-06/
+FR-13/FR-20, [RAW_VAULT.md](RAW_VAULT.md)). The command delegates the entire snapshot -&gt;
+publish operation to `CaptureService`; it contains no key-acquisition, SQLCipher or manifest
+publication logic.
+
+Account resolution (never prompts, safe under `--no-input`): `--account <id>` selects explicitly
+by the account's stable id (`a_...`) **or** its source profile id; otherwise the current account
+(`is_current`) is used, falling back to the first account.
+
+Options:
+
+```text
+--account <id>   Optional. Stable account id (a_) or source profile id.
+```
+
+Reliability — **R1** (Raw Vault publication): a normal success publishes exactly one complete
+generation with a validated manifest and checksums. A Fatal source/coverage failure or caught
+cancellation discards the staged material and publishes nothing — no incomplete generation is
+ever published as complete. No journal, commit marker or rollback ledger is persisted. See
+[DEVELOPMENT.md](DEVELOPMENT.md) Reliability Levels and
+[ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
+
+Exits `1` with `failure` (capture did not complete), `source_unavailable`, `no_accounts` or
+`account_not_found` on the corresponding failure; `2` on a usage error; `130` on cancellation.
+
+JSON shape (exit 0):
+
+```json
+{
+  "generation_id": "gen_<16-hex>",
+  "account_id": "a_<16-hex>",
+  "source_profile_id": "wxid_...",
+  "capture_time": "2026-03-01T12:00:00+08:00",
+  "completeness": "complete",
+  "mode": "baseline",
+  "capture_adapter_family": "wechat-windows",
+  "capture_adapter_version": "0.1.0",
+  "artifact_count": 5,
+  "previous_generation_id": null,
+  "diagnostics": []
+}
+```
+
+`completeness` is `complete` or `partial`. `mode` is `baseline` (full capture; incremental is
+future work). `previous_generation_id` links to the immediately preceding published generation
+for the same account, forming an append-only chain.
 
 ## Failure document (`--json`)
 

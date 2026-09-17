@@ -46,11 +46,12 @@ public sealed class SyncExportCliTests
         var archivePath = temp.Combine("archive.db");
 
         var services = new ServiceCollection();
-        services.AddWeArchiveCore(archivePath);
+        services.AddWeArchiveCore(archivePath, temp.Combine("rawvault"));
         // AddWeArchiveCore uses TryAddSingleton; later explicit registrations win on
         // resolution, so override the clock and (when provided) the adapter/exporter.
         services.AddSingleton<IClock>(clock);
         services.AddSingleton<ISourceAdapter>(adapter ?? fixture);
+        services.AddSingleton<ISourceCaptureAdapter, FixtureCaptureAdapter>();
         if (exporterFactory is not null)
         {
             services.AddSingleton<IDatasetExporter>(sp => exporterFactory(sp.GetRequiredService<IArchiveStore>()));

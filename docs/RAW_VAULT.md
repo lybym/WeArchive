@@ -1,320 +1,218 @@
-# WeArchive Raw Vault and Rebuild Contract
+# WeArchive Raw Vault
+
+The Raw Vault is a preservation layer that captures a source-faithful snapshot of a supported
+WeChat account *before* normalization. It is separate from the canonical SQLite archive
+(`archive/wearchive.db`) and has its own format version, manifest and reliability contract.
+
+Normative decisions are in [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
 
 ## 1. Purpose
 
-The Raw Vault is WeArchive's preservation layer for the user's own local WeChat data.
+- preserve source-faithful database/schema evidence (every table, column and row) before
+  normalization, including fields the current parser cannot interpret;
+- keep captured evidence readable when the live WeChat client or its database key are no longer
+  available;
+- never persist the upstream WeChat database key;
+- publish immutable, versioned generations with verifiable checksums and provenance.
 
-Its job is different from the canonical SQLite archive:
+The Raw Vault is **not** the canonical archive. Canonical messages live in `wearchive.db`; the
+Raw Vault holds the raw source snapshot that a future parser can re-process.
 
-- the **Raw Vault** answers: **what did the upstream source contain at capture time?**
-- `archive/wearchive.db` answers: **what is WeArchive's current canonical interpretation of that preserved evidence?**
+## 2. Entities
 
-The Raw Vault is the **archival source of truth**. The canonical SQLite archive is the **operational system of record** and is rebuildable from the Raw Vault.
-
-This document defines the target architecture. The 0.2.x implementation still imports directly from the live WeChat source and does not yet provide the Raw Vault/capture/rebuild workflow.
-
-See also [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DATA_MODEL.md](DATA_MODEL.md) and [ROADMAP.md](ROADMAP.md).
-
-## 2. Data-layer model
-
-```text
-L0  Live Source
-    WeChat local data
-        │
-        │ capture
-        ▼
-L1  Preservation Layer
-    Raw Vault
-    immutable generations + manifests
-        │
-        │ read / parse / normalize
-        ▼
-L2  Semantic Layer
-    archive/wearchive.db
-    canonical, indexed, queryable
-        │
-        ▼
-L3  Access Layer
-    ArchiveQueryService
-    CLI / future MCP
-        │
-        ▼
-L4  Interchange Layer
-    JSONL / YAML / JSON exports
-```
-
-Only L1 is treated as non-reproducible preserved evidence. L2-L4 must be rebuildable from lower layers under their documented contracts.
-
-## 3. Preservation principles
-
-### 3.1 Capture before interpretation
-
-Capture should preserve source data with the smallest practical semantic transformation. Parsing and normalization happen after capture.
-
-A field that the current parser does not understand must not be discarded merely because it has no canonical meaning today. Future readers/parsers must be able to re-interpret preserved source records.
-
-### 3.2 Upstream deletion is not archive deletion
-
-Raw Vault synchronization is **preservation**, not mirroring.
-
-If a record existed in an earlier successful generation and later disappears from the live WeChat source, that disappearance MUST NOT delete the preserved record or an earlier generation.
+Conceptual entities (independent of the canonical archive schema):
 
 ```text
-source at T1: A B C D
-source at T2: A D E
-
-preserved history: A B C D + later E/changes
+RawVaultAccount  — one captured source profile
+RawGeneration    — one published snapshot; logically immutable
+RawArtifact      — one content object (e.g. a decrypted source database image)
+CaptureRun       — provenance: adapter family/version, capture time, completeness, diagnostics
 ```
 
-Deletion/purge of preserved evidence requires an explicit user operation; it is never inferred from source absence.
+The Raw Vault format version is independent of the canonical SQLite, message-schema and
+export-schema versions.
 
-### 3.3 Immutable generations
-
-Every successful capture publishes an immutable logical generation.
-
-Example layout:
+## 3. Physical layout
 
 ```text
-source/
-└─ a_<account-id>/
-   ├─ catalog.db                  # implementation detail; optional
-   └─ generations/
-      ├─ 000001/
-      │  └─ manifest.json
-      ├─ 000002/
-      │  └─ manifest.json
-      └─ 000003/
-         └─ manifest.json
+<vault-root>/accounts/<account-id>/generations/<generation-id>/
+  manifest.json
+  artifacts/<sha256><ext>
 ```
 
-A generation records what source artifacts and logical ranges were successfully captured at that point in time. A published generation is never modified in place.
+- `<vault-root>` defaults to `%LOCALAPPDATA%\WeArchive\rawvault`.
+- `<account-id>` is the stable account id (`a_<16-hex>`, [DATA_MODEL.md](DATA_MODEL.md) section 16).
+- `<generation-id>` is `gen_<16-hex>`, derived from `StableIds.Generation(accountId, captureTime,
+  adapterFamily, adapterVersion)`.
+- Artifacts are named by their SHA-256 hex digest plus the original file extension, so identical
+  content is stored once and content-addressable.
 
-Physical storage MAY deduplicate unchanged files/pages/chunks. Immutability is a logical contract, not a requirement to copy every byte on every run.
+## 4. Manifest
 
-### 3.4 First full capture, later incremental capture
-
-The target synchronization behavior is:
-
-1. first successful capture establishes a complete baseline for the supported source scope;
-2. later captures use capture checkpoints/source change evidence to acquire only new or changed material where safely supported;
-3. when incremental safety cannot be established, fall back to a wider/full consistent capture rather than silently claiming completeness;
-4. every generation records completeness and diagnostics explicitly.
-
-Incremental optimization must never weaken the preservation contract.
-
-## 4. Source fidelity
-
-The preferred Raw Vault representation preserves a recoverable, source-faithful view of the WeChat databases and their source-version metadata.
-
-The capture layer should avoid translating upstream records into a reduced `RawMessage` schema before preservation. Otherwise unknown fields can be lost before future parsers have a chance to understand them.
-
-A Raw Vault generation should retain, where applicable:
-
-- source product and source/client version;
-- source profile/account identity;
-- source database/partition logical role;
-- source schema/version evidence;
-- a consistent recoverable representation of database content;
-- artifact hashes/checksums;
-- capture time and capture-tool version;
-- coverage/completeness diagnostics;
-- enough metadata to select a compatible reader later.
-
-## 5. Encryption and key independence
-
-The Raw Vault MUST NOT depend on reacquiring the original WeChat database key in the future.
-
-Therefore a successful capture must publish a representation that remains readable when:
-
-- WeChat is uninstalled;
-- the client cannot start;
-- process-memory key acquisition changes;
-- SQLCipher parameters change in later WeChat versions.
-
-WeChat database keys MUST NOT be persisted in the Raw Vault, logs, manifests or canonical archive.
-
-If Raw Vault data is encrypted at rest, that encryption must use WeArchive-owned/user-owned key management independent of the upstream WeChat key. The exact at-rest mechanism is a separate implementation/security decision.
-
-## 6. SQLite/WAL consistency
-
-Capture MUST NOT be implemented as an unsafe sequence of ordinary file copies from a live SQLite/SQLCipher database when that could produce a database/WAL mismatch.
-
-A capture implementation must establish a documented consistent source snapshot using an approach appropriate to the supported WeChat version. WAL/partition completeness must be validated and surfaced in generation diagnostics.
-
-A generation with a Fatal source-coverage failure is not published as a complete generation.
-
-## 7. Capture manifest
-
-A generation manifest is durable metadata. The exact JSON schema is versioned, but conceptually contains:
+`manifest.json` is a versioned JSON document. Field names are stable snake_case.
 
 ```json
 {
   "manifest_version": 1,
-  "generation": 42,
-  "captured_at": "2026-09-17T14:00:00+08:00",
-  "source_product": "WeChat for Windows",
-  "source_version": "4.x",
+  "vault_format_version": 1,
+  "generation_id": "gen_...",
+  "account_id": "a_...",
   "source_profile_id": "wxid_...",
-  "capture_adapter_family": "wechat-windows",
-  "capture_adapter_version": "...",
-  "completeness": "complete",
+  "source": {
+    "adapter_name": "wechat-windows",
+    "adapter_version": "0.1.0",
+    "source_product_name": "WeChat for Windows",
+    "source_version": "4.1.13.12"
+  },
+  "capture": {
+    "capture_time": "2026-03-01T12:00:00+08:00",
+    "capture_adapter_family": "wechat-windows",
+    "capture_adapter_version": "0.1.0",
+    "mode": "baseline",
+    "completeness": "complete",
+    "artifact_count": 5
+  },
   "artifacts": [
     {
-      "logical_role": "message_partition",
-      "source_locator": "...",
-      "content_ref": "...",
-      "sha256": "..."
+      "role": "source-database",
+      "name": "message_0.db",
+      "content_ref": "artifacts/<sha256>.db",
+      "sha256": "<hex>",
+      "size": 1048576,
+      "source_format": "sqlite",
+      "is_decrypted": true,
+      "metadata": {
+        "page_count": "256",
+        "wal_frames_applied": "3",
+        "wal_frames_rejected": "0",
+        "was_plaintext": "false",
+        "source_relative_path": "db_storage/message/message_0.db"
+      }
     }
   ],
-  "diagnostics": []
+  "diagnostics": [],
+  "previous_generation_id": null
 }
 ```
 
-`source_locator` is provenance, not a requirement that the original path still exist during rebuild.
+### 4.1 Versioning
 
-## 8. Capture checkpoint vs ingest checkpoint
+- `manifest_version` — the manifest's own structure version. Currently `1`.
+- `vault_format_version` — the physical artifact layout version. Currently `1`.
 
-Preservation progress and canonical-ingest progress are different state and MUST be modeled separately.
+These are independent of each other and of the canonical SQLite, message-schema and
+export-schema versions.
 
-### Capture checkpoint
+### 4.2 Artifact roles
 
-Tracks what has safely entered the Raw Vault from the live source.
+Artifact `role` values are source-neutral strings so the Raw Vault does not leak WeChat table
+names into Core/CLI:
 
-Conceptually:
+- `source-database` — a decrypted source database image (SQLite).
 
-```text
-account
-  └─ source/partition cursor(s)
-```
+Future roles may include `schema-evidence`, `source-config` or derived dumps; they are additive
+and do not change existing roles.
 
-### Ingest checkpoint
+## 5. Consistent snapshot strategy
 
-Tracks what Raw Vault evidence has been processed into the canonical archive.
+WeChat 4.x keeps its databases open in SQLCipher/WAL mode. An ordinary file copy of the `.db`
+file may be a checkpoint older than the client's state, and the `.db` + `.wal` pair is encrypted
+and unreadable without the key.
 
-Conceptually:
+The WeChat capture adapter reuses `SqlCipherDatabaseCache`, which:
 
-```text
-account
-  └─ conversation
-      └─ generation / partition cursor(s)
-```
+1. opens source files with shared read access (read-only);
+2. replays only committed, HMAC-verified WAL frames up to the last commit marker;
+3. materializes each encrypted database as a decrypted, ordinary SQLite image in a transient
+   scratch directory.
 
-A parser failure must not force already-preserved source data to be recollected from WeChat. After parser repair, ingest can resume/replay from the Raw Vault.
+The capture adapter copies each plaintext image into the Raw Vault as an artifact. The upstream
+key is held only in memory and is never persisted. When the capture finishes, the scratch cache
+is disposed, deleting the key and decrypted scratch material.
 
-The shipped migration-1 `source_checkpoints` table is an earlier generic checkpoint design. A future migration may replace/refine it with explicitly scoped capture/ingest checkpoint storage. See [DATA_MODEL.md](DATA_MODEL.md).
+The resulting artifacts are **decrypted SQLite images**: source-faithful and readable without
+the original WeChat key.
 
-## 9. Rebuild contract
+## 6. Publication and immutability
 
-`wearchive rebuild` is a target command whose defining contract is:
+Publication is **publish-last**:
 
-> Recreate the canonical archive from the Raw Vault without accessing the live WeChat source.
+1. `BeginGenerationAsync` creates a `.staging` directory.
+2. `WriteArtifactAsync` writes each artifact to the staging area and returns its descriptor
+   with a verified SHA-256.
+3. `PublishAsync` writes `manifest.json` to the staging directory and atomically renames it to
+   its final location (`Directory.Move` on the same volume).
 
-A rebuild may recreate:
+A generation is only discoverable after step 3. A failed or cancelled capture discards the
+staging directory and publishes nothing — no incomplete generation can be mistaken for a
+complete one.
 
-- `archive/wearchive.db`;
-- canonical accounts/participants/conversations/messages;
-- reply relationships and provenance;
-- FTS/search indexes;
-- derived statistics/indexes.
+Published generations are **immutable**: the store refuses to overwrite an existing generation
+directory. Later captures create new generations linked by `previous_generation_id`, forming an
+append-only chain. Later source deletion does not delete or rewrite earlier generations.
 
-Exports remain a separate derived operation and may be regenerated after rebuild.
+## 7. Completeness and failure modes
 
-A rebuild MUST NOT require:
+| Verdict | Meaning |
+|---|---|
+| `complete` | All required artifacts captured and verified; no Fatal diagnostic |
+| `partial` | Optional evidence missing (e.g. some auxiliary database unreadable) but required evidence present; still a valid generation |
+| `incomplete` | Required evidence missing or snapshot inconsistent; the generation is discarded, not published |
 
-- a running WeChat client;
-- the original WeChat database key;
-- the original source files still being present outside the Raw Vault.
+Fatal examples: required partition unavailable, inconsistent snapshot/WAL state, checksum
+mismatch, source identity unavailable, key unavailable before capture, artifact publication
+failure.
 
-## 10. Reader evolution
+Caught cancellation/runtime/I/O failure discards the staging material best-effort and fails
+explicitly. Process crash and OS/power loss are not guaranteed recovery classes. No persistent
+recovery journal, rollback ledger or complex R3+ state machine is added.
 
-Raw Vault generations are versioned source evidence. Readers/parsers may evolve independently.
+## 8. Reliability level — R1
 
-Example:
+Raw Vault capture follows [R1](DEVELOPMENT.md#10.3-r1--in-process-replace-with-best-effort-restoration):
 
-```text
-Raw generations 1-80  (WeChat 4.x)
-        │
-        └─ WeChat4CapturedSourceReader
+- **Success (A)**: one complete generation published with validated manifest and checksums.
+- **Caught cancellation (B)**: staging discarded best-effort; nothing published.
+- **Caught I/O error (C)**: same as B; failure reported.
+- **Process crash (D)**: not guaranteed; a stale `.staging` directory is never discoverable.
+- **OS/power loss (E)**: not guaranteed.
 
-Raw generations 81+   (future WeChat schema)
-        │
-        └─ WeChatNextCapturedSourceReader
+No journal, commit marker or rollback ledger is persisted.
 
-both
-  ↓
-Normalizer
-  ↓
-Canonical Archive
-```
+## 9. Generation discovery and validation
 
-Reader implementation versions MUST NOT change stable identity namespaces. `wechat-windows` is a logical source/adapter family; parser implementation versions are metadata, not new identity domains.
+- `ListGenerationsAsync(accountId)` — published generations ordered by capture time ascending.
+- `GetLatestGenerationAsync(accountId)` — the most recent published generation.
+- `OpenGenerationAsync(accountId, generationId)` — opens a generation for read-only inspection,
+  verifying every artifact's SHA-256. A tampered or corrupted generation is rejected (returns
+  null) rather than trusted.
 
-## 11. Stable-ID rebuild invariant
+## 10. Key non-persistence
 
-Given preserved source identities, a rebuild MUST reproduce the same deterministic account, participant, conversation and message stable IDs.
+The upstream WeChat database key:
 
-This protects:
+- is recovered read-only from the running client's memory (ADR 0005);
+- is verified against real database pages before use;
+- exists only in memory (`WeChatKeySet`) for the duration of the capture;
+- is never written to the Raw Vault, the canonical SQLite, logs or CLI output;
+- is deleted when the scratch cache is disposed.
 
-- aliases;
-- collections;
-- export paths;
-- message references;
-- Harness/MCP references;
-- external automation state.
+Captured artifacts are **decrypted** content; they are readable without the key. Tests verify
+that no key material appears in any manifest, artifact metadata or CLI output.
 
-Changing a parser version is not sufficient reason to change a stable ID.
+## 11. Layer separation
 
-## 12. Canonical archive relationship
+- **Core** (`WeArchive.Core`): `RawManifest`, `RawArtifactDescriptor`, `IRawVaultStore`,
+  `ISourceCaptureAdapter`, `CaptureService`. No WeChat schema details.
+- **Infrastructure/RawVault**: `RawVaultStore` (filesystem persistence),
+  `RawManifestSerializer`. Treats artifacts as opaque content.
+- **Infrastructure/WeChat**: `WeChatCaptureAdapter` — the only place WeChat database layout,
+  key acquisition and SQLCipher decryption live.
 
-`archive/wearchive.db` is intentionally allowed to contain less source-specific detail than the Raw Vault. Its job is stable semantics and efficient operations.
-
-It is the authoritative runtime dataset for:
-
-- query;
-- FTS;
-- timeline/range retrieval;
-- statistics;
-- collections;
-- Harness/Agent access through `ArchiveQueryService`;
-- export generation.
-
-Harnesses and normal product workflows MUST NOT read Raw Vault databases/files directly.
-
-## 13. Media boundary
-
-The initial Raw Vault milestone is scoped to the source database/data needed to reconstruct canonical message records and provenance.
-
-It does **not** automatically imply preservation of every external image/audio/video/file binary referenced by WeChat. A future Media Vault/binary-preservation milestone must define those semantics separately.
-
-Therefore "full backup" must be qualified:
-
-- Raw Vault target: high-fidelity preservation of supported message/source database evidence;
-- future media preservation: binary payload/assets when explicitly implemented.
-
-## 14. Target CLI semantics
-
-Planned command separation:
+## 12. CLI
 
 ```text
-wearchive capture                 # live WeChat -> Raw Vault only
-wearchive sync --conversation ... # capture as needed + ingest selected scope
-wearchive sync --collection ...   # capture as needed + ingest collection scope
-wearchive rebuild                 # Raw Vault -> new canonical archive; no live source
+wearchive capture [--account <id>]
 ```
 
-`sync` is the ordinary convenience workflow; `capture` and `rebuild` are explicit preservation/recovery operations.
-
-## 15. Acceptance criteria
-
-The first Raw Vault milestone is complete only when:
-
-1. a supported account can be captured into a versioned immutable generation;
-2. capture does not intentionally modify WeChat data;
-3. a later source deletion does not erase older preserved evidence;
-4. the published generation has checksums, source-version metadata and completeness diagnostics;
-5. a fresh canonical archive can be built using only the Raw Vault;
-6. rebuild does not acquire/read a live WeChat key;
-7. rebuild reproduces stable IDs for unchanged preserved source identities;
-8. unknown/unparsed source fields are not discarded by the preservation layer merely because the current normalizer does not understand them;
-9. capture and ingest progress are independently resumable/replayable under documented reliability rules;
-10. automated tests cover at least one parser upgrade/rebuild scenario.
+A thin adapter over `CaptureService`. See [CLI.md](CLI.md) for the full contract.

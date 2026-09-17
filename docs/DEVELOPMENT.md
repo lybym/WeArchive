@@ -81,7 +81,7 @@ C# 14 / .NET 10 LTS
   xUnit v2 on the VSTest platform for tests
 ```
 
-The historical `WeArchive.App` WPF project was removed by Issue #9. There is one first-class presentation layer: `src/WeArchive.Cli`, whose assembly is named `WeArchive` and which produces the shipped `WeArchive.exe`.
+During the CLI migration the historical `WeArchive.App` WPF project may still be present, but it is transitional and must not be treated as a second first-class presentation layer.
 
 The SDK is pinned by `global.json`. Language level, nullable, analyzer level, warnings-as-errors and deterministic builds are centralized in `Directory.Build.props`; package versions are centrally pinned.
 
@@ -145,10 +145,9 @@ Current key records include:
 - `0001` docs are the source of truth;
 - `0002` archive core before real source adapter;
 - `0003` historical .NET/WPF MVP decision, presentation portion superseded;
-- `0004` historical Velopack distribution decision, superseded;
+- `0004` historical Velopack distribution decision;
 - `0005` local key acquisition;
-- `0006` CLI-first product surface;
-- `0007` self-contained portable CLI distribution, supersedes `0004`.
+- `0006` CLI-first product surface.
 
 ## 6. Branching and change scope
 
@@ -160,7 +159,6 @@ Examples:
 feat/cli-foundation
 feat/cli-doctor
 feat/cli-sync-export
-feat/retire-wpf-cli-packaging
 feat/m1-incremental-checkpoints
 fix/import-coverage-rollback
 docs/update-data-model
@@ -198,35 +196,9 @@ The CLI is a product API. Tests must cover at least:
 - documented exit codes (`0`, `1`, `2`, `130`);
 - stable JSON field names for released command contracts;
 - cancellation behavior;
-- Fatal vs Partial diagnostic mapping;
-- the released artifact shape: the CLI assembly is named `WeArchive`, the required command family is reachable, and the retired WPF/Velopack distribution surface is not reintroduced;
-- the product version contract: `--version` and the `version` command agree, report a released version, and strip build metadata (see `docs/CLI.md` "Product version").
+- Fatal vs Partial diagnostic mapping.
 
 Tests must call CLI/application boundaries directly where practical; GUI automation is not part of the target test strategy.
-
-### Release-artifact smoke tests
-
-A release is verified by executing the published artifact, never a local development build, and
-then by verifying the ZIP that actually ships:
-
-```text
-scripts/smoke-test-cli.ps1       --version --json (exact version), --help --json (required
-                                 command family) and doctor --json --no-input, each asserting
-                                 exit 0 and exactly one JSON document on stdout
-scripts/smoke-test-package.ps1   asserts WeArchive.exe and wearchive.cmd sit at the ZIP root,
-                                 extracts it into a clean directory, and runs the same contract
-                                 against the extracted exe and through the wearchive.cmd shim
-```
-
-`doctor` needs no local WeChat client, so the smoke tests are environment-independent. CI builds
-and verifies the artifact and its ZIP on every change (`cli-artifact` job); the release workflow
-runs the same scripts with `-ExpectedVersion` before publishing.
-
-Version-stamped builds must be covered whenever the version contract changes: CI publishes with
-`-p:Version=0.0.0-ci` precisely so the artifact's reported version is asserted against a value
-that differs from the `VersionPrefix` default, and `CliPackagingTests` pins the resolution rule
-(informational version wins, build metadata stripped, numeric version as the fallback) against
-synthetic assemblies.
 
 ### Adapter compatibility tests
 
@@ -322,6 +294,16 @@ Permitted techniques include sibling staging paths, temp files, backups and publ
 
 Phase 1 Export must **not** introduce persistent journals, transaction ids, commit markers, recovery ledgers or a cross-process transaction protocol unless a later requirement explicitly upgrades the reliability level.
 
+### 10.3.1 Raw Vault capture — R1
+
+Raw Vault baseline capture (Issue #22 / M1.5) follows **R1**: a normal success publishes exactly
+one complete generation with a validated manifest and checksums; a Fatal source/coverage failure
+or caught cancellation/I/O failure discards the staged material best-effort and publishes
+nothing — no incomplete generation is ever published as complete. Process crash and OS/power
+loss are not guaranteed recovery classes. No journal, commit marker or rollback ledger is
+persisted. See [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md) and
+[RAW_VAULT.md](RAW_VAULT.md).
+
 ### 10.4 R2 — Database transaction publication
 
 This is the baseline for one-conversation import publication.
@@ -409,16 +391,6 @@ Prefer a small dependency surface. Add a dependency only when it materially impr
 CLI frameworks are allowed only if they reduce parsing/help/validation complexity without leaking framework types into Core or Infrastructure.
 
 `WeArchive.Core` remains dependency-minimal and free of presentation, SQLite and WeChat implementation concerns.
-
-## 14.1 Packaging and release
-
-The released artifact is a self-contained `win-x64` portable ZIP (`WeArchive-win-x64.zip`) produced by `scripts/pack-portable.ps1` from `src/WeArchive.Cli`.
-
-Do not reintroduce an installer, auto-updater or update feed without a new product decision: the CLI is invoked ad hoc and exits, so there is no process in which an update check or in-app prompt could run. See [ADR 0007](adr/0007-cli-self-contained-distribution.md).
-
-Do not replace the released-artifact smoke tests (`scripts/smoke-test-cli.ps1` and `scripts/smoke-test-package.ps1`) with a local development-build check.
-
-`pack-portable.ps1` asserts the publish directory's executable reports the requested `-Version` before packaging, so `-SkipPublish` cannot silently package a stale or mis-stamped directory under a version its contents do not carry.
 
 ## 15. Security/privacy review
 

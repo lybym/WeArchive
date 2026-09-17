@@ -5,6 +5,7 @@ using WeArchive.Core.Services;
 using WeArchive.Infrastructure.Archive;
 using WeArchive.Infrastructure.Export;
 using WeArchive.Infrastructure.Fixtures;
+using WeArchive.Infrastructure.RawVault;
 using WeArchive.Infrastructure.WeChat;
 
 namespace WeArchive.Infrastructure;
@@ -13,39 +14,47 @@ namespace WeArchive.Infrastructure;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the archive, exporter and application services.
-    /// The source adapter is registered separately so the host decides whether it talks
-    /// to a real client or to the fixture source.
+    /// Registers the archive, exporter, Raw Vault store and application services.
+    /// The source adapter and capture adapter are registered separately so the host decides
+    /// whether it talks to a real client or to the fixture source.
     /// </summary>
-    public static IServiceCollection AddWeArchiveCore(this IServiceCollection services, string archivePath)
+    public static IServiceCollection AddWeArchiveCore(
+        this IServiceCollection services,
+        string archivePath,
+        string rawVaultRoot)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(rawVaultRoot);
 
         services.TryAddSingleton<IClock, SystemClock>();
         services.TryAddSingleton<IArchiveStore>(sp =>
             new SqliteArchiveStore(archivePath, sp.GetRequiredService<IClock>()));
+        services.TryAddSingleton<IRawVaultStore>(new RawVaultStore(rawVaultRoot));
         services.TryAddSingleton<IDatasetExporter, JsonlDatasetExporter>();
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();
         services.TryAddSingleton<ArchiveWorkflow>();
+        services.TryAddSingleton<CaptureService>();
 
         return services;
     }
 
-    /// <summary>Registers the Windows WeChat adapter as the source of this archive.</summary>
+    /// <summary>Registers the Windows WeChat adapter and capture adapter as the source of this archive.</summary>
     public static IServiceCollection AddWeChatWindowsSource(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<ISourceAdapter, WeChatWindowsSourceAdapter>();
+        services.TryAddSingleton<ISourceCaptureAdapter, WeChatCaptureAdapter>();
         return services;
     }
 
-    /// <summary>Registers the synthetic fixture source, used by tests and by demo mode.</summary>
+    /// <summary>Registers the synthetic fixture source and fixture capture adapter, used by tests and demo mode.</summary>
     public static IServiceCollection AddFixtureSource(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<ISourceAdapter, FixtureSourceAdapter>();
+        services.TryAddSingleton<ISourceCaptureAdapter, FixtureCaptureAdapter>();
         return services;
     }
 }

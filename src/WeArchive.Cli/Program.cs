@@ -24,13 +24,16 @@ internal static class Program
     /// <summary>Default export package root when <c>--output</c> is omitted.</summary>
     internal static string DefaultExportDirectory { get; } = Path.Combine(DataDirectory, "exports");
 
+    /// <summary>Root directory for the Raw Vault generations store.</summary>
+    internal static string RawVaultRoot { get; } = Path.Combine(DataDirectory, "rawvault");
+
     private static async Task<int> Main(string[] args)
     {
         // Build the production service provider: archive, exporter, application services
-        // and the Windows WeChat source adapter. The CLI is the only product surface, so
-        // this is the only composition root — it reuses the Infrastructure extensions.
+        // and the Windows WeChat source adapter. The CLI does not add a second composition
+        // model — it reuses the same Infrastructure extensions as the transitional WPF host.
         var services = new ServiceCollection();
-        services.AddWeArchiveCore(ArchivePath);
+        services.AddWeArchiveCore(ArchivePath, RawVaultRoot);
         services.AddWeChatWindowsSource();
         services.AddSingleton(new CliExportDefaults { DefaultOutputDirectory = DefaultExportDirectory });
         await using var provider = services.BuildServiceProvider();

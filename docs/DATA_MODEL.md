@@ -2,33 +2,27 @@
 
 ## 1. Purpose
 
-WeArchive has two different persistent-data concerns:
+The normalized data model decouples the long-lived personal archive from any single upstream client format.
 
-1. **Raw Vault preservation model** — source-faithful, versioned evidence used for recovery/rebuild;
-2. **canonical archive model** — stable source-independent entities used by query/export/Harness workflows.
+Source adapters may change often. The archive schema should change only when product semantics change.
 
-They must not be collapsed into one schema.
-
-The canonical model decouples long-lived product semantics from upstream WeChat formats. The Raw Vault preserves enough source evidence to let future readers/parsers reinterpret history when source formats or parser understanding change.
-
-Canonical message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md). Preservation/rebuild is defined by [RAW_VAULT.md](RAW_VAULT.md).
+The canonical message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md). Phase 1 export behavior is defined by [EXPORT_PRD.md](EXPORT_PRD.md).
 
 ## 2. Core principles
 
-1. Raw Vault is the archival source of truth; canonical SQLite is the operational system of record.
-2. Stable IDs and display names are separate concepts.
-3. Source provenance is first-class.
-4. Re-ingest/rebuild is idempotent.
+1. Stable IDs and display names are separate concepts.
+2. Source provenance is first-class.
+3. Import runs are auditable.
+4. Re-import must be idempotent.
 5. Message semantics are source-independent.
-6. Unknown source fields/records are not discarded merely because the current parser cannot interpret them.
-7. Source-specific fields stay in Raw Vault/provenance rather than leaking into canonical columns unless they have product meaning.
-8. Capture and canonical-ingest progress are separate checkpoint domains.
-9. Canonical IDs must remain deterministic across parser upgrades and rebuilds for unchanged source identities.
-10. Binary media preservation remains separately scoped; Raw Vault database preservation does not automatically imply complete image/audio/video/file asset backup.
+6. Binary media is not required for the Phase 1 export product.
+7. Source-specific fields belong in provenance/metadata, not in core domain columns unless they have product meaning.
+8. Unknown records are retained rather than silently discarded.
+9. An import publishes atomically: one conversation's records become part of the archive in a single transaction, and a run that could not read the source completely leaves the archive unchanged instead of storing the records it happened to read.
 
-## 3. Shipped canonical schema — migration 1
+## 3. Entity relationship overview
 
-The following is the currently shipped canonical SQLite schema. Column names/types remain normative for migration 1 until an explicit migration changes them.
+This is the shipped archive schema (SQLite, migration 1). Column names and types are normative.
 
 ```mermaid
 erDiagram
@@ -129,97 +123,139 @@ erDiagram
     }
 ```
 
-Current indexes:
+`ConversationParticipant` has no dedicated table in migration 1: a conversation's peer and
+owner are referenced directly from `conversations`, and per-participant metadata lives on
+`participants`. A full membership relation remains a future schema change.
+
+Indexes:
 
 ```text
 accounts            unique (adapter_name, source_profile_id)
 participants        unique (account_id, source_participant_id)
 conversations       unique (account_id, source_conversation_id)
-messages            (conversation_id, occurred_utc, source_order_key, id)
+messages            (conversation_id, occurred_utc, source_order_key, id)   -- canonical timeline order
 messages            (conversation_id, source_message_id)
 messages            (conversation_id, type)
 source_checkpoints  unique (account_id, adapter_name)
 ```
 
-`ConversationParticipant` has no dedicated migration-1 table. Peer/owner relations are stored on `conversations`; richer membership remains a future schema change.
+## 4. Account
 
-## 4. Canonical entity semantics
-
-### 4.1 Account
-
-Represents one logical source profile imported into the canonical archive.
+Represents one logical source profile imported into an archive.
 
 Required concepts:
 
+- internal archive `id`;
+- stable `source_profile_id` from adapter;
+- adapter identity;
+- source/client version metadata;
+- optional display label.
+
+An Account is not an authentication credential record.
+
+## 5. Conversation
+
+Represents a private chat, group chat or other supported logical conversation.
+
+Fields:
+
 - stable archive ID;
-- stable `source_profile_id`;
-- logical adapter/source family;
-- adapter/reader/source version metadata;
-- optional human display label.
-
-Account is not a credential/key record.
-
-### 4.2 Conversation
-
-Represents one logical direct/group/official/system/unknown conversation.
-
-Fields include:
-
-- stable canonical ID;
 - account ID;
 - stable source conversation ID;
-- kind;
-- mutable title/display name;
-- peer/owner references where known;
-- message count and first/last known timestamps.
+- `kind`: `direct`, `group`, `official`, `system`, `unknown`;
+- current title/display name;
+- `peer_participant_id` for a direct conversation and `owner_participant_id` where known;
+- `message_count`;
+- optional user-maintained alias in export configuration;
+- optional first/last known timestamps.
 
-Mutable names never define identity or physical export paths.
+Conversation titles are mutable and must never be used as identity keys or physical export paths.
 
-### 4.3 Participant
+## 6. Participant
 
-Represents a stable logical sender/contact identity where available.
+Represents a stable logical sender/contact identity when available.
 
-Display metadata (`latest_remark`, `nickname`, aliases/overrides) may change without changing stable ID.
+Fields:
 
-### 4.4 Message
+- archive ID;
+- account ID;
+- stable source participant ID;
+- latest available remark;
+- latest nickname;
+- `alias`;
+- `user_display_name`.
 
-`Message` is the canonical semantic event used by query/export/Harness workflows.
+Phase 1 export identity rules:
+
+```text
+latest remark exists -> default display_name = latest remark
+no latest remark      -> default display_name = ""
+```
+
+Nickname is retained as metadata but does not automatically fill a missing remark. The
+user-maintained `display_name_override` in the exported `identities.yaml` is a separate,
+export-level hook and wins over the generated default; it is not an archive column.
+
+Display names can change and collide. Stable participant IDs must remain the canonical identity.
+
+## 7. ConversationParticipant
+
+Many-to-many relation between conversations and participants.
+
+Migration 1 does not create a `conversation_participants` table. Today the conversation-to-participant relation is expressed by `conversations.peer_participant_id` and `conversations.owner_participant_id`, and participant metadata is stored on `participants`. A future migration may add a real membership table carrying:
+
+- group nickname;
+- role;
+- join/leave timing where available.
+
+Group-specific names never replace the canonical participant ID.
+
+## 8. Message
+
+`Message` is the canonical archived semantic event.
 
 Required semantics:
 
-- stable archive message ID;
-- conversation/sender references;
-- canonical time/order;
-- normalized semantic type/text/payload;
-- reply relationship;
+- archive message ID;
+- conversation ID;
+- sender ID when resolvable;
+- canonical timestamp;
+- normalized semantic `type`;
+- LLM/search-oriented semantic `text`;
+- optional type-specific structured `payload`;
+- optional reply/reference relationship;
 - source provenance;
-- import-run reference;
-- semantic `content_hash` for idempotent updates.
+- import run;
+- a semantic `content_hash` for idempotent upserts.
 
-## 5. Timestamps and ordering
+### 8.1 Timestamps and ordering
 
-Messages store:
+A message stores its time twice:
 
-- `occurred_at` — ISO-8601 text with source timezone offset;
-- `occurred_utc` — epoch seconds for range filtering/order.
+- `occurred_at` — ISO-8601 text **with the source's timezone offset** (`yyyy-MM-dd'T'HH:mm:sszzz`), which is what the export publishes and what a human or LLM reads;
+- `occurred_utc` — the same instant as epoch seconds (`INTEGER`), which is what the archive orders by and range-queries on.
 
-Canonical timeline order remains:
+Storing both avoids re-parsing text on every range query while keeping the exported timestamp
+unambiguous. Canonical timeline order is `(occurred_utc, source_order_key, id)`, which is the
+index `ix_messages_timeline`. Conversation first/last aggregates and stats are computed from
+`occurred_utc` (the epoch) and retain the corresponding rendered `occurred_at`; they never
+take `MIN`/`MAX` over the offset-bearing text, which would mis-order records across different
+timezone offsets.
 
-```text
-(occurred_utc, source_order_key, id)
-```
+### 8.2 Idempotent upsert and `content_hash`
 
-`occurred_utc` exists specifically to support efficient date/range/context queries without reparsing offset-bearing strings.
+`content_hash` is a SHA-256 over the **semantic** fields only: canonical type, sender, epoch
+time, semantic text, payload JSON, the reply's upstream source id, the reply's sender and
+text, and the partial flag.
 
-## 6. Idempotent upsert and content hash
+Fields that only carry metadata — for example the refreshed adapter version, source version
+or import run id — are deliberately excluded. A re-import of unchanged source data is
+therefore recognised as unchanged and does not count as an update, which is what makes
+repeated imports idempotent in practice rather than only in primary-key terms.
 
-`content_hash` represents semantic message content rather than transient importer metadata.
+### 8.3 Common semantic model
 
-A repeated ingest of the same preserved source record is a no-op when semantic content has not changed. A real reinterpretation/semantic correction may update the canonical record while keeping its stable message ID.
-
-This is important for Raw Vault rebuild/parser upgrades: improved parsers can produce richer canonical semantics without manufacturing a new logical message identity.
-
-## 7. Canonical message model
+The conceptual structure is:
 
 ```text
 Message
@@ -235,7 +271,11 @@ Message
 └─ source provenance
 ```
 
-Phase-1 canonical types remain:
+The archive stores the type-specific structure in the `payload_json` column while exports use the canonical shape defined in `MESSAGE_SCHEMA.md`.
+
+### 8.4 Canonical message types
+
+Phase 1 normalized types:
 
 - `text`
 - `image`
@@ -255,179 +295,182 @@ Phase-1 canonical types remain:
 - `emoji`
 - `unknown`
 
-`quote` is a relationship, not a standalone content type.
+`quote` is not a standalone content type. A quoted/replied message uses the underlying content type plus a `reply_to` relationship.
 
-## 8. Semantic text and structured payload
+Unknown source records must map to `unknown` with diagnostics and source type metadata; they must not be silently discarded.
 
-`semantic_text` is compact text useful to humans, FTS and LLM/Harness retrieval, for example:
+### 8.5 Semantic text
+
+Every message should have a compact semantic text representation useful to LLMs and full-text search.
+
+Examples:
 
 ```text
 text      -> 下午三点开会。
 image     -> [图片]
 voice     -> [语音]
+video     -> [视频]
 file      -> [文件] 华东中心项目汇报V8.pptx
 link      -> [链接] 标题\nhttps://...
+app_share -> [APP分享][来源] 标题\nhttps://...
 unknown   -> [未识别消息]
 ```
 
-`payload_json` carries product-meaningful structured semantics such as filename, link title/description/URL, app ID/page path, duration, location, transfer fields and forwarded nested items.
+Semantic text must not contain unnecessary upstream XML or implementation details.
 
-Missing values are never fabricated.
+### 8.6 Structured payload
 
-## 9. Reply relationship
+`payload` contains product-meaningful type-specific semantics, for example:
 
-Three canonical concepts remain:
+- file name / extension / size;
+- link title / description / original URL;
+- app source / app ID / page path;
+- voice duration;
+- location fields;
+- transfer fields;
+- forwarded-chat nested items.
 
-- `reply_source_message_id` — preserved upstream identity used for resolution;
-- `reply_to_message_id` — resolved stable canonical target where available;
-- `reply_snapshot_json` — locally available quoted sender/text snapshot.
+Missing fields must not be guessed.
 
-A rebuild may re-resolve reply graphs as more target records become available, but stable IDs remain deterministic.
+### 8.7 Reply relationship
 
-## 10. Unknown source evidence
+Replies/quotes are represented structurally. Three columns work together:
 
-Canonical unknown messages remain first-class retained events:
+- `reply_source_message_id` — the **upstream** id of the referenced record, addressed with the
+  composite strategy of section 16.2. It is stored exactly as the adapter supplied it and is
+  what makes resolution possible, but it is provenance and is never exported.
+- `reply_to_message_id` — the resolved canonical `m_...` id, filled in by the archive when the
+  referenced record is present in the same archive (resolved on insert and by a backfill pass
+  for records imported later). It is null while the target does not resolve. The archive never
+  fabricates a target id. When a re-import changes `reply_source_message_id` (the upstream
+  message was edited to quote a different record), the previously-resolved
+  `reply_to_message_id` is cleared so the backfill pass re-resolves it against the new target;
+  a target that no longer resolves is left null rather than retaining the stale id.
+- `reply_snapshot_json` — the locally available quoted sender/text metadata, kept even when no
+  canonical target resolves.
 
-```text
-type = unknown
-semantic_text = [未识别消息]
-source type/subtype/provenance retained where available
-```
+This allows reply graph analysis both when the target is archived and when the source only
+stored a quote snapshot, or when the target is missing from the local source entirely.
 
-The Raw Vault adds a stronger guarantee upstream of this canonical representation: unrecognized source fields/records remain preserved in source-faithful evidence so a future reader can reinterpret them.
+## 9. Non-text events and binary policy
 
-Canonical `unknown` therefore means "current parser does not have a stable semantic interpretation", not "the original evidence was discarded".
+The archive may retain local source metadata needed for diagnostics, but Phase 1 export does not require copying image/audio/video/file binaries.
 
-## 11. ImportRun
+Product semantics retained include:
 
-Migration-1 `ImportRun` records canonical ingestion activity.
+- image: event existence;
+- video: event existence;
+- voice: event existence and duration where reliably available;
+- file: original filename and optional metadata;
+- emoji/sticker: event existence.
 
-Required concepts include:
+No OCR/ASR/visual derived layer is part of Phase 1.
+
+## 10. Link and app-share semantics
+
+Links and third-party shared content are first-class message semantics.
+
+The normalized payload should preserve, where locally available:
+
+- title;
+- description;
+- source application;
+- original URL;
+- wrapper/fallback URL;
+- app ID;
+- page path.
+
+The system should prefer a confirmed underlying/original URL over a wrapper/tracking URL when that distinction can be determined from local source metadata.
+
+Phase 1 canonical export does not require remote crawling of target webpages.
+
+## 11. Forwarded bundle semantics
+
+Merged/forwarded chat records may contain nested textual events.
+
+The archive should preserve:
+
+- bundle title;
+- item count;
+- nested sender name;
+- nested sender ID only when reliably resolvable;
+- nested timestamp;
+- nested normalized type;
+- nested semantic text.
+
+An unresolvable nested sender must not be assigned a fabricated canonical identity.
+
+## 12. Unknown records
+
+Unknown records are first-class retained events.
+
+Minimum useful information:
+
+- `type = unknown`;
+- semantic text `[未识别消息]`;
+- upstream type/subtype where available;
+- optional compact raw summary;
+- normal source provenance.
+
+Diagnostics and manifests must count unknown/partial records.
+
+## 13. ImportRun
+
+Every sync/import invocation creates one ImportRun.
+
+Required fields:
 
 - run ID;
-- account/source/adapter versions;
-- start/end/status;
-- scanned/inserted/updated/skipped counters;
-- unknown/partial/warning/error counts;
-- structured diagnostics.
+- start/end time;
+- account ID;
+- adapter name/version;
+- source version;
+- status;
+- records scanned;
+- records inserted;
+- records updated;
+- records skipped;
+- warnings count;
+- errors count;
+- unknown message count;
+- partial count;
+- structured diagnostic summary (`diagnostics_json`).
 
-As Raw Vault is implemented, capture publication needs its own durable audit/generation metadata rather than overloading `ImportRun` with both capture and ingest semantics.
+This entity is required for operational trust.
 
-## 12. Raw Vault model
+`records_scanned` counts the records the run read; the inserted/updated/skipped counters describe
+what the run published. A run that was rolled back because source coverage failed publishes
+nothing, so it reports zero inserted/updated/skipped while `records_scanned` still shows how far
+it read and its Fatal diagnostic says why. Section 2 principle 9, docs/ARCHITECTURE.md section 3.2.1.
 
-Raw Vault is not represented by the canonical `Message` table and should not be forced into migration-1 schema.
+Every conversation a run publishes is committed in one transaction together with its messages, so
+the conversation row and its aggregates never describe records the archive does not hold.
 
-The preservation model is generation-based.
+## 14. SourceCheckpoint
 
-Conceptual entities:
+Stores adapter-owned incremental state.
 
-```text
-RawVaultAccount
-RawGeneration
-RawArtifact / ContentObject
-CaptureRun
-CaptureCheckpoint
-```
+Schema fields:
 
-A generation records at least:
-
-- generation identifier/sequence;
-- source profile/account identity;
-- capture time;
-- source product/client version;
-- logical adapter/capture family and implementation version;
-- source-format/schema evidence needed to select a future reader;
-- artifact/content references and checksums;
-- completeness state and diagnostics.
-
-The exact physical storage format may use files, SQLite catalogs, content-addressed objects or deduplicated chunks. That implementation detail is not a Harness/query API.
-
-See [RAW_VAULT.md](RAW_VAULT.md).
-
-## 13. Raw Vault immutability and deletion semantics
-
-Published generations are logically immutable.
-
-If a record/source partition disappears later from live WeChat, earlier preserved generations remain intact.
-
-```text
-source absence != preservation deletion
-```
-
-Any destructive purge/retention operation must be explicit and separately specified.
-
-## 14. Capture checkpoint (target)
-
-Capture checkpoint tracks live-source acquisition progress into Raw Vault.
-
-Conceptually it may need account/partition-specific cursors such as source order keys, file/page/change evidence or generation lineage.
+- `id`;
+- `account_id`;
+- `adapter_name` / `adapter_version`;
+- `checkpoint_json` — the opaque, versioned payload;
+- `updated_at`.
 
 Rules:
 
-- advances only after successful Raw Vault generation publication;
-- versioned and capture-adapter-owned;
-- invalidation/fallback to wider capture is explicit;
-- never causes deletion of older preserved evidence.
+- payload is versioned;
+- payload is opaque to the generic importer;
+- checkpoint update occurs only after durable archive commit;
+- adapter version changes may invalidate prior checkpoints;
+- uniqueness is `(account_id, adapter_name)`.
 
-## 15. Ingest checkpoint (target)
+**Status:** the table exists in migration 1, but the MVP importer does **not** read or advance checkpoints. Every import reads the full conversation and relies on `content_hash` idempotency instead. Incremental refresh is M1 completion work.
 
-Ingest checkpoint tracks processing of preserved Raw Vault evidence into canonical SQLite.
+## 15. SourceArtifact / provenance
 
-Preferred logical scope:
-
-```text
-account
-  + logical adapter/source family
-  + conversation
-  + optional partition/generation cursor(s)
-```
-
-This permits:
-
-- conversation A to advance while conversation B fails;
-- Collection sync to update each conversation independently;
-- parser repair followed by replay from preserved generations;
-- rebuild/import without querying live WeChat.
-
-A future migration may model this explicitly, for example with fields equivalent to:
-
-```text
-account_id
-adapter_family
-scope_kind       # conversation, account, ...
-scope_id
-checkpoint_json
-updated_at
-UNIQUE(account_id, adapter_family, scope_kind, scope_id)
-```
-
-This is a target model, not the shipped migration-1 schema.
-
-## 16. Relationship to migration-1 SOURCE_CHECKPOINT
-
-The current `source_checkpoints` table is:
-
-```text
-id
-account_id
-adapter_name
-adapter_version
-checkpoint_json
-updated_at
-UNIQUE(account_id, adapter_name)
-```
-
-Status:
-
-- it exists in migration 1;
-- the current importer does not consume/advance it;
-- its account+adapter granularity is insufficient for the accepted target model of separate capture and conversation-scoped ingest progress.
-
-Implementation work must add a documented migration rather than silently repurpose the existing table with incompatible semantics.
-
-## 17. Source provenance in canonical messages
-
-Canonical messages retain where available:
+Minimum provenance fields for Message where available:
 
 ```text
 source_profile_id
@@ -443,153 +486,149 @@ source_version
 import_run_id
 ```
 
-Provenance supports traceability and canonical rebuild diagnostics, but it is not a substitute for Raw Vault preservation of source evidence.
+All of these exist as columns on `messages`. Provenance is not the primary downstream analysis interface but must support reprocessing and diagnostics.
 
-## 18. Identity strategy
+## 16. Identity strategy
 
-Stable IDs remain deterministic namespace hashes over source identities.
+Archive IDs are deterministic. Every stable ID is a namespace prefix plus the first **16 hex
+characters (64 bits)** of `SHA-256` over the length-prefixed, concatenated namespace parts.
 
 ```text
-a_<16 hex>   account      SHA-256("account", adapter_family, source_profile_id)
+a_<16 hex>   account      SHA-256("account", adapter_name, source_profile_id)
 u_<16 hex>   participant  SHA-256("user", account_id, source_user_id)
 g_<16 hex>   group        SHA-256("group", account_id, source_room_id)
 m_<16 hex>   message      SHA-256("message", conversation_id, source_message_id)
 ```
 
-The first 16 hex characters (64 bits) are used.
+A direct conversation's stable ID **is** its peer's `u_...` ID — the same peer in the same
+account always yields the same ID whether it is addressed as a conversation or as a person.
 
-A direct conversation ID remains the peer `u_...` ID under the current identity contract.
+Mutable human names (remarks, nicknames, group titles) are never inputs, which is what makes
+physical export paths survive renames.
 
-### 18.1 Rebuild invariant
+### 16.1 Why 16 hex characters, not 8
 
-Reader/parser implementation versions MUST NOT create new identity namespaces.
+Earlier illustrative examples in these documents showed 8-character prefixes. The
+implementation uses 16 because a 32-bit prefix collides measurably at archive scale: the
+birthday bound puts a 50% collision probability at roughly 77,000 ids, which a single large
+message archive exceeds. 64 bits moves that bound far beyond any personal archive while
+keeping IDs short enough to read and to use as folder names.
 
-For example:
+### 16.2 Composite upstream message identity
 
-```text
-wechat-windows            logical source/adapter family used in identity
-reader/parser v1/v2/v3    metadata, not identity namespace
-```
-
-Given the same preserved source identities, rebuild must reproduce the same account/participant/conversation/message IDs.
-
-### 18.2 Composite upstream message identity
-
-Preferred upstream message identity remains:
+When upstream has no stable message id, the adapter supplies a documented composite instead of
+a content hash, because repeated identical messages are valid data:
 
 ```text
 server id present -> s:<server_id>
 otherwise         -> l:<partition>:<local_id>
 ```
 
-Content hashes are not fallback identities because repeated identical messages are valid data.
+`partition` identifies the upstream shard the record came from, so the composite stays unique
+across a multi-shard timeline.
 
-If preserved evidence cannot provide a documented stable/composite source identity required by the canonical contract, that is a coverage/identity failure; the importer does not invent one merely to continue.
+A record for which the adapter can provide neither form of identity is a source-coverage
+failure. The importer records a Fatal diagnostic and the workflow does not export a reduced
+dataset; it never skips that record or invents an identity, and the run publishes nothing to the
+archive (section 2 principle 9).
 
-## 19. Deduplication
+## 17. Deduplication
 
-Canonical deduplication prefers stable source identity plus semantic `content_hash`.
+Deduplication prefers stable source identity over content heuristics.
 
-Raw Vault physical deduplication is a separate storage optimization. It may use content-addressed objects/chunks while preserving immutable logical generations.
+The archive's idempotency mechanism is the primary key together with `content_hash`: an upsert
+whose semantic hash is unchanged is a no-op, while a real semantic change is recorded as an
+update. Fallback content-based deduplication is not used, because repeated identical messages
+are valid data.
 
-Do not confuse physical storage deduplication with logical message deduplication.
+## 18. Schema evolution
 
-## 20. Search indexing
+- Use numbered database migrations.
+- Every applied migration is recorded in `schema_migrations (version, description, applied_at)`.
+- The current schema version is also mirrored into SQLite's `user_version` pragma.
+- Migrations are forward-only and idempotent: a re-open of an up-to-date archive applies nothing.
+- Never mutate production archives without migration records.
+- Backward-incompatible archive changes require a documented migration path.
+- Export and message schemas are independently versioned in `manifest.json`.
 
-Full-text search is derived canonical state, not preservation state.
+Migration 1 (`initial canonical archive schema`) is the current version.
 
-Target FTS should be rebuildable entirely from canonical SQLite and may index:
+## 19. Search indexing
 
-- `semantic_text`;
-- filenames;
-- link/app-share titles/descriptions;
-- other explicitly selected canonical payload text.
+Full-text search is a derived index, not the canonical store.
 
-No FTS index exists in migration 1; this remains target query work.
+The FTS index should be rebuildable from normalized `semantic_text` and selected structured payload fields such as filenames, link titles and descriptions.
 
-## 21. Query model
+No FTS index exists in migration 1; search is M3 work.
 
-Harness/Agent access uses source-independent query DTOs exposed by `ArchiveQueryService`.
+## 20. Raw source retention
 
-Normal callers should not rely on:
+Raw source records are optional and should not be required for normal archive/export workflows.
 
-- Raw Vault tables/files;
-- migration-1 SQLite column layout;
-- WeChat source schemas.
+If retained for debugging/reproducibility:
 
-Pagination cursors are opaque product contracts.
+- store separately from canonical semantic columns;
+- mark source format/version;
+- allow disabling retention;
+- avoid placing large opaque blobs in the core Message table.
 
-See [HARNESS.md](HARNESS.md).
+## 21. Raw Vault data model
 
-## 22. Collection model
+The Raw Vault is a separate persistence layer from the canonical SQLite archive. It has its own
+independently versioned format (`manifest_version` and `vault_format_version`, both currently
+`1`), and no canonical SQLite migration is required to introduce it (Issue #22, migration-1
+`source_checkpoints` remains untouched).
 
-Collection is the named reusable set of conversation stable IDs used across sync/query/Harness/export scopes.
-
-Collection configuration/metadata should reference canonical stable IDs, so canonical rebuild must preserve those IDs.
-
-## 23. Export relationship
-
-JSONL/YAML/JSON exports are generated from canonical archive semantics.
-
-They are not inputs required to rebuild the canonical archive and are not substitutes for Raw Vault preservation.
-
-```text
-Raw Vault      -> rebuild -> canonical SQLite
-canonical SQLite -> export -> JSONL/YAML/JSON
-```
-
-## 24. Schema evolution
-
-Canonical SQLite rules remain:
-
-- numbered forward migrations;
-- applied migrations recorded in `schema_migrations`;
-- `user_version` mirrors canonical schema version;
-- re-open of an up-to-date archive applies nothing;
-- backward-incompatible changes require a documented migration path.
-
-Raw Vault format/manifests are independently versioned from canonical SQLite and export/message schemas.
-
-A canonical schema migration must not mutate Raw Vault historical evidence.
-
-## 25. Rebuild semantics and migrations
-
-Because canonical SQLite is rebuildable, there are two legitimate upgrade paths:
-
-1. **in-place canonical migration** for normal product upgrades;
-2. **fresh rebuild from Raw Vault** when explicitly requested/required.
-
-A rebuild is not permission to lose user-maintained canonical/configuration metadata. Aliases/Collections/overrides that are not derivable from Raw Vault need their own durable configuration/migration strategy so they can be reapplied to a rebuilt archive.
-
-Implementation issues must identify which user-maintained state lives outside rebuildable canonical data.
-
-## 26. Media boundary
-
-Initial Raw Vault work preserves supported source database evidence needed to reconstruct canonical message records/provenance.
-
-It does not automatically guarantee that all external media/file payload bytes are archived.
-
-A future media-preservation model must separately define:
-
-- asset identity;
-- deduplication;
-- source disappearance semantics;
-- encryption/privacy;
-- message-to-asset references;
-- rebuild/export behavior.
-
-## 27. Current and target summary
+Conceptual entities:
 
 ```text
-CURRENT 0.2.x
-live WeChat -> parser/normalizer -> migration-1 canonical SQLite -> export
-
-TARGET
-live WeChat -> Raw Vault -> versioned reader/parser -> canonical SQLite
-                                      │
-                                      └-> improved parser can rebuild history
-canonical SQLite -> QueryService/FTS -> CLI/MCP/Harness
-canonical SQLite -> JSONL export
+RawVaultAccount  — one captured source profile (identified by the same stable account id
+                   used by the canonical archive, a_<16-hex>)
+RawGeneration    — one published snapshot; logically immutable; identified by gen_<16-hex>
+RawArtifact      — one content object (e.g. a decrypted source database image)
+CaptureRun       — provenance embedded in the manifest: adapter family/version, capture
+                   time, completeness, diagnostics
 ```
 
-The target adds preservation/rebuild capability without replacing the canonical schema's role in daily query/export operations.
+### 21.1 Generation identity
+
+`gen_<16-hex>` is `SHA-256("generation", account_id, capture_time_utc_iso8601,
+capture_adapter_family, capture_adapter_version)` truncated to 16 hex characters (64 bits),
+matching the canonical archive's identity-derivation rules (section 16). Two captures of the
+same account at different times yield different generation ids.
+
+### 21.2 Physical layout
+
+```text
+<vault-root>/accounts/<account-id>/generations/<generation-id>/
+  manifest.json
+  artifacts/<sha256><ext>
+```
+
+### 21.3 Manifest
+
+The manifest is a versioned JSON document recording source product/version, source profile,
+capture adapter family/version, capture time, mode (`baseline`), completeness, every artifact's
+role/name/content-ref/SHA-256/size, diagnostics and the previous generation id (append-only
+chain). See [RAW_VAULT.md](RAW_VAULT.md) for the full manifest shape.
+
+The manifest format version is independent of the canonical SQLite schema version
+(section 18), the message-schema version and the export-schema version.
+
+### 21.4 Artifact roles and checksums
+
+Artifact `role` values are source-neutral strings (e.g. `source-database`) so the Raw Vault does
+not leak WeChat table names into Core/CLI. Every artifact has a verifiable SHA-256 checksum;
+opening a generation re-verifies every checksum and rejects tampered or corrupted artifacts.
+
+### 21.5 Raw Vault format-version tests
+
+Raw Vault format-version tests must verify that `manifest_version = 1` can be reopened
+independently of the capture process — i.e. a new `RawVaultStore` instance pointing at the same
+root can discover and validate a published generation without the capture adapter being alive.
+
+### 21.6 No canonical migration
+
+The canonical `archive/wearchive.db` schema is unchanged in M1.5. The Raw Vault introduces no
+SQLite migration. The Raw Vault format version is tracked in each manifest, not in
+`schema_migrations`.

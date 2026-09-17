@@ -2,76 +2,69 @@
 
 ## 1. Architecture goals
 
-WeArchive is optimized for long-term preservation, stable source-independent semantics, efficient machine retrieval and deterministic automation.
+WeArchive is optimized for long-term maintainability, machine-oriented analysis and deterministic automation rather than human-facing chat rendering.
 
-Key goals:
+Key constraints:
 
-- preserve recoverable source evidence before upstream deletion/schema/key-access changes can make it unavailable;
-- isolate WeChat-version-specific formats from canonical/query/export/Harness logic;
-- keep `archive/wearchive.db` stable, indexed and rebuildable;
-- make Harness/Agent retrieval use a bounded query API rather than Raw Vault internals or large JSONL scans;
-- keep export portable and derived;
-- make capture/ingest/rebuild operations observable, auditable and explicitly reliable by failure class;
-- preserve stable IDs across parser upgrades and canonical rebuilds.
+- upstream client formats may change frequently;
+- the normalized archive must remain stable across those changes;
+- source-specific behavior must not leak into query/export/CLI logic;
+- import runs must be observable, restartable and auditable;
+- the supported source is Windows WeChat 4.x and source access remains local-first/read-only;
+- the primary product surface is a `gh`-style command CLI;
+- Phase 1 does not preserve binary image/audio/video/file payloads;
+- exported chat data is a plain-text dataset for scripts, LLMs and Harness workflows.
 
-Normative supporting documents:
-
-- [RAW_VAULT.md](RAW_VAULT.md) — preservation/capture/rebuild contract;
-- [HARNESS.md](HARNESS.md) — Harness/query access contract;
-- [DATA_MODEL.md](DATA_MODEL.md) — canonical schema/stable IDs/checkpoint direction;
-- [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md) — canonical message semantics;
-- [EXPORT_PRD.md](EXPORT_PRD.md) — interchange export packaging;
-- [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md) — layer-separation decision.
-
-This document describes both shipped foundations and accepted target architecture. Raw Vault, rebuild, QueryService/FTS and MCP are not yet all implemented in 0.2.x.
+Normative message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md). Normative export packaging is defined by [EXPORT_PRD.md](EXPORT_PRD.md). CLI product-surface rationale is recorded in [ADR 0006](adr/0006-cli-first-product-surface.md).
 
 ## 2. Logical architecture
 
 ```mermaid
-flowchart TB
-    W[Live WeChat Source]
-    CAP[Capture Service]
-    RV[(Raw Vault)]
-    R[Captured Source Reader / Parser]
+flowchart LR
+    H[Human]
+    G[Agent / Script / Harness]
+    CLI[WeArchive CLI]
+    C[Application Services]
+    O[Import Orchestrator]
+    A[Source Adapter]
     N[Normalizer]
     V[Validation & Diagnostics]
-    A[(Canonical Archive SQLite)]
-    Q[ArchiveQueryService]
-    CLI[CLI --json]
-    MCP[Future MCP]
-    H[Human / Script / Harness / Agent]
-    E[Exporter]
-    X[JSONL + YAML/JSON]
+    S[(Archive SQLite)]
+    RV[(Raw Vault)]
+    Q[Search / Query]
+    E[Machine Exporter]
+    X[JSONL + YAML/JSON Catalogs]
 
-    W --> CAP
-    CAP --> RV
-    RV --> R
-    R --> N
+    H --> CLI
+    G --> CLI
+    CLI --> C
+    C --> O
+    C --> CAP[CaptureService]
+    CAP --> A
+    A --> RV
+    O --> A
+    A --> N
     N --> V
-    V --> A
-    A --> Q
-    Q --> CLI
-    Q --> MCP
-    CLI --> H
-    MCP --> H
-    A --> E
+    V --> S
+    S --> Q
+    S --> E
     E --> X
 ```
 
-The architecture has distinct responsibilities:
+The CLI is a thin transport/presentation boundary. It must not contain WeChat schema logic, normalization rules, archive publication semantics or export transaction semantics.
 
-```text
-Raw Vault                 preservation/recovery truth
-archive/wearchive.db      canonical runtime truth
-ArchiveQueryService       interactive access contract
-JSONL/YAML/JSON           interchange/offline export
-```
+The **Raw Vault** is a preservation layer that captures a source-faithful snapshot *before*
+normalization. It exists alongside the canonical SQLite archive but is independently versioned
+and has its own manifest, reliability contract and storage root. See
+[RAW_VAULT.md](RAW_VAULT.md) and [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
 
-Harnesses do not normally read Raw Vault or issue raw SQL.
+There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
-## 3. Layering and projects
+`Search / Query` remains a target component: the current archive/export foundation exists, but archive FTS/query is M3 work.
 
-Target dependency direction remains:
+## 3. Layering
+
+Target dependency direction:
 
 ```text
 WeArchive.Cli
@@ -81,21 +74,26 @@ WeArchive.Infrastructure
 WeArchive.Core
 ```
 
-`tests/WeArchive.Tests` may reference all product projects for contract/integration testing.
+`tests/WeArchive.Tests` may reference all three for contract and integration testing.
+
+The historical `WeArchive.App` WPF project may exist temporarily during migration, but it is not a second supported product surface and must be removed when the CLI migration acceptance criteria are met.
 
 ### 3.1 Presentation — `src/WeArchive.Cli`
+
+Target: console executable, `net10.0-windows`, assembly name `WeArchive`.
 
 Responsibilities:
 
 - parse explicit `gh`-style commands/options;
-- translate arguments into application-service requests;
-- render concise human output;
-- render exactly one JSON document on stdout with `--json`;
-- put progress/human diagnostics on stderr;
-- enforce `--quiet` / `--no-input` / exit semantics;
-- never contain WeChat schema logic, Raw Vault format logic, normalization rules or query SQL.
+- translate command arguments into application-service calls;
+- render concise human-readable output;
+- render one stable JSON document on stdout for `--json`;
+- send progress and human diagnostics to stderr;
+- enforce `--quiet` and `--no-input` behavior;
+- map documented outcomes to process exit codes;
+- never touch WeChat source files directly and never implement source-format/business logic.
 
-Current shipped command family:
+Initial command family:
 
 ```text
 wearchive doctor
@@ -104,22 +102,14 @@ wearchive conversation list
 wearchive conversation show <id-or-alias>
 wearchive sync --conversation <id-or-alias>
 wearchive export --conversation <id-or-alias>
+wearchive capture [--account <id>]
 ```
 
-Accepted target additions include:
-
-```text
-wearchive capture
-wearchive sync --collection <name>
-wearchive rebuild
-wearchive message list ...
-wearchive search ...
-wearchive context ...
-```
-
-Exact commands become shipped contract in `CLI.md` only when implemented.
+Search/statistics/collection commands are added only when their underlying requirements are implemented.
 
 ### 3.1.1 CLI process contract
+
+Machine-readable mode is a product API:
 
 ```text
 stdout  final result; with --json exactly one JSON document
@@ -130,247 +120,189 @@ stderr  progress, warnings and human diagnostics
 130     cancellation/user interrupt
 ```
 
-`--no-input` never prompts. CLI JSON DTOs expose stable product contracts, never raw WeChat table names, Raw Vault physical internals or SQLite implementation details.
+`--no-input` must never prompt. Missing information becomes a deterministic failure instead.
 
-### 3.1.2 Future MCP transport
+With `--json`, stdout carries exactly one JSON document on every path, including paths that
+do not reach a command:
 
-A future stdio MCP server is an optional transport adapter over the same application/query services.
+- a successful command result rendered by the command itself;
+- the command surface itself (`--help --json`, and a bare `wearchive --json`) rendered as a
+  help document (`usage`, `commands`, `options`);
+- a failure (usage error, runtime failure, cancellation) rendered as an error document
+  (`error.code`, `error.message`), where `error.code` mirrors the exit-code family below.
 
-It MUST NOT:
+Human diagnostics — including help text printed because a command was missing or unknown —
+stay on stderr, and `--quiet` never suppresses a failure. The process exit code remains the
+authoritative outcome class.
 
-- directly parse Raw Vault source artifacts;
-- implement a separate query engine;
-- expose arbitrary SQLite SQL as the primary product contract;
-- embed an AI provider into the core archive pipeline.
+CLI JSON DTOs are presentation contracts. They may wrap Core domain results but must not expose unstable implementation internals such as raw WeChat table names or parser-specific types.
 
-## 4. Preservation layer — Raw Vault
+### 3.2 Application / orchestration — `src/WeArchive.Core/Services`
 
-### 4.1 Capture boundary
+Responsibilities:
 
-The capture layer is the only component that needs live-source-specific acquisition/decryption/snapshot logic.
+- coordinate source adapter, normalization, archive transaction and checkpoint update;
+- stage one conversation's records in a single archive transaction and publish only under the documented import transaction rules;
+- create import-run records;
+- enforce read-only source boundaries;
+- aggregate metrics and diagnostics;
+- invoke machine-oriented exports from normalized archive data only.
 
-Target responsibilities:
+Key services:
 
-- discover supported source accounts/artifacts;
-- acquire/decrypt source data read-only;
-- establish consistent source snapshots (including SQLite/WAL concerns);
-- publish immutable logical generations;
-- record artifact checksums, source/client version and completeness diagnostics;
-- advance capture checkpoints only after successful Raw Vault publication.
+```text
+SourceCatalogService   # describe source, list accounts/conversations, describe conversation
+ImportService          # adapter -> normalizer -> archive, with diagnostics
+ArchiveWorkflow        # sync/export coordination and archive statistics
+```
 
-Capture minimizes semantic transformation. Unknown fields are preserved rather than discarded because the current parser does not understand them.
+#### 3.2.1 Import publication
 
-### 4.2 Raw Vault properties
+One import stages exactly one conversation — its conversation row and every message batch — inside one archive transaction (`IArchiveStore.BeginConversationImportAsync`).
 
-Raw Vault is the archival source of truth and non-reproducible preserved evidence.
+A **Fatal source-coverage failure must roll back the entire conversation transaction**. No record from that failed run may become usable archive state. The failed run may retain audit counters such as `records_scanned`, but must not claim committed inserts/updates that are absent from the archive.
+
+Cancellation is a separate failure class, not implicitly a coverage failure. Its publication semantics must match the explicit reliability level in `DEVELOPMENT.md`; reviewers must not infer a stronger transaction/recovery guarantee from words such as “safe”.
+
+Account and participant rows are account-level identity metadata and are not themselves evidence that one conversation was read completely.
+
+### 3.3 Source adapter layer — `src/WeArchive.Core/Abstractions`
+
+Responsibilities:
+
+- detect source profile/account;
+- enumerate conversations;
+- stream source messages/events;
+- expose source/client version and freshness metadata;
+- expose locally available semantic fields needed by the canonical schema;
+- translate source-specific failures into typed diagnostics;
+- cheaply describe one conversation without loading full message bodies.
+
+The contract (`ISourceAdapter`, C#):
+
+```csharp
+public interface ISourceAdapter
+{
+    string AdapterName { get; }
+    string AdapterVersion { get; }
+
+    Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+        string sourceProfileId,
+        CancellationToken cancellationToken);
+    IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+        string sourceProfileId,
+        string sourceConversationId,
+        CancellationToken cancellationToken);
+    Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+        string sourceProfileId,
+        CancellationToken cancellationToken);
+    Task<SourceConversationDetail> DescribeConversationAsync(
+        string sourceProfileId,
+        string sourceConversationId,
+        CancellationToken cancellationToken);
+}
+```
+
+A record the parser cannot interpret is emitted as `Unknown`; it is never silently dropped.
+
+Implementations:
+
+- `WeArchive.Infrastructure/Fixtures/FixtureSourceAdapter` — synthetic fixture source;
+- `WeArchive.Infrastructure/WeChat/WeChatWindowsSourceAdapter` — real WeChat 4.x adapter.
+
+#### 3.3.1 WeChat compatibility boundary
+
+```text
+src/WeArchive.Infrastructure/WeChat/
+├─ Compatibility/     version-specific schema/type assumptions
+├─ Parsers/           wire payloads -> source-neutral content
+├─ Crypto/            SQLCipher page cryptography
+├─ KeyAcquisition/    read-only process-memory key acquisition
+└─ adapter/client/data-locator/cache support
+```
 
 Rules:
 
-1. published generations are logically immutable;
-2. upstream disappearance does not delete older generations;
-3. capture does not intentionally modify WeChat data;
-4. Raw Vault recovery does not depend on reacquiring the original WeChat database key;
-5. WeChat DB keys are never persisted;
-6. physical deduplication is allowed if it preserves logical-generation immutability;
-7. source coverage/completeness is explicit.
+1. Every WeChat version-specific table/column/type assumption stays in compatibility code.
+2. `Core` never learns WeChat table names or numeric message type codes.
+3. Key acquisition and page cryptography stay within the WeChat infrastructure boundary.
+4. Decrypted material exists only transiently under `%LOCALAPPDATA%\WeArchive\scratch` and is deleted when the adapter is disposed.
 
-See [RAW_VAULT.md](RAW_VAULT.md).
-
-## 5. Source compatibility and captured-source readers
-
-WeChat version-specific behavior stays in Infrastructure compatibility code.
-
-Conceptual organization:
-
-```text
-WeArchive.Infrastructure/WeChat/
-├─ Compatibility/        version-specific table/column/type assumptions
-├─ Crypto/               SQLCipher/page cryptography
-├─ KeyAcquisition/       live read-only key acquisition
-├─ Capture/              consistent live source -> Raw Vault
-├─ Readers/              Raw Vault/source-format -> SourceMessage
-├─ Parsers/              source payload -> source-neutral semantics
-└─ discovery/client/data-locator support
-```
-
-A reader is selected using generation/source-format metadata. Different generations may require different readers:
-
-```text
-WeChat 4.x generations -> WeChat4CapturedSourceReader
-future format          -> compatible future reader
-                         ↓
-                     Normalizer
-```
-
-Reader implementation versions are not identity namespaces. Stable identity uses the logical source/adapter family and preserved source IDs.
-
-## 6. Normalization layer — `src/WeArchive.Core/Normalization`
+### 3.4 Normalization layer — `src/WeArchive.Core/Normalization`
 
 Responsibilities:
 
-- map captured source records into stable domain models;
-- preserve stable IDs separately from mutable names;
-- normalize timestamps/participants/message types;
+- map source records into stable domain models;
+- preserve stable IDs and mutable names separately;
+- normalize timestamps and participant identities;
+- map upstream types into canonical semantic message types;
 - build `text`, `payload`, `reply_to` and `source` according to `MESSAGE_SCHEMA.md`;
-- emit `unknown` rather than silently dropping unsupported source records;
-- remain independent of Raw Vault physical storage layout.
+- preserve unknown records instead of silently dropping them.
 
-Parsing/normalization can evolve and historical Raw Vault evidence can be replayed with improved readers/parsers.
+### 3.5 Validation / diagnostics
 
-## 7. Canonical archive — `src/WeArchive.Infrastructure/Archive`
+Diagnostics are structured product data, not only log text.
 
-`archive/wearchive.db` is the **operational system of record**, not the preservation source of truth.
+Severities are `Fatal`, `Partial` and `Info`. Diagnostics carry stable codes and engineering context but never chat content or database keys.
+
+Examples include:
+
+- `unknown_message_type`;
+- `unresolved_reply_target`;
+- `link_wrapper_url_only`;
+- `key_acquisition_failed`;
+- `partition_missing` / `partition_unreadable`;
+- `wal_frames_rejected`.
+
+### 3.6 Archive persistence — `src/WeArchive.Infrastructure/Archive`
+
+SQLite is the **system of record** for normalized archive data.
 
 Responsibilities:
 
-- schema migrations;
-- deterministic stable IDs;
-- idempotent canonical upserts;
-- conversation-scoped publication semantics;
-- import-run audit data;
-- canonical message semantics/provenance;
+- migrations;
+- idempotent upserts;
+- single-conversation transaction publication;
+- checkpoints;
+- import-run audit trail;
+- canonical message semantics;
 - identity/conversation metadata;
-- query-supporting indexes;
-- integrity checks;
-- target ingest checkpoints.
+- future search indexes;
+- integrity checks.
 
-The canonical database is intentionally rebuildable from Raw Vault.
+Export files are derived state and may be regenerated from SQLite.
 
-A parser/database migration problem therefore must not imply loss of preserved source evidence.
+### 3.6.1 Raw Vault persistence — `src/WeArchive.Infrastructure/RawVault`
 
-## 8. Application/orchestration services
+The Raw Vault is a preservation layer that captures a source-faithful snapshot *before*
+normalization. It is separate from the canonical SQLite archive: it has its own format version,
+manifest, reliability contract (R1) and storage root (`%LOCALAPPDATA%\WeArchive\rawvault`).
 
-Target service boundaries:
+Responsibilities:
 
-```text
-SourceCatalogService       live-source discovery metadata
-CaptureService             live source -> Raw Vault
-CapturedSourceReader       Raw Vault -> SourceMessage stream
-ImportService              SourceMessage -> normalize -> canonical archive
-RebuildService             Raw Vault -> fresh canonical archive
-ArchiveQueryService        canonical query/search/context/status
-ArchiveWorkflow            higher-level sync/export orchestration
-```
+- stage and publish immutable generations (publish-last);
+- record versioned manifests with source/capture provenance, artifact roles and SHA-256 checksums;
+- discover and validate published generations (checksum re-verification on open);
+- never inspect artifact internals — artifacts are opaque content objects.
 
-The ordinary `sync` command may orchestrate capture + ingest. `capture` and `rebuild` expose preservation/recovery boundaries explicitly.
+The store treats artifacts as opaque. WeChat schema details (table names, column names, message
+type codes) live *inside* the artifacts, not in Core-visible manifest fields. Source acquisition,
+key recovery and SQLCipher decryption stay inside the WeChat infrastructure boundary
+(`src/WeArchive.Infrastructure/WeChat`).
 
-## 9. Publication semantics
+The upstream WeChat database key is never persisted: it exists only in memory for the duration
+of a capture and is deleted when the scratch cache is disposed. Captured artifacts are decrypted
+content, readable without the key.
 
-### 9.1 Capture publication
+See [RAW_VAULT.md](RAW_VAULT.md) and [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
 
-A Raw Vault generation is published only when its documented capture completeness/reliability contract is satisfied. Fatal coverage failure must not be reported as a complete generation.
+### 3.7 Query and export — `src/WeArchive.Infrastructure/Export`
 
-### 9.2 Canonical conversation publication
+Search and exporters consume normalized archive models only, never upstream source files directly.
 
-Canonical ingestion stages one conversation's publishable records under the documented transaction rules. Fatal canonical source-coverage/identity failures do not silently publish a reduced conversation as complete.
-
-### 9.3 Source deletion semantics
-
-Missing source data in a later capture is evidence about the current source, not an instruction to delete historical Raw Vault or canonical records.
-
-Automatic destructive mirroring is prohibited. Purge requires an explicit separate user operation/requirement.
-
-## 10. Separate checkpoints
-
-Capture and ingest are independently resumable:
-
-```text
-WeChat
-  │ CaptureCheckpoint
-  ▼
-Raw Vault
-  │ IngestCheckpoint
-  ▼
-wearchive.db
-```
-
-Target rules:
-
-1. capture checkpoint advances only after Raw Vault generation publication;
-2. ingest checkpoint advances only after corresponding canonical publication;
-3. replay from an older checkpoint is idempotent;
-4. ingest state should be scoped at least per conversation and may include partition/generation cursors;
-5. one conversation failure must not prevent unrelated successful conversation checkpoints from advancing;
-6. reader/parser upgrades can intentionally replay preserved evidence without recollecting it.
-
-Migration-1 `source_checkpoints` remains the currently shipped generic schema and is not yet consumed by the importer. A later migration may refine/replace it.
-
-## 11. Rebuild
-
-The defining target rebuild path is:
-
-```text
-Raw Vault
-   ↓ readers/parsers
-Normalizer
-   ↓
-new archive/wearchive.db
-   ↓
-rebuild FTS / derived indexes
-```
-
-`wearchive rebuild` MUST NOT access live WeChat or reacquire the original WeChat DB key.
-
-Rebuild must preserve deterministic stable IDs for unchanged preserved source identities.
-
-Exports are not required inputs to rebuild.
-
-## 12. Query and retrieval
-
-`ArchiveQueryService` is the stable application boundary for interactive retrieval.
-
-It should support:
-
-- account/conversation/collection resolution;
-- message listing by conversation/date/person/type;
-- keyword/FTS search;
-- context windows around message IDs;
-- pagination/cursors;
-- archive freshness/status;
-- statistics/activity summaries.
-
-QueryService consumes canonical archive models/indexes only. It never opens live WeChat or Raw Vault source-format databases to answer normal queries.
-
-## 13. FTS/indexes
-
-FTS/search indexes are derived state over canonical semantics.
-
-They may index:
-
-- `semantic_text`;
-- selected structured payload text such as filenames, link titles/descriptions.
-
-Indexes must be rebuildable from canonical SQLite and are never an archival source of truth.
-
-## 14. Harness / Agent architecture
-
-Preferred path:
-
-```text
-Harness / Agent
-      ↓
-CLI --json / future MCP
-      ↓
-ArchiveQueryService
-      ↓
-wearchive.db + FTS
-```
-
-Anti-patterns:
-
-```text
-Harness -> Raw Vault
-Harness -> arbitrary SQLite SQL contract
-Harness -> recursively scan all JSONL for interactive search
-```
-
-JSONL remains appropriate for explicit offline/batch/export workflows. See [HARNESS.md](HARNESS.md).
-
-## 15. Export
-
-Exporters consume canonical archive data, not Raw Vault internals.
-
-Current export shape remains:
+Phase 1 export shape:
 
 ```text
 manifest.json
@@ -381,91 +313,160 @@ chats/direct/<stable-id>/<year>/<year>-<MM>.jsonl
 chats/groups/<stable-id>/<year>/<year>-<MM>.jsonl
 ```
 
-Export files are derived and may be regenerated from canonical SQLite.
+Export reliability is deliberately bounded: caught in-process cancellation/I/O failures attempt restoration of previous output where documented, but process crash, OS/filesystem crash and power loss are **not** guaranteed recovery classes in Phase 1. See `DEVELOPMENT.md` Reliability Levels and `EXPORT_PRD.md` section 3.2.
 
-The target architecture separates source freshness from export: an export operation should not require live-source access merely to serialize already-canonical records. Any convenience "sync then export" workflow should be explicit orchestration rather than an exporter dependency.
+## 4. Data flow
 
-## 16. Collections
+```mermaid
+sequenceDiagram
+    actor Caller as Human / Agent
+    participant CLI as WeArchive CLI
+    participant Workflow as ArchiveWorkflow
+    participant Adapter
+    participant Normalizer
+    participant Archive
+    participant Exporter
 
-Collection is the shared reusable scope abstraction for sets of conversation stable IDs.
-
-The same Collection should support:
-
-```text
-sync
-query/search
-Harness workflows
-export
+    Caller->>CLI: command + args
+    CLI->>Workflow: typed request
+    Workflow->>Adapter: describe/read source
+    loop each source record
+        Adapter-->>Workflow: SourceMessage
+        Workflow->>Normalizer: normalize
+        Normalizer-->>Workflow: canonical Message + provenance
+        Workflow->>Archive: staged idempotent upsert
+    end
+    Workflow->>Archive: commit or rollback by documented rule
+    Workflow->>Exporter: export from archive
+    Exporter->>Archive: query normalized data
+    Exporter-->>Workflow: export result
+    Workflow-->>CLI: result + counters + diagnostics
+    CLI-->>Caller: stdout / stderr / exit code
 ```
 
-This avoids parallel concepts such as watch lists, sync groups and Harness datasets.
+The exporter reads the archive only; it never reopens the source.
 
-## 17. Error/diagnostic model
-
-Diagnostics remain structured product data.
-
-### Fatal
-
-The operation cannot publish a result under the applicable contract.
-
-Examples include unrecoverable capture inconsistency, required source artifact unavailable for a claimed complete generation, canonical schema failure, source identity unavailable.
-
-### Partial
-
-A valid result may publish only where the corresponding PRD explicitly allows it; Partial never means silently lost unknown data.
-
-### Info
-
-No correctness impact (for example no new captured/ingested records).
-
-Operation-specific reliability levels remain governed by `DEVELOPMENT.md` and implementation issues.
-
-## 18. Security architecture
-
-Rules:
-
-1. live WeChat access is read-only;
-2. WeChat keys are acquired read-only and cryptographically verified by supported implementations;
-3. WeChat keys are never persisted/logged/exported;
-4. Raw Vault data must remain recoverable without those upstream keys;
-5. if Raw Vault is encrypted at rest, use WeArchive/user-owned key management independent of WeChat keys;
-6. chat content is never written to ordinary application logs;
-7. Raw Vault/canonical/export private data is never committed to the repository;
-8. core rebuild/query/export workflows do not require network access.
-
-Current 0.2.x decrypted scratch behavior remains implementation-specific until Raw Vault capture replaces/extends it.
-
-## 19. Repository structure target
+## 5. Target repository structure
 
 ```text
 WeArchive.sln
 src/
-├─ WeArchive.Core/                 domain/contracts/normalization/orchestration/query abstractions
-├─ WeArchive.Infrastructure/       WeChat capture/readers, Raw Vault, SQLite/index/export
-└─ WeArchive.Cli/                  CLI transport/composition root
-scripts/
-└─ packaging/smoke-test tooling
+├─ WeArchive.Core/                 net10.0; domain/contracts/services
+├─ WeArchive.Infrastructure/       net10.0-windows; WeChat/SQLite/export/settings
+└─ WeArchive.Cli/                  net10.0-windows; command parsing/output/composition root
 tests/
-└─ WeArchive.Tests/                unit/integration/CLI/capture/rebuild/query contracts
+└─ WeArchive.Tests/                net10.0-windows; xUnit v2 on VSTest
 ```
 
-The historical WPF project remains retired.
+During migration, `src/WeArchive.App` may still exist. It is transitional and should not receive new product behavior except work strictly required to keep the branch buildable until removal.
 
-## 20. Architectural compliance
+## 6. Adapter contract rules
 
-A change is architecture-compliant when:
+Every adapter must provide stable source/account/conversation/message identifiers, timestamps, partition references where applicable, source version metadata, source ordering evidence, explicit completeness/freshness diagnostics and locally obtainable semantic data.
 
-1. behavior maps to documented requirements/issues;
-2. live source-specific logic stays behind capture/compatibility boundaries;
-3. Raw Vault preserves evidence without requiring current parser understanding;
-4. canonical normalization follows `MESSAGE_SCHEMA.md`;
-5. stable IDs survive rebuild/parser upgrades for unchanged source identities;
-6. query/Harness/export do not depend on Raw Vault physical schemas;
-7. normal Harness access goes through QueryService transports;
-8. exports remain derived from canonical data;
-9. capture and ingest progress are not conflated;
-10. source disappearance does not silently erase preserved history;
-11. new failure/unknown states become structured diagnostics;
-12. persistent schema/reliability changes include migration and recovery implications;
-13. shipped-status documentation never claims planned capabilities are already delivered;
-14. docs change with behavior/architecture.
+An adapter must be read-only toward the source and must not:
+
+- write exports directly;
+- bypass the archive for convenience;
+- hide unsupported records;
+- fabricate identities, URLs, amounts or message content;
+- require binary-media preservation for Phase 1 correctness.
+
+### 6.1 Upstream message identity
+
+Preferred strategy:
+
+```text
+server id present -> s:<server_id>
+otherwise         -> l:<partition>:<local_id>
+```
+
+If an adapter cannot provide a native/documented composite identity, that is a source-coverage failure. It must not skip the record or fabricate an identity.
+
+## 7. Canonical message boundary
+
+```text
+Message
+├─ common envelope
+├─ text
+├─ payload
+├─ reply_to
+└─ source
+```
+
+Downstream query/export/CLI logic must not depend on upstream numeric message types or raw XML layouts.
+
+## 8. Identity model
+
+Stable identity and human naming are separate. Conversation physical paths use stable IDs, never mutable names. `display_name_override` is the documented user-maintained identity hook.
+
+## 9. Link/app-share normalization
+
+Preserve locally obtainable semantic metadata including title, description, source application, original URL, wrapper/fallback URL, app ID and page path. Remote webpage crawling is not required for canonical Phase 1 export.
+
+## 10. Incremental synchronization
+
+Checkpoint design is adapter-owned but archive-stored.
+
+Rules:
+
+1. checkpoints advance only after the corresponding archive transaction is committed under the documented reliability contract;
+2. replay from an older checkpoint remains idempotent;
+3. adapter-version changes may explicitly invalidate checkpoints.
+
+Status: schema support exists, but the current importer does not yet consume/advance checkpoints.
+
+## 11. Error model
+
+### Fatal
+
+The operation cannot publish a result under the relevant product contract.
+
+Examples: archive schema unavailable, unsupported migration state, source profile initialization failure, key acquisition failure, required source coverage unavailable, source message identity unavailable.
+
+For **Fatal source-coverage failure during import**, the whole conversation transaction is rolled back.
+
+### Partial
+
+The operation may continue and publish only when the corresponding PRD explicitly permits a valid partial result. Partial is never shorthand for “we lost unknown data but continued anyway”.
+
+Examples: unknown message semantics represented as `unknown`, unresolved reply target with preserved snapshot, wrapper-only link metadata, optional filename/duration unavailable.
+
+### Info
+
+No correctness impact, for example no new records or optional metadata unavailable.
+
+## 12. Security architecture
+
+Core archive/export workflows do not require external network access.
+
+Rules:
+
+1. source databases are read-only;
+2. WeChat keys are recovered read-only from the running client and cryptographically verified;
+3. no code injection/hooking/debugger attachment is required;
+4. decrypted scratch data is transient and deleted on adapter disposal;
+5. keys are never persisted, logged or exported;
+6. chat content is never logged.
+
+See [ADR 0005](adr/0005-wechat-local-key-acquisition.md).
+
+## 13. Architecture decisions
+
+Major design changes require ADR consideration, including changing the canonical message envelope, stable identity/path strategy, archive system of record, local source access/decryption, binary-media persistence, external crawling, derived LLM data layers, or the primary product surface.
+
+## 14. Definition of architectural compliance
+
+A code change is architecture-compliant when:
+
+1. behavior maps to a documented requirement and issue;
+2. source-specific logic stays behind adapter/compatibility boundaries;
+3. normalizer output follows `MESSAGE_SCHEMA.md`;
+4. query/export consume normalized archive models only;
+5. CLI remains a thin application-service adapter;
+6. machine-readable stdout is not polluted by progress or prompts;
+7. mutable names never define stable identity/paths;
+8. new failure/unknown cases become structured diagnostics;
+9. persistent changes include migration/provenance implications;
+10. implementation does not silently strengthen reliability semantics beyond the PRD/Issue/milestone;
+11. docs change with behavior or architecture.
