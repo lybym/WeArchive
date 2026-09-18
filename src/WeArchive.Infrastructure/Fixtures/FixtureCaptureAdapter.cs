@@ -113,6 +113,13 @@ public sealed class FixtureCaptureAdapter : ISourceCaptureAdapter, IDisposable
 
     private static void BuildDatabase(string path, Action<SqliteCommand> applySchema)
     {
+        // Remove any stale database from a previous capture so CREATE TABLE does not fail
+        // on an existing file with the same schema (RepeatedBaselineCapturesCreateNewGenerationsNotEdits).
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = path,
