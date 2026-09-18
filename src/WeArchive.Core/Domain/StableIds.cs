@@ -80,6 +80,21 @@ public static class StableIds
     public static string Message(string conversationId, string sourceMessageId) =>
         "m_" + Digest("message", conversationId, sourceMessageId);
 
+    /// <summary>
+    /// Stable Raw Vault generation id. Derived from the account, the capture instant and the
+    /// capture adapter identity so two captures of the same account at different times yield
+    /// different generation ids while remaining reproducible. docs/RAW_VAULT.md.
+    /// </summary>
+    public static string Generation(
+        string accountId,
+        DateTimeOffset captureTime,
+        string captureAdapterFamily,
+        string captureAdapterVersion)
+    {
+        var instant = captureTime.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+        return "gen_" + Digest("generation", accountId, instant, captureAdapterFamily, captureAdapterVersion);
+    }
+
     private static string Digest(params string[] parts)
     {
         var builder = new StringBuilder();

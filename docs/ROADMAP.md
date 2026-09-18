@@ -6,53 +6,26 @@ Requirements and architecture lead implementation. Code must not become the de f
 
 The roadmap is milestone-based rather than date-based. A milestone is complete only when its acceptance criteria are met and its documentation matches shipped behavior.
 
-WeArchive is CLI-first: a `gh`-style command interface is the primary product surface for humans, scripts and agents. See [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is distributed as a self-contained portable `win-x64` ZIP; see [ADR 0007](adr/0007-cli-self-contained-distribution.md).
-
-The preservation/query architecture was refined on 2026-09-17. Target data flow is:
-
-```text
-Live WeChat
-    │ capture
-    ▼
-Raw Vault / Source Archive        archival source of truth
-    │ read / parse / normalize
-    ▼
-archive/wearchive.db              rebuildable canonical operational store
-    │
-    ▼
-ArchiveQueryService
-    ├─ CLI --json
-    └─ future MCP
-          │
-          ▼
-       Harness / Agent
-
-archive/wearchive.db
-    └─ JSONL/YAML/JSON export     portable interchange/offline dataset
-```
-
-See [RAW_VAULT.md](RAW_VAULT.md), [HARNESS.md](HARNESS.md) and [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md).
-
-**Status boundary:** the 0.2.x implementation still imports directly from the live WeChat source into the canonical SQLite archive. Raw Vault, `capture`, `rebuild`, the full query command family and MCP are target architecture, not shipped behavior.
+The product-surface decision changed on 2026-09-15: WeArchive is now **CLI-first**, with a `gh`-style command interface designed for humans, scripts and agents. See [ADR 0006](adr/0006-cli-first-product-surface.md).
 
 ## M0 — Archive foundation (complete)
 
-**Goal:** establish stable canonical archive and export contracts before integrating a real upstream source.
+**Goal:** establish a stable archive and export contract before integrating a real upstream source.
 
 Delivered:
 
-- C#/.NET solution foundation;
-- configuration/settings model;
-- normalized domain models;
-- canonical message envelope and message-type semantics;
-- source adapter contract;
-- fixture/mock adapter;
-- SQLite archive schema and migrations;
-- import-run and diagnostic models;
-- idempotent importer;
-- stable-ID identity/conversation catalogs;
-- monthly JSONL machine export;
-- unit/integration tests using fixtures.
+- C#/.NET solution foundation.
+- Configuration/settings model.
+- Normalized domain models.
+- Canonical message envelope and message-type semantics.
+- Source adapter contract.
+- Fixture/mock adapter.
+- SQLite archive schema and migrations.
+- Import-run and diagnostic models.
+- Idempotent importer.
+- Stable-ID identity/conversation catalogs.
+- Monthly JSONL machine export.
+- Unit/integration tests using fixtures.
 
 Acceptance criteria — met:
 
@@ -68,11 +41,11 @@ Acceptance criteria — met:
 
 The historical WPF shell was an implementation vehicle and is not part of the enduring M0 product contract.
 
-## M0.5 — CLI product-surface migration (delivered)
+## M0.5 — CLI product-surface migration (current priority)
 
 **Goal:** replace the WPF-first product surface with a small `gh`-style command CLI while preserving the existing archive/source/export engine.
 
-Shipped command family:
+### Required commands
 
 ```text
 wearchive doctor
@@ -83,7 +56,7 @@ wearchive sync --conversation <id-or-alias>
 wearchive export --conversation <id-or-alias>
 ```
 
-CLI contract:
+### CLI contract
 
 - default concise human output;
 - `--json` emits exactly one JSON document on stdout;
@@ -93,25 +66,36 @@ CLI contract:
 - exit codes: `0` success, `1` operation failure, `2` usage/config failure, `130` cancellation;
 - JSON field names/exit behavior covered by contract tests.
 
-Reliability constraints:
+### Reliability constraints
 
-- Phase 1 Export remains `R1` from `DEVELOPMENT.md`;
-- current conversation import remains `R2` for Fatal source-coverage failures;
-- stronger crash-recovery protocols require explicit requirements rather than review-driven scope growth.
+- Phase 1 Export remains `R1` from `DEVELOPMENT.md`: complete output on normal success; caught cancellation/I/O failure attempts in-process restoration; process crash and OS/power loss are not guaranteed recovery classes.
+- Conversation import remains `R2`: Fatal source-coverage failure rolls back the entire conversation transaction.
+- CLI migration must not introduce R3+ crash-recovery machinery unless a separate requirement explicitly authorizes it.
 
-Acceptance criteria — met:
+### Acceptance criteria
 
-- `WeArchive.Cli` is the primary executable;
-- all required commands call application services rather than duplicating business logic;
+- `WeArchive.Cli` or equivalent console entry point is the primary executable;
+- all required commands call existing application services rather than duplicating business logic;
 - human and JSON output paths are tested;
 - stdout/stderr and exit semantics are tested;
 - `--no-input` is automation-safe;
-- WPF-specific product code is removed;
-- a self-contained `win-x64` portable release artifact is produced and smoke-tested.
+- sync/export retain existing archive/export semantics;
+- the WPF presentation layer is removed once required CLI parity is reached;
+- the repository does not maintain two first-class presentation layers;
+- self-contained `win-x64` portable release artifact is produced and smoke-tested from GitHub Actions/Release;
+- docs/README/AGENTS reflect the CLI product.
 
-## M1 — Windows local-source adapter (MVP slice delivered; completion work remains)
+### Explicit non-goals
 
-**Goal:** support Windows WeChat local-data collection while keeping source-specific behavior isolated.
+- full-screen TUI;
+- conversational/Claude Code-style shell;
+- embedded LLM/agent provider;
+- MCP/server mode;
+- adding new archive/search semantics only to justify the migration.
+
+## M1 — Windows local-source adapter (MVP slice delivered; milestone incomplete)
+
+**Goal:** support the first real Windows WeChat 4.x local-data workflow while preserving generic architecture.
 
 Delivered:
 
@@ -121,203 +105,172 @@ Delivered:
 - text and non-text semantic import;
 - links/app-share/mini-program metadata;
 - reply/quote and forwarded-bundle normalization;
+- system/revoke and other documented semantic types;
 - source partition/shard abstraction and merged timeline ordering;
 - completeness diagnostics and unknown accounting;
 - read-only SQLCipher access with verified local key acquisition.
 
-Still required:
+Still missing:
 
-- explicit complete/incomplete source partition coverage reporting;
-- incremental acquisition semantics that can evolve into the Raw Vault capture checkpoint model;
-- conversation-scoped ingest progress so unrelated conversations advance independently.
+- **Incremental checkpoints.** Schema/rules exist, but importer does not yet read or advance them.
+- **Full partition-coverage reporting.** Missing/unreadable partitions are diagnosed, but complete expected/read/unread coverage reporting is not finished.
 
-The migration-1 `source_checkpoints` table is an earlier generic checkpoint design. It must not be treated as the final capture/ingest checkpoint contract merely because it already exists.
+Acceptance criteria still outstanding:
 
-## M1.5 — Raw Vault preservation and rebuild (next architecture foundation)
+- a second sync imports only new/changed records where supported;
+- source coverage reporting is explicit enough to distinguish complete and incomplete reads.
 
-**Goal:** make preserved source evidence independent of live WeChat availability and make the canonical SQLite archive rebuildable.
+## M1.5 — Raw Vault preservation (baseline capture delivered; milestone incomplete)
 
-Deliverables:
+**Goal:** capture a supported local WeChat account into a durable, versioned, immutable Raw Vault
+generation that remains readable without the original WeChat database key.
 
-- Raw Vault / Source Archive storage with immutable logical generations;
-- first complete supported capture followed by safe incremental capture where supported;
-- source-version metadata, checksums, coverage/completeness diagnostics and generation manifests;
-- capture that preserves source-faithful fields rather than reducing unknown records before preservation;
-- explicit separation of capture checkpoints from canonical ingest checkpoints;
-- source deletion/absence never implicitly deletes earlier preserved generations;
-- `wearchive capture` target workflow: live WeChat -> Raw Vault only;
-- `wearchive rebuild` target workflow: Raw Vault -> fresh canonical archive, with no live-WeChat access;
-- reader/parser selection by preserved source version;
-- deterministic stable IDs reproduced across rebuilds;
-- rebuildable FTS/derived indexes after canonical reconstruction.
+Delivered:
 
-Security/recovery invariants:
+- source-independent Core contracts for Raw Vault capture and generation metadata;
+- Raw Vault persistence under Infrastructure (immutable generations, publish-last, SHA-256 checksums);
+- WeChat-specific capture adapter (consistent snapshot via `SqlCipherDatabaseCache`, transient key, decrypted artifacts);
+- `wearchive capture` CLI command as a thin adapter over `CaptureService`;
+- generation discovery/validation (list, latest, open-with-checksum-verification);
+- key non-persistence (no upstream key in vault, canonical SQLite, logs or CLI output);
+- unknown/source-specific fields preserved in captured evidence.
 
-- Raw Vault must remain readable without reacquiring the original WeChat database key;
-- WeChat database keys are never persisted;
-- transient scratch copies are cleaned up, while successfully published Raw Vault snapshots are intentional persistent archive data;
-- a Raw Vault generation must use a documented consistent snapshot mechanism rather than unsafe live DB/WAL file copying;
-- binary media preservation is not implied by this milestone; see `RAW_VAULT.md` section 13.
+Still missing (non-goals of M1.5 baseline):
 
-Acceptance criteria are defined normatively in [RAW_VAULT.md](RAW_VAULT.md).
+- incremental capture/checkpoint optimization;
+- canonical ingest from Raw Vault (`wearchive rebuild`);
+- storage-dedup optimization;
+- Raw Vault encryption-at-rest;
+- conversation-scoped ingest checkpoints.
+
+Acceptance criteria — met for the baseline slice:
+
+- a supported WeChat account can be captured into a versioned Raw Vault generation;
+- a successful capture produces a complete, parseable, versioned manifest;
+- every captured artifact referenced by the manifest has a verifiable SHA-256 checksum;
+- manifest records source product/version, source profile, capture adapter family/version, capture time and completeness;
+- published generations are logically immutable; later capture never edits an earlier generation;
+- captured evidence remains readable after live WeChat access/original DB key are unavailable;
+- no WeChat DB key is written to Raw Vault, canonical SQLite, logs or CLI output;
+- no persistent recovery journal, rollback ledger or complex R3+ state machine is added.
+
+Do not mark M1.5 complete in this Issue.
 
 ## M2 — Message semantics and completeness
 
-**Goal:** improve canonical semantic depth without weakening source preservation or stable IDs.
+**Goal:** improve semantic depth without changing the canonical export contract.
 
 Remaining emphasis:
 
 - more reliable special-message semantics;
 - better unknown-type diagnostics;
 - reply-target resolution improvements;
-- metadata refresh/merge correctness;
-- parser improvements that can be replayed against Raw Vault generations once M1.5 is delivered.
+- metadata refresh/merge correctness.
 
 Acceptance criteria:
 
 - important source events remain visible;
 - forwarded bundles retain available nested text;
-- unknown canonical records are never silently discarded;
-- unknown source fields are not discarded by the preservation layer merely because the current parser does not understand them;
-- metadata refresh/parser upgrades do not change stable IDs/paths;
+- unknown records are never silently discarded;
+- metadata refresh does not change stable IDs/paths;
 - re-export remains deterministic.
 
-## M3 — ArchiveQueryService and retrieval
+## M3 — Search and retrieval
 
-**Goal:** make the canonical archive the efficient runtime query surface for humans, scripts and agents.
-
-The stable product API is `ArchiveQueryService`. CLI and future MCP are transport adapters; Harnesses must not depend directly on SQLite schema, Raw Vault files or recursive JSONL scans for normal interactive retrieval.
-
-### M3a — Minimum structured retrieval (high priority)
+**Goal:** make the archive efficient for targeted machine analysis.
 
 Deliverables:
 
-- `ArchiveQueryService` abstraction over canonical archive models;
-- message listing by conversation and date range;
-- participant/type filters where supported;
-- cursor-based pagination;
-- context-window retrieval around a stable message ID;
-- archive/capture/ingest freshness status;
-- CLI `--json` query commands with stable DTOs;
-- `docs/HARNESS.md` as the Agent integration contract.
-
-Acceptance criteria:
-
-- large result sets are paginated;
-- query results expose stable canonical IDs, not SQLite/source internals;
-- ordinary query/export operations can work when live WeChat is unavailable once the required canonical data already exists;
-- Harness workflows do not need to scan exported JSONL by default.
-
-### M3b — Full-text search and derived indexes
-
-Deliverables:
-
-- SQLite FTS5 index over canonical semantic content;
+- SQLite FTS index;
 - keyword search;
-- conversation/participant/date filters;
-- context-window integration;
-- archive statistics and activity timeline.
+- conversation filters;
+- participant filters;
+- date-range filters;
+- context-window retrieval;
+- archive statistics;
+- activity timeline;
+- CLI commands exposing retrieval in human and `--json` modes.
 
 Acceptance criteria:
 
 - search results map to canonical archived messages;
-- indexes are deterministic and rebuildable entirely from `wearchive.db`;
-- FTS is treated as derived state, not archival evidence.
+- index rebuild is deterministic;
+- indexes are rebuildable entirely from canonical archive data;
+- large archives remain usable from CLI workflows.
 
-## M4 — Harness and collection workflows
+## M4 — Harness-oriented workflows
 
-**Goal:** make repeated Harness/Agent analysis efficient without introducing a second data model.
+**Goal:** make repeated LLM/Harness analysis easy without introducing a separate derived-data layer.
 
 Deliverables:
 
-- named Collection as the shared scope abstraction for sync/query/search/export;
-- collection-scoped incremental ingest with per-conversation progress;
+- named collections for recurring analysis scopes;
 - selective export by collection and time range;
-- stable Harness reference conventions;
+- manifest completeness/counter reporting;
+- stable prompt/reference conventions for exported folders;
 - optional redaction/selective-field controls;
-- future stdio MCP transport over `ArchiveQueryService` after the query contract is stable.
+- helper CLI commands for resolving conversations/partitions.
 
-Target examples:
+Acceptance criteria:
 
-```text
-wearchive collection list
-wearchive collection show ai-toy
-wearchive sync --collection ai-toy
-wearchive search "报价" --collection ai-toy
-wearchive export --collection ai-toy
-```
-
-Rules:
-
-- do not invent parallel scope concepts such as `watch-list`, `sync-group` or `harness-dataset` when Collection already represents the conversation set;
-- MCP must not implement another parser/query engine or read Raw Vault directly;
-- JSONL remains a first-class interchange/offline dataset, not the default interactive Harness query surface.
+- a Harness can determine what data to load from CLI JSON and/or manifest/catalog files;
+- stable IDs/aliases/collections remain reusable;
+- core archive/export remains functional without any AI provider;
+- no LLM-specific chunk files are required.
 
 ## M5 — Optional human convenience
 
-**Goal:** add convenience only after preservation and query contracts are stable.
+**Goal:** add convenience only after the command/data contracts are stable.
 
 Candidate work must be separately justified. Possible examples:
 
 - richer human-readable CLI reports;
 - optional interactive helpers;
-- scheduled local capture/sync integration.
+- scheduled local sync integration.
 
-A GUI or full-screen TUI is not assumed by this milestone and requires a new product decision if proposed.
+A GUI or full-screen TUI is **not** assumed by this milestone and requires a new product decision if proposed.
 
 ## Deferred / exploratory
 
-These items are intentionally not committed unless a later requirement promotes them:
+These items are intentionally not committed:
 
-- macOS source support;
-- Linux source support;
-- multi-machine Raw Vault/archive reconciliation;
-- Raw Vault encryption-at-rest/key-management design;
+- macOS support;
+- Linux support;
+- multi-machine archive reconciliation;
+- encrypted archive-at-rest option;
 - plugin system for additional chat sources;
 - direct integration with note systems;
-- binary media preservation / Media Vault;
+- binary media preservation;
 - OCR/ASR pipelines;
 - remote crawling of linked webpages;
 - LLM-specific derived/chunk datasets;
+- MCP/server interface;
 - embedded conversational agent.
-
-MCP is no longer an architectural non-goal: it is an optional future transport under M4, but only after `ArchiveQueryService` exists and must not become a second business/query layer.
 
 ## Packaging and release
 
-The shipped artifact remains a self-contained `win-x64` CLI published as `WeArchive-win-x64.zip`, containing `WeArchive.exe` plus a `wearchive.cmd` PATH shim. There is no installer and no auto-updater. Packaging/distribution changes require their own product/ADR decision.
+Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets.
 
-Code signing remains separate work unless explicitly scheduled.
+For M0.5 the product requirement is simpler: a **self-contained `win-x64` CLI artifact** suitable for direct invocation by humans and agents. The implementation issue must decide the minimal release packaging needed for the CLI and update/supersede ADR 0004 where necessary. Do not preserve Velopack merely because the WPF line used it.
+
+GitHub Actions/Release remains the source of test artifacts and release artifacts. Code signing remains separate work unless explicitly scheduled.
 
 ## Release discipline
 
 Provisional mapping:
 
 - `0.1.x` — historical WPF MVP + archive/source foundation;
-- `0.2.x` — CLI-first product surface and current live-source -> canonical archive behavior;
-- next feature lines — preservation/rebuild, incremental sync, minimum query/Harness contract, FTS and collection workflows;
-- `1.0.0` — stable preservation/canonical/query/export/CLI contracts and supported upgrade/deprecation path.
+- next minor line — CLI product-surface migration;
+- subsequent lines — M1 completion, M2 semantics, M3 retrieval, M4 Harness workflows;
+- `1.0.0` — stable archive/message/export/CLI contracts and supported upgrade/deprecation path.
 
 Exact version numbers are chosen by release work; roadmap order is normative, version arithmetic is not.
 
 ## Current priority
 
-The current implementation order is driven by the real 0.2.x usage bottlenecks and the preservation architecture:
+1. **M1.5 Raw Vault baseline capture** (Issue #22): capture a supported WeChat account into a versioned, immutable generation.
+2. Finish M1 incremental checkpoints and full partition-coverage reporting.
+3. Continue M2 semantic depth.
+4. Build M3 retrieval and M4 Harness workflows on the CLI contract.
 
-1. **P0 — Raw Vault baseline + rebuild contract implementation (M1.5).** Preserve source-faithful evidence independently of live WeChat and prove a fresh `wearchive.db` can be rebuilt without live source/key reacquisition.
-2. **P0 — Conversation-scoped incremental capture/ingest + Collection sync foundation (M1/M1.5/M4).** Separate capture and ingest checkpoints; avoid full rescans; let conversations advance independently.
-3. **P0 — Minimum `ArchiveQueryService` + message/date/conversation/context retrieval + Harness CLI contract (M3a).** Harness/Agent must stop depending on recursive JSONL scanning for normal interactive queries.
-4. **P1 — SQLite FTS5 + `search`/context workflows (M3b).** Use canonical SQLite/indexes for targeted candidate retrieval.
-5. **P1 — Collection as one scope for sync/query/export/Harness (M4).** Do not create duplicate scope concepts.
-6. **P1 — stdio MCP transport after QueryService is stable (M4).** MCP wraps the same application service; it does not parse Raw Vault or implement a second query engine.
-7. Continue M2 semantic depth in parallel where it does not displace the preservation/query foundations above.
-
-The foundation that must not be weakened is now explicit:
-
-```text
-Raw Vault      = archival source of truth / preserved evidence
-wearchive.db   = rebuildable canonical operational store
-QueryService   = interactive retrieval API
-CLI / MCP      = transport adapters
-JSONL/YAML     = portable interchange/offline export
-```
+The migration must preserve the foundation already delivered: generic adapter contract, canonical message schema, normalized models, SQLite system of record, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic export.

@@ -64,6 +64,10 @@ public sealed class CommandRouter
                 sp.GetRequiredService<ArchiveWorkflow>(),
                 sp.GetRequiredService<CliExportDefaults>()),
                 "Export one conversation to a JSONL dataset."),
+            ["capture"] = new(sp => new Commands.CaptureCommand(
+                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<CaptureService>()),
+                "Capture an account into a Raw Vault generation."),
         };
     }
 
