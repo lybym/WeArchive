@@ -31,7 +31,12 @@ public interface IRawVaultStore
         RawGenerationContext context,
         CancellationToken cancellationToken);
 
-    /// <summary>Published generations for an account, ordered by capture time ascending.</summary>
+    /// <summary>
+    /// Published generations for an account, ordered by capture time ascending. A final
+    /// generation directory with a missing, unreadable, or invalid manifest fails the listing
+    /// with <see cref="System.IO.InvalidDataException"/> instead of being silently omitted;
+    /// unpublished staging directories are ignored.
+    /// </summary>
     Task<IReadOnlyList<RawGenerationSummary>> ListGenerationsAsync(
         string accountId,
         CancellationToken cancellationToken);

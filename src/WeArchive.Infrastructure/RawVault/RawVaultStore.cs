@@ -113,17 +113,26 @@ public sealed class RawVaultStore : IRawVaultStore
                 continue;
             }
 
+            var generationId = Path.GetFileName(directory) ?? directory;
             var manifestPath = Path.Combine(directory, ManifestFile);
             if (!File.Exists(manifestPath))
+                throw new InvalidDataException(
+                    $"Published Raw Vault generation '{generationId}' has no manifest.");
+
+            RawManifest? manifest;
+            try
             {
-                continue;
+                manifest = await ReadManifestAsync(manifestPath).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidDataException(
+                    $"Published Raw Vault generation '{generationId}' manifest could not be read.", ex);
             }
 
-            var manifest = await ReadManifestAsync(manifestPath).ConfigureAwait(false);
             if (manifest is null)
-            {
-                continue;
-            }
+                throw new InvalidDataException(
+                    $"Published Raw Vault generation '{generationId}' has an invalid or unsupported manifest.");
 
             summaries.Add(new RawGenerationSummary
             {
