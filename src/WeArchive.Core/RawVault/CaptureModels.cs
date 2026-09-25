@@ -10,7 +10,7 @@ public enum RawCaptureMode
     /// <summary>Capture the entire supported source snapshot into one generation.</summary>
     Baseline,
 
-    /// <summary>Reserved for future incremental capture; not implemented.</summary>
+    /// <summary>Unchanged source partitions reuse preserved evidence.</summary>
     Incremental,
 }
 
@@ -105,6 +105,8 @@ public sealed record CaptureResult
     public required int ArtifactCount { get; init; }
 
     public IReadOnlyList<RawManifestDiagnostic> Diagnostics { get; init; } = [];
+    public IReadOnlyList<RawPartitionCoverage> Coverage { get; init; } = [];
+    public RawCaptureMode Mode { get; init; } = RawCaptureMode.Baseline;
 
     public string? PreviousGenerationId { get; init; }
 

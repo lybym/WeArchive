@@ -51,11 +51,45 @@ public sealed class RawVaultManifestTests
     };
 
     [Fact]
-    public void ManifestVersionIsOne()
+    public void CurrentManifestVersionIsTwo()
     {
         var manifest = BuildManifest();
-        Assert.Equal(1, manifest.ManifestVersion);
-        Assert.Equal(1, RawManifest.CurrentManifestVersion);
+        Assert.Equal(2, manifest.ManifestVersion);
+        Assert.Equal(2, RawManifest.CurrentManifestVersion);
+    }
+
+    [Fact]
+    public void VersionOneManifestRemainsReadableWithoutCaptureCheckpoint()
+    {
+        var old = BuildManifest() with { ManifestVersion = 1 };
+        var restored = RawManifestSerializer.TryDeserialize(RawManifestSerializer.Serialize(old));
+        Assert.NotNull(restored);
+        Assert.Null(restored.CaptureCheckpoint);
+    }
+
+    [Fact]
+    public void VersionTwoCheckpointRoundTripsAndRejectsWrongGeneration()
+    {
+        var manifest = BuildManifest() with
+        {
+            Coverage = [new RawPartitionCoverage
+            {
+                PartitionId = "partition-1", Status = RawPartitionStatus.Captured,
+                SourceFingerprint = "source-hash", ArtifactSha256 = "abc123",
+            }],
+            CaptureCheckpoint = new RawCaptureCheckpoint
+            {
+                GenerationId = "gen_abcdef0123456789", CaptureAdapterFamily = "fixture",
+                CaptureAdapterVersion = "1.0.0",
+                PartitionFingerprints = new Dictionary<string, string> { ["partition-1"] = "source-hash" },
+            },
+        };
+        var json = RawManifestSerializer.Serialize(manifest);
+        Assert.NotNull(RawManifestSerializer.TryDeserialize(json)?.CaptureCheckpoint);
+        Assert.Null(RawManifestSerializer.TryDeserialize(RawManifestSerializer.Serialize(manifest with
+        {
+            CaptureCheckpoint = manifest.CaptureCheckpoint! with { GenerationId = "wrong" },
+        })));
     }
 
     [Fact]
@@ -171,4 +205,70 @@ public sealed class RawVaultManifestTests
         Assert.Equal("partial", restored.Diagnostics[1].Severity);
         Assert.Equal("info", restored.Diagnostics[2].Severity);
     }
+
+    [Fact]
+    public void CoverageAndCheckpointMustAgreeOrTheManifestIsRejected()
+    {
+        var manifest = BuildManifest() with
+        {
+            Coverage = [Partition("p1", "hash-1")],
+            CaptureCheckpoint = new RawCaptureCheckpoint
+            {
+                GenerationId = "gen_abcdef0123456789",
+                CaptureAdapterFamily = "fixture",
+                CaptureAdapterVersion = "1.0.0",
+                PartitionFingerprints = new Dictionary<string, string> { ["p1"] = "hash-1" },
+            },
+        };
+        Assert.NotNull(Deserialize(manifest));
+
+        // A checkpoint fingerprint that disagrees with the recorded coverage proves nothing.
+        Assert.Null(Deserialize(manifest with
+        {
+            CaptureCheckpoint = manifest.CaptureCheckpoint! with
+            {
+                PartitionFingerprints = new Dictionary<string, string> { ["p1"] = "tampered" },
+            },
+        }));
+
+        // A checkpoint whose partition set or adapter identity differs from the generation.
+        Assert.Null(Deserialize(manifest with
+        {
+            CaptureCheckpoint = manifest.CaptureCheckpoint! with
+            {
+                PartitionFingerprints = new Dictionary<string, string>
+                {
+                    ["p1"] = "hash-1",
+                    ["p2"] = "hash-2",
+                },
+            },
+        }));
+        Assert.Null(Deserialize(manifest with
+        {
+            CaptureCheckpoint = manifest.CaptureCheckpoint! with { CaptureAdapterVersion = "9.9.9" },
+        }));
+
+        // Coverage that references no artifact of the generation cannot be verified.
+        Assert.Null(Deserialize(manifest with { Coverage = [Partition("p1", "hash-1", "no-such-artifact")] }));
+
+        // Duplicate partition ids make coverage ambiguous.
+        Assert.Null(Deserialize(manifest with
+        {
+            Coverage = [Partition("p1", "hash-1"), Partition("p1", "hash-1")],
+        }));
+    }
+
+    private static RawPartitionCoverage Partition(
+        string partitionId,
+        string fingerprint,
+        string artifactSha256 = "abc123") => new()
+    {
+        PartitionId = partitionId,
+        Status = RawPartitionStatus.Captured,
+        SourceFingerprint = fingerprint,
+        ArtifactSha256 = artifactSha256,
+    };
+
+    private static RawManifest? Deserialize(RawManifest manifest) =>
+        RawManifestSerializer.TryDeserialize(RawManifestSerializer.Serialize(manifest));
 }

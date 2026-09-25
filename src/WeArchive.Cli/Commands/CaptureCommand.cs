@@ -120,12 +120,25 @@ public sealed class CaptureCommand : ICliCommand
             SourceProfileId = outcome.SourceProfileId,
             CaptureTime = FormatTimestamp(outcome.CaptureTime),
             Completeness = outcome.Completeness.ToString().ToLowerInvariant(),
-            Mode = "baseline",
+            Mode = outcome.Mode.ToString().ToLowerInvariant(),
             CaptureAdapterFamily = _capture.CaptureAdapterFamily,
             CaptureAdapterVersion = _capture.CaptureAdapterVersion,
             ArtifactCount = outcome.ArtifactCount,
             PreviousGenerationId = outcome.PreviousGenerationId,
             Diagnostics = [.. outcome.Diagnostics.Select(CaptureResultDto.From)],
+            Coverage = [.. outcome.Coverage.Select(c => new CaptureCoverageDto
+            {
+                PartitionId = c.PartitionId,
+                Status = c.Status.ToString().ToLowerInvariant(),
+            })],
+            CoverageSummary = new CaptureCoverageSummaryDto
+            {
+                Expected = outcome.Coverage.Count,
+                Captured = outcome.Coverage.Count(c => c.Status == RawPartitionStatus.Captured),
+                Reused = outcome.Coverage.Count(c => c.Status == RawPartitionStatus.Reused),
+                Unavailable = outcome.Coverage.Count(c => c.Status == RawPartitionStatus.Unavailable),
+                Unsupported = outcome.Coverage.Count(c => c.Status == RawPartitionStatus.Unsupported),
+            },
         };
 
         WriteResult(context, result);
@@ -178,6 +191,9 @@ public sealed class CaptureCommand : ICliCommand
         context.Stdout.WriteLine($"  capture time: {result.CaptureTime}");
         context.Stdout.WriteLine($"  completeness: {result.Completeness}");
         context.Stdout.WriteLine($"  artifacts:    {result.ArtifactCount}");
+        context.Stdout.WriteLine($"  coverage:     {result.CoverageSummary.Captured} captured, " +
+            $"{result.CoverageSummary.Reused} reused, {result.CoverageSummary.Unavailable} unavailable, " +
+            $"{result.CoverageSummary.Unsupported} unsupported");
         if (result.PreviousGenerationId is not null)
         {
             context.Stdout.WriteLine($"  previous:     {result.PreviousGenerationId}");

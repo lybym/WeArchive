@@ -401,6 +401,32 @@ internal sealed class RawVaultGenerationSession : IRawGenerationSession
         };
     }
 
+    public async Task<RawArtifactDescriptor> ReuseArtifactAsync(
+        RawGeneration previous,
+        RawArtifactDescriptor artifact,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(previous);
+        ArgumentNullException.ThrowIfNull(artifact);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!previous.Manifest.Artifacts.Contains(artifact))
+            throw new InvalidDataException("Reused artifact is absent from the verified generation.");
+
+        var source = Path.GetFullPath(Path.Combine(previous.GenerationDirectory, artifact.ContentRef));
+        var sourceRoot = Path.GetFullPath(previous.GenerationDirectory) + Path.DirectorySeparatorChar;
+        if (!source.StartsWith(sourceRoot, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Reused artifact path escapes its generation.");
+        var name = Path.GetFileName(source);
+        var destination = Path.Combine(_artifactsDir, name);
+        if (!File.Exists(destination))
+            File.Copy(source, destination);
+        var actual = await RawVaultStore.ComputeSha256Async(destination, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(actual, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Reused artifact checksum changed.");
+        return artifact;
+    }
+
     public Task<RawGeneration> PublishAsync(RawManifest manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);

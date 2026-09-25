@@ -289,6 +289,19 @@ Responsibilities:
 - discover and validate published generations (checksum re-verification on open);
 - never inspect artifact internals — artifacts are opaque content objects.
 
+Version-2 manifests carry generic partition coverage and the capture checkpoint. `CaptureService`
+checks the previous published generation and its checkpoint before invoking an adapter's optional
+`IIncrementalSourceCaptureAdapter` path, and only accepts a `complete` generation whose coverage
+and checkpoint agree. The WeChat adapter alone computes source-specific database/WAL fingerprints
+and decides which partitions may reuse verified artifacts; the store copies reused evidence into
+the new immutable generation so every generation stays self-contained. A missing, mismatched or
+unsafe cursor (including a version-1 generation, a changed adapter version or a `partial`
+predecessor) widens the run to a full consistent snapshot and reports it diagnostically rather
+than claiming incremental coverage. The checkpoint is published inside the manifest, so it
+advances only with a successful publish-last publication and stays independent of canonical
+ingest progress. Incremental capture keeps the R1 contract: no journal, commit marker or
+recovery state machine is added.
+
 `RebuildService` and `RawVaultIngestService` are the workflows that open Raw Vault contents for
 semantic ingestion: rebuild consumes the selected snapshot, while incremental ingestion commits
 verified generations conversation by conversation. They select a captured-source reader in the

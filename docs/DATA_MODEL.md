@@ -597,8 +597,8 @@ If retained for debugging/reproducibility:
 ## 21. Raw Vault data model
 
 The Raw Vault is a separate persistence layer from the canonical SQLite archive. It has its own
-independently versioned format (`manifest_version` and `vault_format_version`, both currently
-`1`), and no canonical SQLite migration is required to introduce it (Issue #22, migration-1
+independently versioned format (`manifest_version` currently `2`, `vault_format_version` `1`),
+and no canonical SQLite migration is required to introduce it (Issue #22, migration-1
 `source_checkpoints` remains untouched).
 
 Conceptual entities:
@@ -630,9 +630,10 @@ same account at different times yield different generation ids.
 ### 21.3 Manifest
 
 The manifest is a versioned JSON document recording source product/version, source profile,
-capture adapter family/version, capture time, mode (`baseline`), completeness, every artifact's
-role/name/content-ref/SHA-256/size, diagnostics and the previous generation id (append-only
-chain). See [RAW_VAULT.md](RAW_VAULT.md) for the full manifest shape.
+capture adapter family/version, capture time, mode (`baseline` or `incremental`), completeness,
+every artifact's role/name/content-ref/SHA-256/size, per-partition coverage, the optional capture
+checkpoint, diagnostics and the previous generation id (append-only chain). See
+[RAW_VAULT.md](RAW_VAULT.md) for the full manifest shape.
 
 The manifest format version is independent of the canonical SQLite schema version
 (section 18), the message-schema version and the export-schema version.
@@ -643,13 +644,41 @@ Artifact `role` values are source-neutral strings (e.g. `source-database`) so th
 not leak WeChat table names into Core/CLI. Every artifact has a verifiable SHA-256 checksum;
 opening a generation re-verifies every checksum and rejects tampered or corrupted artifacts.
 
-### 21.5 Raw Vault format-version tests
+### 21.5 Capture checkpoint and partition coverage
+
+Manifest version 2 adds two persistent structures to the generation manifest. Both live inside
+the publish-last manifest, so neither can advance separately from a published generation:
+
+```text
+coverage[]           — one entry per source partition this generation accounts for:
+                       partition_id, status (captured | reused | unavailable | unsupported),
+                       source_fingerprint, artifact_sha256, diagnostic
+capture_checkpoint   — version, generation_id, capture_adapter_family,
+                       capture_adapter_version, partition_fingerprints{partition_id -> fingerprint}
+```
+
+The checkpoint is the Raw Vault-side capture cursor. It is written only for a `complete`
+generation whose every coverage entry is `captured` or `reused` with a fingerprint and a
+checksum that resolves to an artifact of the same generation; a `partial` generation records
+coverage but no checkpoint, and a discarded generation publishes nothing at all. It is a record
+distinct from SQLite `ingest_checkpoints`: capture freshness and canonical ingest freshness can
+legitimately differ, and neither is ever inferred from the other. A version-1 manifest has no
+checkpoint, so the next live capture widens to a full snapshot. No canonical SQLite migration is
+involved.
+
+`unavailable` is a report, never a deletion instruction: a partition that disappears from the
+live source cannot remove an earlier generation or any artifact it requires.
+
+### 21.6 Raw Vault format-version tests
 
 Raw Vault format-version tests must verify that `manifest_version = 1` can be reopened
 independently of the capture process — i.e. a new `RawVaultStore` instance pointing at the same
 root can discover and validate a published generation without the capture adapter being alive.
+They must also verify that a version-2 generation round-trips its coverage and checkpoint, and
+that a coverage/checkpoint pair which disagrees (fingerprint, partition set, adapter identity or
+a checksum that names no artifact of the generation) is rejected rather than trusted.
 
-### 21.6 Rebuild and canonical migration
+### 21.7 Rebuild and canonical migration
 
 The Raw Vault format introduces no canonical SQLite migration. Rebuild creates a new canonical
 database by applying the normal forward migration sequence to an empty file; it does not copy

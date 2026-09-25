@@ -50,6 +50,22 @@ CaptureRun       — provenance: adapter family/version, capture time, completen
 The Raw Vault format version is independent of the canonical SQLite, message-schema and
 export-schema versions.
 
+Issue #25 adds a manifest-version-2 capture checkpoint. It is embedded in the newly published
+generation manifest, so capture progress advances only with successful publish-last publication.
+It is independent of the canonical SQLite ingest checkpoint. Version-1 generations remain
+readable, but cannot prove incremental safety and cause a full capture fallback.
+
+Each version-2 manifest records `coverage` entries keyed by opaque source partition ID. An entry
+states `captured`, `reused`, `unavailable`, or `unsupported`, with a source fingerprint and artifact
+checksum when present. A complete capture records a versioned `capture_checkpoint` with the
+generation ID, adapter family/version, and the fingerprint of each covered partition. Partial
+capture does not advance this checkpoint. Later capture verifies the previous generation and
+checkpoint before reusing any artifact. If source fingerprints cannot establish safety, capture
+widens to a full consistent snapshot. No-change capture still publishes a new immutable generation
+after verifying every expected partition fingerprint; it reuses preserved artifacts and records
+explicit coverage rather than claiming an unobserved source was checked. Disappeared partitions
+are reported as unavailable and cannot delete prior generations.
+
 ## 3. Physical layout
 
 ```text
@@ -71,7 +87,7 @@ export-schema versions.
 
 ```json
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "vault_format_version": 1,
   "generation_id": "gen_...",
   "account_id": "a_...",
@@ -109,13 +125,38 @@ export-schema versions.
     }
   ],
   "diagnostics": [],
+  "coverage": [
+    {
+      "partition_id": "db_storage/message/message_0.db",
+      "status": "captured",
+      "source_fingerprint": "<opaque hex>",
+      "artifact_sha256": "<hex>"
+    },
+    {
+      "partition_id": "db_storage/session/session.db",
+      "status": "reused",
+      "source_fingerprint": "<opaque hex>",
+      "artifact_sha256": "<hex>"
+    }
+  ],
+  "capture_checkpoint": {
+    "version": 1,
+    "generation_id": "gen_...",
+    "capture_adapter_family": "wechat-windows",
+    "capture_adapter_version": "0.1.0",
+    "partition_fingerprints": {
+      "db_storage/message/message_0.db": "<opaque hex>",
+      "db_storage/session/session.db": "<opaque hex>"
+    }
+  },
   "previous_generation_id": null
 }
 ```
 
 ### 4.1 Versioning
 
-- `manifest_version` — the manifest's own structure version. Currently `1`.
+- `manifest_version` — the manifest's own structure version. Current writes use `2`; version `1`
+  remains readable.
 - `vault_format_version` — the physical artifact layout version. Currently `1`.
 
 These are independent of each other and of the canonical SQLite, message-schema and
@@ -130,6 +171,48 @@ names into Core/CLI:
 
 Future roles may include `schema-evidence`, `source-config` or derived dumps; they are additive
 and do not change existing roles.
+
+### 4.3 Coverage and the capture checkpoint
+
+`coverage` records what this generation actually accounts for, keyed by an opaque
+source-partition id (never a chat content value):
+
+| `status` | Meaning |
+|---|---|
+| `captured` | The partition was read now and materialized into an artifact of this generation |
+| `reused` | The partition fingerprint matched the previous complete generation, so its verified artifact was carried into this generation |
+| `unavailable` | The partition was expected (or previously captured) but could not be read, or is absent from the live source |
+| `unsupported` | The partition exists but this adapter version cannot represent it |
+
+`expected` in the CLI rollup is the number of coverage entries, i.e. every partition this run
+accounted for — not a claim that every theoretical source partition was observed.
+
+`capture_checkpoint` is a versioned capture cursor, and **not** an ingest cursor:
+
+- it is written only inside a manifest that is being published, so publish-last publication is
+  the only way it can advance;
+- it is only written for a generation whose completeness is `complete` and whose every coverage
+  entry is `captured` or `reused` with a recorded fingerprint and a checksum that names an
+  artifact of that same generation;
+- a `partial` generation records coverage but leaves `capture_checkpoint` absent, so the next run
+  widens to a full snapshot instead of resuming from weaker evidence;
+- a Fatal failure, caught cancellation or I/O error discards the staged generation, so the
+  previously published checkpoint is unchanged and stays the latest;
+- it can legitimately be fresher or staler than the canonical SQLite ingest checkpoint
+  (`docs/DATA_MODEL.md` section 21). Neither is ever inferred from the other.
+
+Incremental safety is proven per partition, from the source itself, by the capture adapter. For
+WeChat 4.x this is a content fingerprint of the database file and its committed WAL bytes; the
+volatile `-shm` index is deliberately excluded because it changes without any content change.
+When a fingerprint cannot be recomputed, the previous generation cannot be mapped onto the live
+partitions, the adapter version changed, or the previous generation is not a complete
+version-2 generation with a matching checkpoint, capture widens to a full consistent snapshot
+and reports the `capture_full_fallback` diagnostic. Widening is never silent.
+
+A no-change capture has one deterministic behaviour: it still verifies every expected partition
+fingerprint, still publishes a new immutable generation that reuses the already-verified
+artifacts, and still advances the checkpoint to that new generation. It never claims that
+unobserved source material was checked, and it never deletes or rewrites an earlier generation.
 
 ## 5. Consistent snapshot strategy
 
@@ -150,6 +233,15 @@ is disposed, deleting the key and decrypted scratch material.
 
 The resulting artifacts are **decrypted SQLite images**: source-faithful and readable without
 the original WeChat key.
+
+Incremental capture reuses the same read-only boundary: before decrypting anything the adapter
+computes a per-partition fingerprint over the source database file and its committed WAL bytes
+(never `-shm`), then fingerprints every expected partition again after the snapshot is written.
+A partition whose fingerprint is unchanged reuses the artifact already published by the previous
+complete generation; a changed partition is materialized again; a partition that changes while
+it is being read makes the generation Fatal, because neither the copied old artifact nor the new
+image can be claimed as the current source state. The upstream WeChat files are only ever opened
+for reading.
 
 ## 6. Publication and immutability
 
@@ -179,7 +271,12 @@ append-only chain. Later source deletion does not delete or rewrite earlier gene
 
 Fatal examples: required partition unavailable, inconsistent snapshot/WAL state, checksum
 mismatch, source identity unavailable, key unavailable before capture, artifact publication
-failure.
+failure, a partition that changes while it is being fingerprinted or read.
+
+Incremental capture adds exactly one diagnostic: `capture_full_fallback` (severity `info`). It
+means incremental safety could not be proven and the run read the whole source instead. It is
+informational, not a failure: the published generation is an ordinary complete or partial
+generation, and the message states which precondition was missing.
 
 Caught cancellation/runtime/I/O failure discards the staging material best-effort and fails
 explicitly. Process crash and OS/power loss are not guaranteed recovery classes. No persistent

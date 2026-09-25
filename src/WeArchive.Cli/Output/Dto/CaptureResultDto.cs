@@ -43,6 +43,12 @@ public sealed record CaptureResultDto
     [JsonPropertyName("diagnostics")]
     public IReadOnlyList<CaptureDiagnosticDto> Diagnostics { get; init; } = [];
 
+    [JsonPropertyName("coverage")]
+    public IReadOnlyList<CaptureCoverageDto> Coverage { get; init; } = [];
+
+    [JsonPropertyName("coverage_summary")]
+    public required CaptureCoverageSummaryDto CoverageSummary { get; init; }
+
     public static CaptureDiagnosticDto From(RawManifestDiagnostic diagnostic) => new()
     {
         Severity = diagnostic.Severity,
@@ -52,6 +58,28 @@ public sealed record CaptureResultDto
         SourceType = diagnostic.SourceType,
         SourceSubtype = diagnostic.SourceSubtype,
     };
+}
+
+public sealed record CaptureCoverageDto
+{
+    [JsonPropertyName("partition_id")]
+    public required string PartitionId { get; init; }
+    [JsonPropertyName("status")]
+    public required string Status { get; init; }
+}
+
+public sealed record CaptureCoverageSummaryDto
+{
+    [JsonPropertyName("expected")]
+    public int Expected { get; init; }
+    [JsonPropertyName("captured")]
+    public int Captured { get; init; }
+    [JsonPropertyName("reused")]
+    public int Reused { get; init; }
+    [JsonPropertyName("unavailable")]
+    public int Unavailable { get; init; }
+    [JsonPropertyName("unsupported")]
+    public int Unsupported { get; init; }
 }
 
 /// <summary>

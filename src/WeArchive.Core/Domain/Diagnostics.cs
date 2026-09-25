@@ -36,6 +36,12 @@ public static class DiagnosticCodes
     public const string VoiceDurationUnavailable = "voice_duration_unavailable";
     public const string SenderUnresolved = "sender_unresolved";
     public const string NoNewRecords = "no_new_records";
+    /// <summary>
+    /// Raw Vault capture could not prove incremental safety and widened to a full consistent
+    /// snapshot. The message states which precondition was missing; the code is stable across
+    /// all widening reasons so consumers can detect the fallback itself (Issue #25).
+    /// </summary>
+    public const string CaptureFullFallback = "capture_full_fallback";
     public const string ContentDecompressionFailed = "content_decompression_failed";
     public const string UnsupportedClientVersion = "unsupported_client_version";
 }

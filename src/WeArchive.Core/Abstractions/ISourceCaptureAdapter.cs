@@ -44,6 +44,17 @@ public interface ISourceCaptureAdapter
         CancellationToken cancellationToken);
 }
 
+/// <summary>Optional safe incremental path for source families that can prove unchanged partitions.</summary>
+public interface IIncrementalSourceCaptureAdapter : ISourceCaptureAdapter
+{
+    Task<SourceCaptureResult> CaptureIncrementalAsync(
+        string sourceProfileId,
+        IRawGenerationSession session,
+        RawGeneration previous,
+        IProgress<CaptureProgress>? progress,
+        CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// The outcome of one source-specific capture: the artifacts written, the diagnostics
 /// gathered and the completeness verdict. The <see cref="CaptureService"/> builds the manifest
@@ -54,6 +65,8 @@ public sealed record SourceCaptureResult
     public required IReadOnlyList<RawArtifactDescriptor> Artifacts { get; init; }
 
     public IReadOnlyList<RawManifestDiagnostic> Diagnostics { get; init; } = [];
+    public IReadOnlyList<RawPartitionCoverage> Coverage { get; init; } = [];
+    public RawCaptureMode Mode { get; init; } = RawCaptureMode.Baseline;
 
     public RawGenerationCompleteness Completeness { get; init; } = RawGenerationCompleteness.Complete;
 

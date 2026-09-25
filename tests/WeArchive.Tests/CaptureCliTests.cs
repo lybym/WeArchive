@@ -22,18 +22,27 @@ namespace WeArchive.Tests;
 /// </summary>
 public sealed class CaptureCliTests
 {
-    private static ServiceProvider BuildProvider(TempDirectory temp)
+    private static ServiceProvider BuildProvider(TempDirectory temp) =>
+        BuildProvider(temp, new FixtureCaptureAdapter(), new FixedClock());
+
+    /// <summary>
+    /// Same contract, but with a test-owned capture adapter and clock so incremental capture
+    /// (Issue #25) can be driven through the CLI across two runs.
+    /// </summary>
+    private static ServiceProvider BuildProvider(
+        TempDirectory temp,
+        ISourceCaptureAdapter captureAdapter,
+        IClock clock)
     {
         var fixture = new FixtureSourceAdapter();
-        var clock = new FixedClock();
         var archivePath = temp.Combine("archive.db");
         var vaultRoot = temp.Combine("vault");
 
         var services = new ServiceCollection();
         services.AddWeArchiveCore(archivePath, vaultRoot);
-        services.AddSingleton<IClock>(clock);
+        services.AddSingleton(clock);
         services.AddSingleton<ISourceAdapter>(fixture);
-        services.AddSingleton<ISourceCaptureAdapter, FixtureCaptureAdapter>();
+        services.AddSingleton(captureAdapter);
         return services.BuildServiceProvider();
     }
 
@@ -63,11 +72,73 @@ public sealed class CaptureCliTests
         Assert.Equal("complete", doc.RootElement.GetProperty("completeness").GetString());
         Assert.Equal(3, doc.RootElement.GetProperty("artifact_count").GetInt32());
         Assert.StartsWith("gen_", doc.RootElement.GetProperty("generation_id").GetString());
+        Assert.True(doc.RootElement.GetProperty("coverage_summary").TryGetProperty("expected", out _));
+        Assert.Equal(JsonValueKind.Array, doc.RootElement.GetProperty("coverage").ValueKind);
 
         // stdout must be exactly one JSON document with no trailing content.
         Assert.False(output.Contains('\n'));
         // stderr must be empty in --json mode (progress suppressed).
         Assert.Empty(stderr);
+    }
+
+    [Fact]
+    public async Task CaptureJsonReportsCoverageSummaryForUnsupportedPartition()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new SyntheticCaptureAdapter();
+        adapter.Partitions["session"] = "s1";
+        adapter.Partitions["media"] = "m1";
+        adapter.Unsupported.Add("media");
+        using var provider = BuildProvider(temp, adapter, new FixedClock());
+
+        var (exit, stdout, _) = await RunAsync(provider, ["capture", "--json", "--no-input"]);
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var doc = JsonDocument.Parse(stdout.TrimEnd());
+        Assert.Equal("baseline", doc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal("partial", doc.RootElement.GetProperty("completeness").GetString());
+        Assert.Equal(2, doc.RootElement.GetProperty("coverage").GetArrayLength());
+
+        var summary = doc.RootElement.GetProperty("coverage_summary");
+        Assert.Equal(2, summary.GetProperty("expected").GetInt32());
+        Assert.Equal(1, summary.GetProperty("captured").GetInt32());
+        Assert.Equal(0, summary.GetProperty("reused").GetInt32());
+        Assert.Equal(0, summary.GetProperty("unavailable").GetInt32());
+        Assert.Equal(1, summary.GetProperty("unsupported").GetInt32());
+
+        // The JSON contract never exposes the source fingerprint used to prove reuse safety.
+        Assert.DoesNotContain("s1", stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CaptureJsonReportsIncrementalReuseAfterCompleteBaseline()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new SyntheticCaptureAdapter();
+        adapter.Partitions["session"] = "s1";
+        adapter.Partitions["contact"] = "c1";
+        var clock = new FixedClock();
+        using var provider = BuildProvider(temp, adapter, clock);
+
+        var (firstExit, _, _) = await RunAsync(provider, ["capture", "--json", "--no-input"]);
+        Assert.Equal(ExitCode.Success, firstExit);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        adapter.Partitions["contact"] = "c2";
+        adapter.Partitions["message_0"] = "m1";
+        var (exit, stdout, _) = await RunAsync(provider, ["capture", "--json", "--no-input"]);
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var doc = JsonDocument.Parse(stdout.TrimEnd());
+        Assert.Equal("incremental", doc.RootElement.GetProperty("mode").GetString());
+        Assert.Equal("complete", doc.RootElement.GetProperty("completeness").GetString());
+
+        var summary = doc.RootElement.GetProperty("coverage_summary");
+        Assert.Equal(3, summary.GetProperty("expected").GetInt32());
+        Assert.Equal(2, summary.GetProperty("captured").GetInt32());
+        Assert.Equal(1, summary.GetProperty("reused").GetInt32());
+        Assert.Equal(0, summary.GetProperty("unavailable").GetInt32());
+        Assert.Equal(0, summary.GetProperty("unsupported").GetInt32());
     }
 
     [Fact]
