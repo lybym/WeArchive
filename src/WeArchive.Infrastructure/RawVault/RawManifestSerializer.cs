@@ -22,8 +22,8 @@ internal static class RawManifestSerializer
 
     /// <summary>
     /// Deserializes a manifest and validates its version. Returns null when the document is
-    /// not a valid manifest at a supported version, so the store can reject an incomplete or
-    /// tampered generation instead of discovering it (Issue #22 invalid-manifest rejection).
+    /// not a valid manifest at a supported version, allowing callers to fail closed for a
+    /// published generation rather than silently omitting its evidence (Issue #22 invalid-manifest rejection).
     /// </summary>
     public static RawManifest? TryDeserialize(string json)
     {

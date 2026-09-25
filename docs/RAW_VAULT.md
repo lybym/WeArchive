@@ -27,6 +27,15 @@ checks SQLite integrity, and only then replaces the selected canonical file. A f
 normalization or validation leaves the selected archive untouched. Rebuild never writes into
 Raw Vault generations; exports remain separate derived outputs.
 
+`wearchive ingest` incrementally imports verified Raw Vault generations into an existing
+canonical archive. It publishes one conversation at a time through the normal SQLite import
+transaction and commits that conversation's ingest checkpoint in the same transaction. An
+account-scope scan cursor separately records generation identities only after a complete
+account-wide scan, so retries can discover conversations left unimported and skip generations
+already fully examined. `--conversation` scopes the operation to one source conversation and
+does not advance the account scan cursor; `--replay` reprocesses preserved generations after a
+reader repair and invalidates prior scan coverage until the replay catches up.
+
 ## 2. Entities
 
 Conceptual entities (independent of the canonical archive schema):
@@ -190,8 +199,9 @@ No journal, commit marker or rollback ledger is persisted.
 
 ## 9. Generation discovery and validation
 
-- `ListGenerationsAsync(accountId)` — published generations ordered by capture time ascending.
-- `GetLatestGenerationAsync(accountId)` — the most recent published generation.
+- `ListGenerationsAsync(accountId)` — published generations ordered by their manifest
+  `previous_generation_id` lineage; capture time orders independent roots and breaks ties.
+- `GetLatestGenerationAsync(accountId)` — the last generation in publication-lineage order.
 - `OpenGenerationAsync(accountId, generationId)` — opens a generation for read-only inspection,
   verifying every artifact's SHA-256. A tampered or corrupted generation is rejected (returns
   null) rather than trusted.
@@ -214,14 +224,20 @@ that no key material appears in any manifest, artifact metadata or CLI output.
 - **Core** (`WeArchive.Core`): `RawManifest`, `RawArtifactDescriptor`, `IRawVaultStore`,
   `ISourceCaptureAdapter`, `CaptureService`. No WeChat schema details.
 - **Infrastructure/RawVault**: `RawVaultStore` (filesystem persistence),
-  `RawManifestSerializer`. Treats artifacts as opaque content.
+  `RawManifestSerializer`. Treats artifacts as opaque content and orders them by manifest lineage.
+- **Infrastructure**: `RawVaultIngestService` coordinates verified generations, generic source
+  adapter reads, conversation publication and scoped checkpoints.
 - **Infrastructure/WeChat**: `WeChatCaptureAdapter` — the only place WeChat database layout,
-  key acquisition and SQLCipher decryption live.
+  key acquisition and SQLCipher decryption live; the captured WeChat reader remains behind this
+  boundary.
 
 ## 12. CLI
 
 ```text
 wearchive capture [--account <id>]
+wearchive ingest --account <id> [--conversation <source-id>] [--replay]
 ```
 
-A thin adapter over `CaptureService`. See [CLI.md](CLI.md) for the full contract.
+`capture` is a thin adapter over `CaptureService`; `ingest` uses the Raw Vault as the read-only
+source and writes canonical conversations transactionally. See [CLI.md](CLI.md) for the full
+contract.

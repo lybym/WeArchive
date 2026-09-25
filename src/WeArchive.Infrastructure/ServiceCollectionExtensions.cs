@@ -34,6 +34,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IRawVaultStore>(sp => sp.GetRequiredService<RawVaultStore>());
         services.TryAddSingleton(sp => new RebuildService(
             sp.GetRequiredService<IRawVaultStore>(), archivePath, sp.GetRequiredService<IClock>()));
+        services.TryAddSingleton(sp => new RawVaultIngestService(
+            sp.GetRequiredService<IRawVaultStore>(), sp.GetRequiredService<IArchiveStore>(), sp.GetRequiredService<IClock>()));
         services.TryAddSingleton<IDatasetExporter, JsonlDatasetExporter>();
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();

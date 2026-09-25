@@ -19,6 +19,12 @@ public sealed record ImportRequest
 
     /// <summary>Expected record count, used only for progress reporting.</summary>
     public int? TotalHint { get; init; }
+
+    /// <summary>Optional Raw Vault progress to publish with this conversation transaction.</summary>
+    public IngestCheckpoint? IngestCheckpoint { get; init; }
+
+    /// <summary>Raw Vault ingestion rolls back the current conversation when cancelled.</summary>
+    public bool RollbackOnCancellation { get; init; }
 }
 
 public sealed record ImportOutcome
@@ -220,11 +226,20 @@ public sealed class ImportService(ISourceAdapter adapter, IArchiveStore archive,
 
                 // The source was read to the end, so the staged conversation may become the
                 // archive's record of it.
+                if (request.IngestCheckpoint is { } checkpoint)
+                    await session.SetIngestCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
                 await session.CommitAsync(CancellationToken.None).ConfigureAwait(false);
                 published = true;
             }
             catch (OperationCanceledException)
             {
+                if (request.RollbackOnCancellation)
+                {
+                    status = ImportRunStatus.Cancelled;
+                    await session.RollbackAsync().ConfigureAwait(false);
+                    throw;
+                }
+
                 // A deliberate stop keeps what was already read: archive writes are idempotent
                 // by stable ID, so a later full re-read completes the conversation without
                 // producing duplicates. That promise is what the UI shows on cancellation.

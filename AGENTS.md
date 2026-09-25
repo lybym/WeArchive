@@ -137,6 +137,6 @@ wearchive capture [--account <id>]
 
 Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 
-Current priority is **M1.5 — Raw Vault baseline capture and canonical rebuild** (Issues #22/#23; rebuild foundation delivered, milestone remains incomplete), then M1 incremental checkpoints and full partition-coverage reporting, then continue M2/M3/M4.
+Current priority is **M1.5 — Raw Vault baseline capture and canonical rebuild** (Issues #22/#23; foundation delivered, milestone remains incomplete), then remaining M1 work. Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; incremental live-source capture checkpoints and full partition-coverage reporting remain outstanding. Continue to M2/M3/M4 after M1 completion.
 
 The foundation must not be weakened: generic adapter contract, canonical message schema, normalized models, SQLite archive, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic JSONL export.

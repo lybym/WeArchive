@@ -7,7 +7,7 @@ namespace WeArchive.Infrastructure.Archive;
 /// </summary>
 internal static class ArchiveMigrations
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     public static IReadOnlyList<Migration> All { get; } =
     [
@@ -120,6 +120,21 @@ internal static class ArchiveMigrations
             );
             """,
             "CREATE UNIQUE INDEX ix_checkpoints_source ON source_checkpoints(account_id, adapter_name);",
+        ]),
+        new Migration(2, "conversation-scoped ingest checkpoints",
+        [
+            """
+            CREATE TABLE ingest_checkpoints (
+                id               TEXT PRIMARY KEY,
+                account_id       TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                adapter_family   TEXT NOT NULL,
+                scope_kind       TEXT NOT NULL,
+                scope_id         TEXT NOT NULL,
+                checkpoint_json  TEXT NOT NULL,
+                updated_at       TEXT NOT NULL
+            );
+            """,
+            "CREATE UNIQUE INDEX ix_ingest_checkpoints_scope ON ingest_checkpoints(account_id, adapter_family, scope_kind, scope_id);",
         ]),
     ];
 }

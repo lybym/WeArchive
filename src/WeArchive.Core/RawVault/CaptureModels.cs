@@ -57,6 +57,9 @@ public sealed record RawGenerationSummary
 
     public required int ArtifactCount { get; init; }
 
+    /// <summary>Stable fingerprint of manifest artifact identities and checksums, without reading artifact files.</summary>
+    public required string EvidenceFingerprint { get; init; }
+
     public string? PreviousGenerationId { get; init; }
 }
 

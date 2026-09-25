@@ -289,8 +289,10 @@ Responsibilities:
 - discover and validate published generations (checksum re-verification on open);
 - never inspect artifact internals — artifacts are opaque content objects.
 
-`RebuildService` is the only workflow that opens Raw Vault contents for semantic ingestion. It
-selects a captured-source reader in the WeChat Infrastructure boundary using manifest
+`RebuildService` and `RawVaultIngestService` are the workflows that open Raw Vault contents for
+semantic ingestion: rebuild consumes the selected snapshot, while incremental ingestion commits
+verified generations conversation by conversation. They select a captured-source reader in the
+WeChat Infrastructure boundary using manifest
 family/version and artifact format metadata. That reader reuses the existing WeChat 4.x parser
 and emits source-neutral records to the normalizer/import pipeline; it does not invoke live
 discovery, message reads or key acquisition. Rebuild initializes a fresh archive through normal
@@ -424,7 +426,7 @@ Rules:
 2. replay from an older checkpoint remains idempotent;
 3. adapter-version changes may explicitly invalidate checkpoints.
 
-Status: schema support exists, but the current importer does not yet consume/advance checkpoints.
+Raw Vault ingestion consumes verified generations in order and stores a versioned content cursor per conversation in the same SQLite transaction as that conversation's canonical publication. When a newer generation has unchanged conversation evidence, the content cursor remains unchanged; a scoped scan instead stores a separate `conversation_coverage` cursor transactionally without a second message import pass or a new import run. Account-wide scans store a separate account-scope cursor only after a full generation has been examined; scoped conversation imports do not advance that scan cursor. This separates changed content, scoped coverage and complete account discovery, allowing repeats to skip verified generations while later account-wide runs still discover conversations not yet imported. Captured participant metadata is refreshed from each opened generation. The legacy migration-1 `source_checkpoints` remains readable and is not reinterpreted.
 
 ## 11. Error model
 

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
@@ -112,17 +113,26 @@ public sealed class RawVaultStore : IRawVaultStore
                 continue;
             }
 
+            var generationId = Path.GetFileName(directory) ?? directory;
             var manifestPath = Path.Combine(directory, ManifestFile);
             if (!File.Exists(manifestPath))
+                throw new InvalidDataException(
+                    $"Published Raw Vault generation '{generationId}' has no manifest.");
+
+            RawManifest? manifest;
+            try
             {
-                continue;
+                manifest = await ReadManifestAsync(manifestPath).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidDataException(
+                    $"Published Raw Vault generation '{generationId}' manifest could not be read.", ex);
             }
 
-            var manifest = await ReadManifestAsync(manifestPath).ConfigureAwait(false);
             if (manifest is null)
-            {
-                continue;
-            }
+                throw new InvalidDataException(
+                    $"Published Raw Vault generation '{generationId}' has an invalid or unsupported manifest.");
 
             summaries.Add(new RawGenerationSummary
             {
@@ -131,14 +141,45 @@ public sealed class RawVaultStore : IRawVaultStore
                 CaptureTime = manifest.Capture.CaptureTime,
                 Completeness = manifest.Capture.Completeness,
                 ArtifactCount = manifest.Capture.ArtifactCount,
+                EvidenceFingerprint = ComputeEvidenceFingerprint(manifest.Artifacts),
                 PreviousGenerationId = manifest.PreviousGenerationId,
             });
         }
 
-        return summaries
-            .OrderBy(s => s.CaptureTime)
-            .ThenBy(s => s.GenerationId, StringComparer.Ordinal)
-            .ToList();
+        return OrderByLineage(summaries);
+    }
+
+    private static IReadOnlyList<RawGenerationSummary> OrderByLineage(IReadOnlyList<RawGenerationSummary> summaries)
+    {
+        var byId = summaries.ToDictionary(s => s.GenerationId, StringComparer.Ordinal);
+        var remaining = new HashSet<string>(byId.Keys, StringComparer.Ordinal);
+        var emitted = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<RawGenerationSummary>(summaries.Count);
+
+        while (remaining.Count > 0)
+        {
+            var next = remaining
+                .Select(id => byId[id])
+                .Where(summary => summary.PreviousGenerationId is null
+                    || !byId.ContainsKey(summary.PreviousGenerationId)
+                    || emitted.Contains(summary.PreviousGenerationId))
+                .OrderBy(summary => summary.CaptureTime)
+                .ThenBy(summary => summary.GenerationId, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            // A malformed cycle should not hide otherwise published evidence. Break it
+            // deterministically; manifest validation remains responsible for rejecting it.
+            next ??= remaining.Select(id => byId[id])
+                .OrderBy(summary => summary.CaptureTime)
+                .ThenBy(summary => summary.GenerationId, StringComparer.Ordinal)
+                .First();
+
+            ordered.Add(next);
+            remaining.Remove(next.GenerationId);
+            emitted.Add(next.GenerationId);
+        }
+
+        return ordered;
     }
 
     public async Task<RawGenerationSummary?> GetLatestGenerationAsync(
@@ -148,6 +189,15 @@ public sealed class RawVaultStore : IRawVaultStore
         var generations = await ListGenerationsAsync(accountId, cancellationToken)
             .ConfigureAwait(false);
         return generations.Count == 0 ? null : generations[^1];
+    }
+
+    private static string ComputeEvidenceFingerprint(IReadOnlyList<RawArtifactDescriptor> artifacts)
+    {
+        var identity = string.Join("\n", artifacts
+            .OrderBy(a => a.Role, StringComparer.Ordinal)
+            .ThenBy(a => a.Name, StringComparer.Ordinal)
+            .Select(a => $"{a.Role}\0{a.Name}\0{a.Sha256}"));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
     }
 
     public async Task<RawGeneration?> OpenGenerationAsync(
