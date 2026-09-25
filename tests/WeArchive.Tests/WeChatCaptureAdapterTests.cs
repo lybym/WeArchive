@@ -230,7 +230,12 @@ public sealed class WeChatCaptureAdapterTests
             if (!mutated && report.Total > 0 && report.Processed == report.Total)
             {
                 mutated = true;
-                File.WriteAllText(database, "changed-during-capture");
+
+                // A committed WAL appears after the artifact was written but before the
+                // consistency recheck. The WAL is part of the partition fingerprint, so the
+                // evidence just written no longer describes the current source state. (The
+                // database file itself is still open for the artifact copy at this point.)
+                File.WriteAllText(database + "-wal", "wal-after-snapshot");
             }
         });
 
@@ -514,6 +519,8 @@ public sealed class WeChatCaptureAdapterTests
 
     private sealed class RecordingKeyAcquirer : IWeChatDatabaseKeyAcquirer
     {
+        public string Name => "synthetic-key-acquirer";
+
         public int AcquireCount { get; private set; }
 
         public string? FailureMessage { get; set; }
