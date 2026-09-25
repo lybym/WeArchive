@@ -82,12 +82,14 @@ public sealed class CaptureCliTests
     }
 
     [Fact]
-    public async Task CaptureJsonReportsCoverageSummaryForUnsupportedPartition()
+    public async Task CaptureJsonReportsPartialCoverageSummaryWithoutSourceEvidence()
     {
         using var temp = new TempDirectory();
         var adapter = new SyntheticCaptureAdapter();
         adapter.Partitions["session"] = "s1";
+        adapter.Partitions["voice"] = "v1";
         adapter.Partitions["media"] = "m1";
+        adapter.Unreadable.Add("voice");
         adapter.Unsupported.Add("media");
         using var provider = BuildProvider(temp, adapter, new FixedClock());
 
@@ -97,17 +99,19 @@ public sealed class CaptureCliTests
         using var doc = JsonDocument.Parse(stdout.TrimEnd());
         Assert.Equal("baseline", doc.RootElement.GetProperty("mode").GetString());
         Assert.Equal("partial", doc.RootElement.GetProperty("completeness").GetString());
-        Assert.Equal(2, doc.RootElement.GetProperty("coverage").GetArrayLength());
+        Assert.Equal(3, doc.RootElement.GetProperty("coverage").GetArrayLength());
 
         var summary = doc.RootElement.GetProperty("coverage_summary");
-        Assert.Equal(2, summary.GetProperty("expected").GetInt32());
+        Assert.Equal(3, summary.GetProperty("expected").GetInt32());
         Assert.Equal(1, summary.GetProperty("captured").GetInt32());
         Assert.Equal(0, summary.GetProperty("reused").GetInt32());
-        Assert.Equal(0, summary.GetProperty("unavailable").GetInt32());
+        Assert.Equal(1, summary.GetProperty("unavailable").GetInt32());
         Assert.Equal(1, summary.GetProperty("unsupported").GetInt32());
 
-        // The JSON contract never exposes the source fingerprint used to prove reuse safety.
+        // The JSON contract never exposes the source fingerprints used to prove reuse safety.
         Assert.DoesNotContain("s1", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("v1", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("m1", stdout, StringComparison.Ordinal);
     }
 
     [Fact]

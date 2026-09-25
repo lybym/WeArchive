@@ -177,20 +177,26 @@ public sealed class IncrementalCaptureFlowTests
     }
 
     [Fact]
-    public async Task UnsupportedPartitionIsReportedWithoutAdvancingCheckpoint()
+    public async Task UnreadableAndUnsupportedPartitionsAreReportedWithoutAdvancingCheckpoint()
     {
         using var temp = new TempDirectory();
         var (service, vault, adapter, clock) = CreateHarness(temp.Combine("vault"));
 
         adapter.Partitions["A"] = "a";
+        adapter.Partitions["R"] = "r";
         adapter.Partitions["Z"] = "z";
+        adapter.Unreadable.Add("R");
         adapter.Unsupported.Add("Z");
 
         var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
         Assert.True(first.Succeeded);
         Assert.Equal(RawGenerationCompleteness.Partial, first.Completeness);
         Assert.Single(first.Coverage, c => c.PartitionId == "A" && c.Status == RawPartitionStatus.Captured);
+        Assert.Single(first.Coverage, c => c.PartitionId == "R" && c.Status == RawPartitionStatus.Unavailable);
         Assert.Single(first.Coverage, c => c.PartitionId == "Z" && c.Status == RawPartitionStatus.Unsupported);
+        Assert.All(
+            first.Coverage.Where(c => c.Status != RawPartitionStatus.Captured),
+            c => Assert.False(string.IsNullOrWhiteSpace(c.Diagnostic)));
 
         var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
         Assert.NotNull(generation1);
@@ -198,15 +204,17 @@ public sealed class IncrementalCaptureFlowTests
 
         // Without a checkpoint the following capture must read the whole source again.
         clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        adapter.Unreadable.Clear();
         adapter.Unsupported.Clear();
         var second = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
         Assert.True(second.Succeeded);
         Assert.Equal(RawCaptureMode.Baseline, second.Mode);
+        Assert.Equal(RawGenerationCompleteness.Complete, second.Completeness);
         Assert.Contains(second.Diagnostics, d => d.Code == DiagnosticCodes.CaptureFullFallback);
     }
 
     [Fact]
-    public async Task CancellationBeforePublicationLeavesPreviousCheckpointUnchanged()
+    public async Task CaughtAdapterFailureBeforePublicationLeavesPreviousCheckpointUnchanged()
     {
         using var temp = new TempDirectory();
         var (service, vault, adapter, clock) = CreateHarness(temp.Combine("vault"));
@@ -214,21 +222,22 @@ public sealed class IncrementalCaptureFlowTests
         adapter.Partitions["A"] = "a";
         var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
         Assert.True(first.Succeeded);
-        var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
-        Assert.NotNull(generation1);
 
         clock.UtcNow = clock.UtcNow.AddMinutes(1);
         adapter.Partitions["A"] = "a-changed";
+
+        // Caught cancellation propagates and publishes nothing.
         adapter.Failure = new OperationCanceledException("synthetic cancellation");
         await Assert.ThrowsAsync<OperationCanceledException>(
             () => service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None));
+        await AssertLatestCheckpointUnchangedAsync(vault, first);
 
-        var latest = await vault.GetLatestGenerationAsync(first.AccountId, CancellationToken.None);
-        Assert.NotNull(latest);
-        Assert.Equal(first.GenerationId, latest!.GenerationId);
-        var reopened = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
-        Assert.NotNull(reopened);
-        Assert.Equal(first.GenerationId, reopened!.Manifest.CaptureCheckpoint!.GenerationId);
+        // Caught source I/O failure is reported explicitly and also publishes nothing.
+        adapter.Failure = new IOException("synthetic source I/O failure");
+        var failed = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.False(failed.Succeeded);
+        Assert.Equal("synthetic source I/O failure", failed.FailureMessage);
+        await AssertLatestCheckpointUnchangedAsync(vault, first);
     }
 
     [Fact]
@@ -240,8 +249,6 @@ public sealed class IncrementalCaptureFlowTests
         adapter.Partitions["A"] = "a";
         var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
         Assert.True(first.Succeeded);
-        var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
-        Assert.NotNull(generation1);
 
         // The real store serves every read and write; only the publish step fails, so this
         // exercises a Fatal publication failure rather than a weakened immutability guard.
@@ -254,12 +261,22 @@ public sealed class IncrementalCaptureFlowTests
         Assert.False(second.Succeeded);
         Assert.Equal("synthetic generation publication failure", second.FailureMessage);
 
-        var latest = await vault.GetLatestGenerationAsync(first.AccountId, CancellationToken.None);
+        await AssertLatestCheckpointUnchangedAsync(vault, first);
+    }
+
+    /// <summary>
+    /// The previously published generation is still the latest and still carries the checkpoint
+    /// that was published with it: a failed run never produces a newer cursor.
+    /// </summary>
+    private static async Task AssertLatestCheckpointUnchangedAsync(RawVaultStore vault, CaptureResult expected)
+    {
+        var latest = await vault.GetLatestGenerationAsync(expected.AccountId, CancellationToken.None);
         Assert.NotNull(latest);
-        Assert.Equal(first.GenerationId, latest!.GenerationId);
-        var reopened = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
+        Assert.Equal(expected.GenerationId, latest!.GenerationId);
+
+        var reopened = await vault.OpenGenerationAsync(expected.AccountId, expected.GenerationId, CancellationToken.None);
         Assert.NotNull(reopened);
-        Assert.Equal(first.GenerationId, reopened!.Manifest.CaptureCheckpoint!.GenerationId);
+        Assert.Equal(expected.GenerationId, reopened!.Manifest.CaptureCheckpoint!.GenerationId);
     }
 
     private static (
