@@ -34,9 +34,9 @@ internal sealed record DecryptionOutcome(
 [SupportedOSPlatform("windows")]
 internal sealed class SqlCipherDatabaseCache : IDisposable
 {
-    private readonly WeChatKeySet _keys;
+    private readonly WeChatKeySet? _keys;
     private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly string _scratchRoot;
+    private readonly string? _scratchRoot;
     private bool _disposed;
 
     public SqlCipherDatabaseCache(WeChatKeySet keys)
@@ -49,6 +49,13 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             Guid.NewGuid().ToString("n"));
         Directory.CreateDirectory(_scratchRoot);
     }
+
+    private SqlCipherDatabaseCache()
+    {
+    }
+
+    /// <summary>Opens preserved plaintext database images without any source key path.</summary>
+    public static SqlCipherDatabaseCache ForCapturedPlaintext() => new();
 
     public DecryptionOutcome GetPlaintext(string encryptedPath)
     {
@@ -86,13 +93,13 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             return new DecryptionOutcome(path, header.Length / SqlCipherPageCipher.PageSize, 0, 0, true);
         }
 
-        if (!_keys.TryResolve(path, out var key))
+        if (_keys is null || !_keys.TryResolve(path, out var key))
         {
             throw new WeChatKeyUnavailableException(
                 $"No verified database key is available for '{Path.GetFileName(path)}'.");
         }
 
-        var target = Path.Combine(_scratchRoot, Guid.NewGuid().ToString("n") + ".db");
+        var target = Path.Combine(_scratchRoot!, Guid.NewGuid().ToString("n") + ".db");
         var pageCount = 0;
         var applied = 0;
         var rejected = 0;
@@ -285,7 +292,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
 
         try
         {
-            if (Directory.Exists(_scratchRoot))
+            if (_scratchRoot is not null && Directory.Exists(_scratchRoot))
             {
                 Directory.Delete(_scratchRoot, recursive: true);
             }

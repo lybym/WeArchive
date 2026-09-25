@@ -68,6 +68,9 @@ public sealed class CommandRouter
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<CaptureService>()),
                 "Capture an account into a Raw Vault generation."),
+            ["rebuild"] = new(sp => new Commands.RebuildCommand(
+                sp.GetRequiredService<WeArchive.Infrastructure.RebuildService>()),
+                "Rebuild the canonical archive from Raw Vault evidence."),
         };
     }
 

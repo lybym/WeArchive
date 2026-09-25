@@ -206,6 +206,7 @@ public sealed class CliContractTests
             .ToList();
         Assert.Contains("version", commands);
         Assert.Contains("doctor", commands);
+        Assert.Contains("rebuild", commands);
 
         var options = doc.RootElement.GetProperty("options")
             .EnumerateArray()

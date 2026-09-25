@@ -39,10 +39,18 @@ internal sealed record WeChatMessageRow(
 [SupportedOSPlatform("windows")]
 internal sealed class WeChatAccountReader(
     WeChatAccountLocation account,
-    SqlCipherDatabaseCache cache)
+    SqlCipherDatabaseCache cache,
+    string? capturedSessionPath = null,
+    string? capturedContactPath = null,
+    IReadOnlyList<string>? capturedMessagePaths = null,
+    IReadOnlyDictionary<string, string>? capturedPartitions = null)
 {
     private readonly WeChatAccountLocation _account = account;
     private readonly SqlCipherDatabaseCache _cache = cache;
+    private readonly string? _capturedSessionPath = capturedSessionPath;
+    private readonly string? _capturedContactPath = capturedContactPath;
+    private readonly IReadOnlyList<string>? _capturedMessagePaths = capturedMessagePaths;
+    private readonly IReadOnlyDictionary<string, string>? _capturedPartitions = capturedPartitions;
     private Dictionary<string, WeChatContactRow>? _contacts;
     private List<WeChatSessionRow>? _sessions;
     private Dictionary<string, string>? _messageShardByTable;
@@ -62,7 +70,7 @@ internal sealed class WeChatAccountReader(
             return _sessions;
         }
 
-        var path = WeChatDataLocator.SessionDatabase(_account);
+        var path = _capturedSessionPath ?? WeChatDataLocator.SessionDatabase(_account);
         _sessions = [];
         if (!File.Exists(path))
         {
@@ -103,7 +111,7 @@ internal sealed class WeChatAccountReader(
         }
 
         _contacts = new Dictionary<string, WeChatContactRow>(StringComparer.Ordinal);
-        var path = WeChatDataLocator.ContactDatabase(_account);
+        var path = _capturedContactPath ?? WeChatDataLocator.ContactDatabase(_account);
         if (!File.Exists(path))
         {
             return _contacts;
@@ -172,7 +180,7 @@ internal sealed class WeChatAccountReader(
     private Dictionary<string, string> BuildShardIndex()
     {
         var index = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var shard in WeChatDataLocator.MessageDatabases(_account))
+        foreach (var shard in _capturedMessagePaths ?? WeChatDataLocator.MessageDatabases(_account))
         {
             try
             {
@@ -280,7 +288,10 @@ internal sealed class WeChatAccountReader(
                     "The source provided no readable records for this conversation.");
         }
 
-        var partition = Path.GetFileNameWithoutExtension(shard.Value.ShardPath);
+        var partition = _capturedPartitions is not null
+            && _capturedPartitions.TryGetValue(shard.Value.ShardPath, out var capturedPartition)
+                ? capturedPartition
+                : Path.GetFileNameWithoutExtension(shard.Value.ShardPath);
         using var connection = Open(shard.Value.ShardPath);
         using var command = connection.CreateCommand();
         command.CommandText =

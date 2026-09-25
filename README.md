@@ -69,6 +69,7 @@ The difficult archive/source/export engine is already implemented:
 - reply/quote, forwarded bundle, link/app-share and provenance handling;
 - SQLite archive with migrations and idempotent import behavior;
 - Raw Vault baseline capture — source-faithful, immutable generations with SHA-256 checksums, readable without the WeChat key ([RAW_VAULT.md](docs/RAW_VAULT.md));
+- Raw-Vault-only canonical rebuild with a WeChat 4.x captured-source reader and validated archive replacement;
 - deterministic machine export to monthly JSONL plus YAML/JSON catalogs;
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
@@ -83,6 +84,7 @@ Current anchors:
 
 - **Phase 1 Export = R1** — normal success publishes complete new output; caught cancellation/I/O failure attempts in-process restoration; process crash and OS/power loss are not guaranteed. SQLite is the system of record, so export can be regenerated.
 - **Raw Vault capture = R1** — normal success publishes one complete generation; a Fatal failure or cancellation discards staged material and publishes nothing. No journal or commit marker is persisted.
+- **Canonical rebuild** — builds and validates a fresh migrated archive before replacing the selected database; process-crash and power-loss recovery are not guaranteed and no persistent recovery journal is used.
 - **Conversation Import = R2** — a Fatal source-coverage failure rolls back the entire conversation transaction.
 - **R3+** — persistent journals, commit markers, recovery ledgers or complex crash-recovery state machines require an explicit product requirement before implementation.
 

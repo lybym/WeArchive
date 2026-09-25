@@ -20,6 +20,8 @@ public sealed record RawManifest
     /// </summary>
     public const int CurrentManifestVersion = 1;
 
+    public const int CurrentVaultFormatVersion = 1;
+
     public int ManifestVersion { get; init; } = CurrentManifestVersion;
 
     /// <summary>
@@ -27,7 +29,7 @@ public sealed record RawManifest
     /// <see cref="ManifestVersion"/>: the manifest may evolve without changing how artifacts
     /// are laid out on disk, and vice versa.
     /// </summary>
-    public int VaultFormatVersion { get; init; } = 1;
+    public int VaultFormatVersion { get; init; } = CurrentVaultFormatVersion;
 
     public required string GenerationId { get; init; }
 

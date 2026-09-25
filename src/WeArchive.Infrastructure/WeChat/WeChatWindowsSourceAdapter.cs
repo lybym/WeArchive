@@ -37,6 +37,8 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
     private string? _keyFailure;
     private IReadOnlyList<WeChatInstallation>? _installations;
     private readonly Dictionary<string, WeChatAccountReader> _readers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SourceAccount? _capturedAccount;
+    private readonly SourceDescriptor? _capturedDescriptor;
     private bool _disposed;
 
     public WeChatWindowsSourceAdapter()
@@ -49,12 +51,24 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
         _keyAcquirer = keyAcquirer ?? throw new ArgumentNullException(nameof(keyAcquirer));
     }
 
+    internal WeChatWindowsSourceAdapter(SourceAccount capturedAccount, SourceDescriptor capturedDescriptor, WeChatAccountReader capturedReader, SqlCipherDatabaseCache capturedCache)
+        : this(new WcdbCipherConfigKeyAcquirer())
+    {
+        _capturedAccount = capturedAccount;
+        _capturedDescriptor = capturedDescriptor;
+        _cache = capturedCache;
+        _readers.Add(capturedAccount.SourceProfileId, capturedReader);
+    }
+
     public string AdapterName => Name;
 
     public string AdapterVersion => Version;
 
     public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken)
     {
+        if (_capturedDescriptor is not null)
+            return Task.FromResult(_capturedDescriptor);
+
         var installations = Discover();
         var (clientVersion, _) = WeChatClient.DetectInstallation();
         var diagnostics = new List<ImportDiagnostic>();
@@ -104,6 +118,9 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
 
     public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken)
     {
+        if (_capturedAccount is not null)
+            return Task.FromResult<IReadOnlyList<SourceAccount>>([_capturedAccount]);
+
         var accounts = Discover()
             .SelectMany(installation => installation.Accounts.Select(account => new SourceAccount
             {
@@ -312,6 +329,9 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
             {
                 return existing;
             }
+
+            if (_capturedDescriptor is not null)
+                throw new InvalidOperationException("The captured generation does not contain the requested source profile.");
 
             var account = Discover()
                 .SelectMany(i => i.Accounts)
