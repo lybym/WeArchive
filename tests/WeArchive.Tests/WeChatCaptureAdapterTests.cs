@@ -62,7 +62,8 @@ public sealed class WeChatCaptureAdapterTests
         Assert.Equal(1, keys.AcquireCount);
         Assert.Equal(1, environment.CreateMaterializerCalls);
         Assert.Equal(2, environment.GetPlaintextCalls);
-        Assert.True(sourceBefore.SequenceEqual(await File.ReadAllBytesAsync(session)));
+        var sourceAfter = await File.ReadAllBytesAsync(session);
+        Assert.True(sourceBefore.SequenceEqual(sourceAfter));
 
         // The checkpoint advanced to the new generation; the previous generation is untouched.
         var generation1 = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
