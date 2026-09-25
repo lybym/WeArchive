@@ -864,6 +864,32 @@ public sealed class SqliteArchiveStore : IArchiveStore
         });
     }
 
+    public Task SetIngestCheckpointAsync(IngestCheckpoint checkpoint, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO ingest_checkpoints (id, account_id, adapter_family, scope_kind, scope_id, checkpoint_json, updated_at)
+            VALUES ($id, $account, $family, $kind, $scope, $json, $updated)
+            ON CONFLICT(account_id, adapter_family, scope_kind, scope_id) DO UPDATE SET
+                checkpoint_json=excluded.checkpoint_json, updated_at=excluded.updated_at;
+            """;
+        command.Parameters.AddWithValue("$id", checkpoint.Id);
+        command.Parameters.AddWithValue("$account", checkpoint.AccountId);
+        command.Parameters.AddWithValue("$family", checkpoint.AdapterFamily);
+        command.Parameters.AddWithValue("$kind", checkpoint.ScopeKind);
+        command.Parameters.AddWithValue("$scope", checkpoint.ScopeId);
+        command.Parameters.AddWithValue("$json", checkpoint.CheckpointJson);
+        command.Parameters.AddWithValue("$updated", Format(checkpoint.UpdatedAt));
+        command.ExecuteNonQuery();
+        transaction.Commit();
+        return Task.CompletedTask;
+    }
+
     private SqliteConnection Open()
     {
         var connection = new SqliteConnection(_connectionString);

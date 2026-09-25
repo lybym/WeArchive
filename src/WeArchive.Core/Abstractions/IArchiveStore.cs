@@ -82,6 +82,9 @@ public interface IArchiveStore
 
     Task<IngestCheckpoint?> GetIngestCheckpointAsync(
         string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken);
+
+    /// <summary>Persists an account-level scan cursor after every conversation in a generation was examined.</summary>
+    Task SetIngestCheckpointAsync(IngestCheckpoint checkpoint, CancellationToken cancellationToken);
 }
 
 /// <summary>Injectable time source so that exports and runs stay testable and deterministic.</summary>

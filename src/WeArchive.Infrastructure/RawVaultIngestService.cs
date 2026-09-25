@@ -11,6 +11,7 @@ namespace WeArchive.Infrastructure;
 public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore archive, IClock clock)
 {
     private const string ScopeKind = "conversation";
+    private const string AccountScopeKind = "account";
     private readonly IRawVaultStore _rawVault = rawVault ?? throw new ArgumentNullException(nameof(rawVault));
     private readonly IArchiveStore _archive = archive ?? throw new ArgumentNullException(nameof(archive));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -27,11 +28,14 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         // The checkpoint catalog lets an unchanged repeat return before any generation's
         // artifacts are opened. Per-conversation fingerprints below distinguish changed source
         // records after a newer generation is opened.
-        var knownConversations = await _archive.ListConversationsAsync(accountId, cancellationToken).ConfigureAwait(false);
-        var selectedKnown = SelectScopes(knownConversations, sourceConversationId);
         var currentReaderVersion = WeChatWindowsSourceAdapter.Version;
-        if (!replay && selectedKnown.Count > 0
-            && await AllAtLatestGenerationAsync(accountId, selectedKnown, generations[^1], currentReaderVersion, cancellationToken).ConfigureAwait(false))
+        var accountScanCheckpoint = sourceConversationId is null
+            ? await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, AccountScopeKind, accountId, cancellationToken).ConfigureAwait(false)
+            : null;
+        var accountScan = ReadCheckpoint(accountScanCheckpoint?.CheckpointJson);
+        var accountScanIndex = IndexOfGeneration(generations, accountScan.GenerationId);
+        if (!replay && sourceConversationId is null && accountScan.ReaderVersion == currentReaderVersion
+            && accountScanIndex == generations.Count - 1)
             return 0;
 
         var processed = 0;
@@ -40,8 +44,8 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         {
             cancellationToken.ThrowIfCancellationRequested();
             var generationIndex = IndexOfGeneration(generations, summary.GenerationId);
-            if (!replay && selectedKnown.Count > 0
-                && await AllPastCheckpointAsync(accountId, selectedKnown, generations, generationIndex, currentReaderVersion, cancellationToken).ConfigureAwait(false))
+            if (!replay && sourceConversationId is null && accountScan.ReaderVersion == currentReaderVersion
+                && accountScanIndex >= generationIndex)
                 continue;
 
             // Covered history is skipped using each conversation's committed generation cursor.
@@ -66,6 +70,9 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 var checkpoint = await _archive.GetIngestCheckpointAsync(accountId, generation.Manifest.Capture.CaptureAdapterFamily,
                     ScopeKind, conversationId, cancellationToken).ConfigureAwait(false);
                 var state = ReadCheckpoint(checkpoint?.CheckpointJson);
+                var checkpointIndex = IndexOfGeneration(generations, state.GenerationId);
+                if (!replay && state.ReaderVersion == adapter.AdapterVersion && checkpointIndex >= generationIndex)
+                    continue;
                 var detail = await adapter.DescribeConversationAsync(account.SourceProfileId, conversation.SourceConversationId, cancellationToken).ConfigureAwait(false);
                 var evidenceFingerprint = await FingerprintConversationAsync(adapter, account.SourceProfileId,
                     conversation, detail, cancellationToken).ConfigureAwait(false);
@@ -104,40 +111,34 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 processed++;
                 progress?.Report($"Ingested {conversationId} from generation {summary.GenerationId}");
             }
+
+            if (!replay && sourceConversationId is null)
+            {
+                var scanCheckpoint = new IngestCheckpoint
+                {
+                    Id = "ingest_" + Guid.NewGuid().ToString("N"),
+                    AccountId = accountId,
+                    AdapterFamily = generation.Manifest.Capture.CaptureAdapterFamily,
+                    ScopeKind = AccountScopeKind,
+                    ScopeId = accountId,
+                    CheckpointJson = JsonSerializer.Serialize(new
+                    {
+                        version = 1,
+                        reader_version = adapter.AdapterVersion,
+                        generation_id = summary.GenerationId,
+                        evidence_fingerprint = "complete_account_scan",
+                    }),
+                    UpdatedAt = _clock.UtcNow,
+                };
+                await _archive.SetIngestCheckpointAsync(scanCheckpoint, cancellationToken).ConfigureAwait(false);
+                accountScan = ReadCheckpoint(scanCheckpoint.CheckpointJson);
+                accountScanIndex = generationIndex;
+            }
         }
 
         if (sourceConversationId is not null && !foundSelectedConversation)
             throw new InvalidOperationException($"Conversation '{sourceConversationId}' was not found in Raw Vault account '{accountId}'.");
         return processed;
-    }
-
-    private async Task<bool> AllAtLatestGenerationAsync(string accountId, IReadOnlyList<ArchiveConversation> conversations,
-        Core.RawVault.RawGenerationSummary latest, string readerVersion, CancellationToken cancellationToken)
-    {
-        foreach (var conversation in conversations)
-        {
-            var checkpoint = await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
-                ScopeKind, conversation.Id, cancellationToken).ConfigureAwait(false);
-            var state = ReadCheckpoint(checkpoint?.CheckpointJson);
-            if (state.ReaderVersion != readerVersion || state.GenerationId != latest.GenerationId) return false;
-        }
-        return true;
-    }
-
-    private async Task<bool> AllPastCheckpointAsync(string accountId, IReadOnlyList<ArchiveConversation> conversations,
-        IReadOnlyList<Core.RawVault.RawGenerationSummary> generations, int generationIndex, string readerVersion,
-        CancellationToken cancellationToken)
-    {
-        foreach (var conversation in conversations)
-        {
-            var checkpoint = await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
-                ScopeKind, conversation.Id, cancellationToken).ConfigureAwait(false);
-            var state = ReadCheckpoint(checkpoint?.CheckpointJson);
-            if (state.ReaderVersion != readerVersion) return false;
-            var checkpointIndex = IndexOfGeneration(generations, state.GenerationId);
-            if (checkpointIndex < generationIndex) return false;
-        }
-        return conversations.Count > 0;
     }
 
     private static int IndexOfGeneration(IReadOnlyList<Core.RawVault.RawGenerationSummary> generations, string? generationId)
@@ -166,12 +167,6 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         hash.AppendData(length);
         hash.AppendData(value);
     }
-
-    private static IReadOnlyList<ArchiveConversation> SelectScopes(
-        IReadOnlyList<ArchiveConversation> conversations, string? sourceConversationId) =>
-        sourceConversationId is null
-            ? conversations
-            : conversations.Where(c => string.Equals(c.SourceConversationId, sourceConversationId, StringComparison.Ordinal)).ToArray();
 
     private static (string? ReaderVersion, string? GenerationId, string? Fingerprint) ReadCheckpoint(string? checkpointJson)
     {

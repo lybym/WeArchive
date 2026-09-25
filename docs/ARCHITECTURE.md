@@ -424,7 +424,7 @@ Rules:
 2. replay from an older checkpoint remains idempotent;
 3. adapter-version changes may explicitly invalidate checkpoints.
 
-Raw Vault ingestion consumes verified generations in order and stores one versioned generation cursor per conversation. The cursor is committed in the same SQLite transaction as that conversation's canonical publication. The legacy migration-1 `source_checkpoints` remains readable and is not reinterpreted.
+Raw Vault ingestion consumes verified generations in order and stores a versioned content cursor per conversation in the same SQLite transaction as that conversation's canonical publication. Account-wide scans also store a separate account-scope cursor only after a full generation has been examined; scoped conversation imports do not advance that scan cursor. This separates per-conversation publication from complete account discovery and allows a later account-wide retry to find conversations not yet imported. The legacy migration-1 `source_checkpoints` remains readable and is not reinterpreted.
 
 ## 11. Error model
 

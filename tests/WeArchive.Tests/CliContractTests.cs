@@ -678,5 +678,8 @@ public sealed class CliContractTests
 
         public Task<IngestCheckpoint?> GetIngestCheckpointAsync(string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
+
+        public Task SetIngestCheckpointAsync(IngestCheckpoint checkpoint, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
     }
 }

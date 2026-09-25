@@ -482,9 +482,11 @@ Rules:
 
 ### 14.1 IngestCheckpoint
 
-Migration 2 records Raw Vault to canonical progress independently for each account, adapter family and scope. The initial supported scope kind is `conversation`; `scope_id` is the stable canonical conversation ID. `checkpoint_json` is an opaque, versioned cursor containing the last fully published Raw Vault generation ID, a manifest-derived evidence fingerprint, and the executing reader version. It contains no source database key or message content. A reader upgrade invalidates older cursors; `wearchive ingest --replay` also allows parser repair to replay preserved generations without live recapture. Manifest fingerprints allow covered generations to be skipped before opening artifact files, while changed generations are still checksum-validated before ingestion.
+Migration 2 records Raw Vault to canonical progress independently for each account, adapter family and scope. Conversation scope rows use `scope_kind=conversation`; `scope_id` is the stable canonical conversation ID. Their opaque, versioned cursor contains the last fully published Raw Vault generation ID, a fingerprint of that conversation's source metadata and messages, and the executing reader version. It contains no source database key or message content. A reader upgrade invalidates older cursors; `wearchive ingest --replay` also allows parser repair to replay preserved generations without live recapture.
 
-The checkpoint is upserted inside the same SQLite transaction as that conversation's canonical publication. Fatal source/identity/coverage errors and caught cancellation roll back both. Replaying a generation remains idempotent by canonical stable message ID and content hash. Migration 2 does not backfill from `source_checkpoints`.
+Account scope rows use `scope_kind=account` and the stable account ID as `scope_id`. This cursor records the latest generation fully scanned by an account-wide ingest, after every conversation in that generation was either published or found unchanged. A scoped `--conversation` ingest never advances it. This lets a later account-wide run discover conversations not yet imported and lets completed generations be skipped even when one unchanged conversation's publication checkpoint remains at an older generation.
+
+Each conversation checkpoint is upserted inside the same SQLite transaction as that conversation's canonical publication. Fatal source/identity/coverage errors and caught cancellation roll back both. The account scan cursor is written only after the generation scan completes; interruption before that write causes a safe retry. Replaying a generation remains idempotent by canonical stable message ID and content hash. Migration 2 does not backfill from `source_checkpoints`.
 
 ## 15. SourceArtifact / provenance
 
@@ -569,7 +571,7 @@ are valid data.
 - Backward-incompatible archive changes require a documented migration path.
 - Export and message schemas are independently versioned in `manifest.json`.
 
-Migration 1 creates the initial canonical schema. Migration 2 adds conversation-scoped `ingest_checkpoints`; it leaves migration-1 `source_checkpoints` and all existing archive rows untouched.
+Migration 1 creates the initial canonical schema. Migration 2 adds scoped `ingest_checkpoints`; it leaves migration-1 `source_checkpoints` and all existing archive rows untouched.
 
 ## 19. Search indexing
 

@@ -222,7 +222,7 @@ public sealed class RebuildServiceTests
         var checkpointBBefore = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
             "conversation", conversationB.Id, CancellationToken.None);
 
-        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
+        var middle = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
         Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
 
@@ -232,10 +232,34 @@ public sealed class RebuildServiceTests
         Assert.Equal("A changed", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
         Assert.Equal("B stable", Assert.Single(await archive.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
 
+        var middleArtifact = Path.Combine(middle.GenerationDirectory, middle.Manifest.Artifacts[0].ContentRef);
+        await using (var stream = new FileStream(middleArtifact, FileMode.Append, FileAccess.Write, FileShare.Read))
+            await stream.WriteAsync(new byte[] { 0x01 });
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A newest", "reader-1", CapturedAt.AddHours(2),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
         Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
         Assert.Equal("A newest", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
+    }
+
+    [Fact]
+    public async Task RawVaultAccountIngestDiscoversUnimportedConversationAfterScopedIngest()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A scoped", "reader-1", CapturedAt,
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B pending");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+
+        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_a", null, CancellationToken.None));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var conversations = await archive.ListConversationsAsync(accountId, CancellationToken.None);
+        Assert.Equal(2, conversations.Count);
+        var messageSets = await Task.WhenAll(conversations.Select(c => archive.ReadMessagesAsync(c.Id, CancellationToken.None)));
+        Assert.Contains(messageSets.SelectMany(m => m), m => m.Text == "A scoped");
+        Assert.Contains(messageSets.SelectMany(m => m), m => m.Text == "B pending");
     }
 
     private static async Task<RawGeneration> PublishGenerationAsync(
