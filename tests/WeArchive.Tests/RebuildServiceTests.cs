@@ -386,6 +386,57 @@ public sealed class RebuildServiceTests
     }
 
     [Fact]
+    public async Task RawVaultScopedReplayCancellationInvalidatesNewerCoverageBeforeRetry()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var first = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A", "reader-1", CapturedAt,
+            conversationId: "wxid_bob");
+        var second = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "B", "reader-1", CapturedAt.AddHours(1),
+            conversationId: "wxid_bob");
+        var third = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "B", "reader-1", CapturedAt.AddHours(2),
+            conversationId: "wxid_bob");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+
+        Assert.Equal(2, await ingester.IngestAsync(accountId, "wxid_bob", null, CancellationToken.None));
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("B", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+        var coverage = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation_coverage", conversation.Id, CancellationToken.None);
+        Assert.NotNull(coverage);
+        Assert.Contains(third.GenerationId, coverage.CheckpointJson, StringComparison.Ordinal);
+
+        using var cancellation = new CancellationTokenSource();
+        var progress = new CallbackProgress<string>(message =>
+        {
+            if (message == $"Ingested {conversation.Id} from generation {first.GenerationId}")
+                cancellation.Cancel();
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ingester.IngestAsync(accountId, "wxid_bob", progress, cancellation.Token, replay: true));
+
+        Assert.Equal("A", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+        var invalidatedCoverage = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation_coverage", conversation.Id, CancellationToken.None);
+        Assert.NotNull(invalidatedCoverage);
+        Assert.Contains("coverage_invalidated", invalidatedCoverage.CheckpointJson, StringComparison.Ordinal);
+
+        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_bob", null, CancellationToken.None));
+        Assert.Equal("B", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+        var contentCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversation.Id, CancellationToken.None);
+        Assert.NotNull(contentCheckpoint);
+        Assert.Contains(second.GenerationId, contentCheckpoint.CheckpointJson, StringComparison.Ordinal);
+        var retriedCoverage = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation_coverage", conversation.Id, CancellationToken.None);
+        Assert.NotNull(retriedCoverage);
+        Assert.Contains(third.GenerationId, retriedCoverage.CheckpointJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RawVaultIngestRefreshesParticipantMetadataFromContactOnlyGeneration()
     {
         using var temp = new TempDirectory();

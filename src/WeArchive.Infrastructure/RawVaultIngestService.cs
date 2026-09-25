@@ -61,6 +61,24 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
             : await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
                 ConversationCoverageScopeKind, selectedConversation.Id, cancellationToken).ConfigureAwait(false);
         var selectedCoverageState = ReadCheckpoint(selectedCoverageCheckpoint?.CheckpointJson);
+        if (replay)
+        {
+            // A replay can publish an older generation before it reaches the current tip.
+            // Invalidate unchanged-evidence cursors first so cancellation cannot leave a newer
+            // coverage cursor in place and make a normal retry skip content that replay rolled back.
+            var conversationsToInvalidate = sourceConversationId is null
+                ? await _archive.ListConversationsAsync(accountId, cancellationToken).ConfigureAwait(false)
+                : selectedConversation is null ? [] : [selectedConversation];
+            foreach (var conversation in conversationsToInvalidate)
+            {
+                var invalidatedCoverage = CreateConversationCoverageCheckpoint(accountId,
+                    WeChatCaptureAdapter.Family, conversation.Id, currentReaderVersion, "", "coverage_invalidated",
+                    _clock.UtcNow);
+                await CommitCoverageCheckpointAsync(conversation, invalidatedCoverage, cancellationToken).ConfigureAwait(false);
+                if (selectedConversation?.Id == conversation.Id)
+                    selectedCoverageState = ReadCheckpoint(invalidatedCoverage.CheckpointJson);
+            }
+        }
         if (!replay && sourceConversationId is not null && knownSelectedConversation
             && accountScan.ReaderVersion == currentReaderVersion
             && generations.All(generation => accountScan.CoveredGenerationIds.Contains(generation.GenerationId)))
