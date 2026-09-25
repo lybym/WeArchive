@@ -307,6 +307,29 @@ public sealed class RebuildServiceTests
         Assert.Equal("newer evidence", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
     }
 
+    [Fact]
+    public async Task RawVaultScopedIngestSkipsCommittedHistoryBeforeOpeningArtifacts()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var older = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "older scoped data", "reader-1", CapturedAt);
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+
+        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_bob", null, CancellationToken.None));
+        var oldArtifact = Path.Combine(older.GenerationDirectory, older.Manifest.Artifacts[0].ContentRef);
+        await using (var stream = new FileStream(oldArtifact, FileMode.Append, FileAccess.Write, FileShare.Read))
+            await stream.WriteAsync(new byte[] { 0x01 });
+
+        Assert.Equal(0, await ingester.IngestAsync(accountId, "wxid_bob", null, CancellationToken.None));
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "new scoped data", "reader-1", CapturedAt.AddHours(1));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_bob", null, CancellationToken.None));
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("new scoped data", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,

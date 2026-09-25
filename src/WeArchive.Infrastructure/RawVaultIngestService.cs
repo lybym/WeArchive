@@ -45,9 +45,16 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
             return 0;
 
         var processed = 0;
-        var knownSelectedConversation = sourceConversationId is not null
-            && (await _archive.ListConversationsAsync(accountId, cancellationToken).ConfigureAwait(false))
-                .Any(conversation => string.Equals(conversation.SourceConversationId, sourceConversationId, StringComparison.Ordinal));
+        var selectedConversation = sourceConversationId is null
+            ? null
+            : (await _archive.ListConversationsAsync(accountId, cancellationToken).ConfigureAwait(false))
+                .FirstOrDefault(conversation => string.Equals(conversation.SourceConversationId, sourceConversationId, StringComparison.Ordinal));
+        var knownSelectedConversation = selectedConversation is not null;
+        var selectedCheckpoint = selectedConversation is null
+            ? null
+            : await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, ScopeKind,
+                selectedConversation.Id, cancellationToken).ConfigureAwait(false);
+        var selectedState = ReadCheckpoint(selectedCheckpoint?.CheckpointJson);
         if (!replay && sourceConversationId is not null && knownSelectedConversation
             && accountScan.ReaderVersion == currentReaderVersion
             && generations.All(generation => accountScan.CoveredGenerationIds.Contains(generation.GenerationId)))
@@ -57,9 +64,15 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         foreach (var summary in generations)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!replay && sourceConversationId is null && accountScan.ReaderVersion == currentReaderVersion
-                && accountScan.CoveredGenerationIds.Contains(summary.GenerationId))
-                continue;
+            if (!replay)
+            {
+                if (accountScan.ReaderVersion == currentReaderVersion
+                    && accountScan.CoveredGenerationIds.Contains(summary.GenerationId))
+                    continue;
+                if (sourceConversationId is not null && selectedState.ReaderVersion == currentReaderVersion
+                    && IsAncestorOrSelf(generationsById, summary.GenerationId, selectedState.GenerationId))
+                    continue;
+            }
 
             // Covered history is skipped using each conversation's committed generation cursor.
             // Newer generations are opened and validated; unchanged conversations are fingerprinted

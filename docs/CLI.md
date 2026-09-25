@@ -441,12 +441,14 @@ Ingests verified Raw Vault generations into the existing canonical archive. It r
 evidence only and does not contact live WeChat. By default it processes all conversations for the
 selected Raw Vault account; `--conversation` limits the operation to one upstream conversation
 ID. Each conversation's canonical writes and generation checkpoint commit in one SQLite
-transaction. Manifest artifact fingerprints let repeated runs skip covered generations before
-opening their artifacts. Changed/new generations and conversations are discovered by validating
-the changed generation; older evidence for a conversation missing from a later generation remains
-retained. A caught cancellation rolls back the current conversation and leaves its checkpoint
-unchanged. `--replay` deliberately reprocesses preserved generations for parser repair without
-recapturing live source evidence. A reader-version change also invalidates existing ingest cursors.
+transaction. Repeated scoped runs use that conversation's committed generation lineage to skip
+covered generations before opening their artifacts; account-wide runs also use a complete-scan
+cursor to skip generations already examined for every conversation. Changed/new generations and
+conversations are discovered by validating the changed generation; older evidence for a
+conversation missing from a later generation remains retained. A caught cancellation rolls back
+the current conversation and leaves its checkpoint unchanged. `--replay` deliberately
+reprocesses preserved generations for parser repair without recapturing live source evidence. A
+reader-version change also invalidates existing ingest cursors.
 
 ```text
 wearchive ingest --account <raw-vault-account-id> [--conversation <source-conversation-id>] [--replay] [--json] [--no-input] [--quiet]
