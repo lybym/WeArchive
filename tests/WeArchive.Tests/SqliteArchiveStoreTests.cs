@@ -520,6 +520,27 @@ public sealed class SqliteArchiveStoreTests
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ix_ingest_checkpoints_scope';";
             Assert.Equal(1L, command.ExecuteScalar());
         }
+
+        await store.InitializeAsync(CancellationToken.None);
+        Assert.Equal(1, (await store.GetArchiveStatsAsync(CancellationToken.None)).MessageCount);
+        Assert.Equal("{\"cursor\":7}", (await ReadLegacySourceCheckpointAsync(path)));
+        Assert.Null(await store.GetIngestCheckpointAsync("account-1", "fixture", "conversation", "conversation-1", CancellationToken.None));
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT user_version FROM pragma_user_version;";
+            Assert.Equal(2L, command.ExecuteScalar());
+        }
+    }
+
+    private static async Task<string?> ReadLegacySourceCheckpointAsync(string path)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT checkpoint_json FROM source_checkpoints WHERE id='legacy';";
+        return (string?)await command.ExecuteScalarAsync();
     }
 
     [Fact]

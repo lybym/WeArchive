@@ -289,8 +289,10 @@ Responsibilities:
 - discover and validate published generations (checksum re-verification on open);
 - never inspect artifact internals — artifacts are opaque content objects.
 
-`RebuildService` is the only workflow that opens Raw Vault contents for semantic ingestion. It
-selects a captured-source reader in the WeChat Infrastructure boundary using manifest
+`RebuildService` and `RawVaultIngestService` are the workflows that open Raw Vault contents for
+semantic ingestion: rebuild consumes the selected snapshot, while incremental ingestion commits
+verified generations conversation by conversation. They select a captured-source reader in the
+WeChat Infrastructure boundary using manifest
 family/version and artifact format metadata. That reader reuses the existing WeChat 4.x parser
 and emits source-neutral records to the normalizer/import pipeline; it does not invoke live
 discovery, message reads or key acquisition. Rebuild initializes a fresh archive through normal

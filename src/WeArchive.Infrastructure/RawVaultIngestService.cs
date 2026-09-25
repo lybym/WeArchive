@@ -131,7 +131,8 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                     TotalHint = detail.MessageCount,
                     IngestCheckpoint = nextCheckpoint,
                     RollbackOnCancellation = true,
-                }, null, cancellationToken).ConfigureAwait(false);
+                }, progress is null ? null : new ImportStageProgress(progress, conversationId, summary.GenerationId),
+                    cancellationToken).ConfigureAwait(false);
                 if (outcome.Run.Status != ImportRunStatus.Completed)
                     throw new InvalidDataException($"Ingest failed for conversation scope '{conversationId}'.");
                 processed++;
@@ -211,6 +212,13 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(length, value.Length);
         hash.AppendData(length);
         hash.AppendData(value);
+    }
+
+    private sealed class ImportStageProgress(IProgress<string> target, string conversationId, string generationId)
+        : IProgress<OperationProgress>
+    {
+        public void Report(OperationProgress value) => target.Report(
+            $"Ingesting {conversationId} from generation {generationId} ({value.Stage}: {value.Processed}/{value.Total})");
     }
 
     private static (string? ReaderVersion, string? GenerationId, string? Fingerprint, HashSet<string> CoveredGenerationIds) ReadCheckpoint(string? checkpointJson)

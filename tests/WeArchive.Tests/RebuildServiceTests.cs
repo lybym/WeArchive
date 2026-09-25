@@ -330,6 +330,79 @@ public sealed class RebuildServiceTests
         Assert.Equal("new scoped data", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
     }
 
+    [Fact]
+    public async Task RawVaultIngestKeepsConversationAWhenBPublicationFailsAndRetriesB()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A committed", "reader-1", CapturedAt,
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B retry");
+        var sqlite = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        await sqlite.InitializeAsync(CancellationToken.None);
+        var conversationBId = StableIds.Conversation(accountId, ConversationKind.Direct, "wxid_b", "wxid_b");
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sqlite.ArchivePath, Pooling = false }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = $"CREATE TRIGGER fail_b_checkpoint BEFORE INSERT ON ingest_checkpoints WHEN NEW.scope_id = '{conversationBId}' BEGIN SELECT RAISE(ABORT, 'simulated B checkpoint failure'); END;";
+            command.ExecuteNonQuery();
+        }
+        var ingester = new RawVaultIngestService(vault, sqlite, new FixedClock());
+
+        await Assert.ThrowsAsync<SqliteException>(() =>
+            ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var onlyCommitted = Assert.Single(await sqlite.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("wxid_a", onlyCommitted.SourceConversationId);
+        Assert.Equal("A committed", Assert.Single(await sqlite.ReadMessagesAsync(onlyCommitted.Id, CancellationToken.None)).Text);
+        Assert.NotNull(await sqlite.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", onlyCommitted.Id, CancellationToken.None));
+        Assert.Null(await sqlite.GetConversationAsync(conversationBId, CancellationToken.None));
+
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sqlite.ArchivePath, Pooling = false }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "DROP TRIGGER fail_b_checkpoint;";
+            command.ExecuteNonQuery();
+        }
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var afterRetry = await sqlite.ListConversationsAsync(accountId, CancellationToken.None);
+        Assert.Equal(2, afterRetry.Count);
+        var conversationB = Assert.Single(afterRetry, c => c.SourceConversationId == "wxid_b");
+        Assert.Equal("B retry", Assert.Single(await sqlite.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
+        Assert.NotNull(await sqlite.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversationB.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RawVaultIngestCancellationDuringConversationRollsBackRowsAndCheckpoint()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "many messages", "reader-1", CapturedAt,
+            conversationId: "wxid_a", messageCount: 512);
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        using var cancellation = new CancellationTokenSource();
+        var progress = new CallbackProgress<string>(message =>
+        {
+            if (message.Contains("reading_messages", StringComparison.Ordinal)) cancellation.Cancel();
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ingester.IngestAsync(accountId, null, progress, cancellation.Token));
+
+        Assert.Empty(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal(0, (await archive.GetArchiveStatsAsync(CancellationToken.None)).MessageCount);
+        var conversationId = StableIds.Conversation(accountId, ConversationKind.Direct, "wxid_a", "wxid_a");
+        Assert.Null(await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversationId, CancellationToken.None));
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,
@@ -343,17 +416,21 @@ public sealed class RebuildServiceTests
         RawGenerationCompleteness completeness = RawGenerationCompleteness.Complete,
         string conversationId = "wxid_bob",
         string? additionalConversationId = null,
-        string? additionalText = null)
+        string? additionalText = null,
+        bool additionalHasMessageTable = true,
+        int messageCount = 1)
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
         var table = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(conversationId))).ToLowerInvariant();
         var additionalTable = additionalConversationId is null ? null
             : "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(additionalConversationId))).ToLowerInvariant();
+        var messageRows = string.Join(Environment.NewLine, Enumerable.Range(1, messageCount)
+            .Select(id => $"INSERT INTO \"{table}\" VALUES ({id}, {7000 + id}, {sourceType}, 1, {1736907600 + id}, '{text}', 0, NULL);"));
         BuildDb(Path.Combine(dbRoot, "session.db"), $"""
             CREATE TABLE SessionTable (username TEXT PRIMARY KEY, sort_timestamp INTEGER, last_timestamp INTEGER, last_msg_type INTEGER, last_msg_sub_type INTEGER, summary TEXT);
             INSERT INTO SessionTable VALUES ('{conversationId}', 1737244800, 1737244800, 1, 0, NULL);
-            {(additionalConversationId is null ? string.Empty : $"INSERT INTO SessionTable VALUES ('{additionalConversationId}', 1737244800, 1737244800, 1, 0, NULL);")}
+            {(additionalConversationId is null ? string.Empty : $"INSERT INTO SessionTable VALUES ('{additionalConversationId}', 1737244700, 1737244700, 1, 0, NULL);")}
             """);
         BuildDb(Path.Combine(dbRoot, "contact.db"), $"""
             CREATE TABLE contact (username TEXT PRIMARY KEY, remark TEXT, nick_name TEXT, alias TEXT, local_type INTEGER);
@@ -367,8 +444,8 @@ public sealed class RebuildServiceTests
                 {(additionalConversationId is null ? string.Empty : $"INSERT INTO Name2Id VALUES (2, '{additionalConversationId}');")}
                 """ + (hasMessageTable ? $"""
                 CREATE TABLE "{table}" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB);
-                INSERT INTO "{table}" VALUES (1, 7001, {sourceType}, 1, 1736907600, '{text}', 0, NULL);
-                {(additionalTable is null ? string.Empty : $"CREATE TABLE \"{additionalTable}\" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB); INSERT INTO \"{additionalTable}\" VALUES (1, 7002, {sourceType}, 1, 1736907600, '{additionalText ?? text}', 0, NULL);")}
+                {messageRows}
+                {(additionalTable is null || !additionalHasMessageTable ? string.Empty : $"CREATE TABLE \"{additionalTable}\" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB); INSERT INTO \"{additionalTable}\" VALUES (1, 7002, {sourceType}, 1, 1736907600, '{additionalText ?? text}', 0, NULL);")}
                 """ : string.Empty);
         BuildDb(Path.Combine(dbRoot, "message_0.db"), messageSql);
 
