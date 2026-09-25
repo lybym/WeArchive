@@ -114,8 +114,10 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                         $"Raw Vault generation '{summary.GenerationId}' has incomplete coverage for conversation scope " +
                         $"'{conversation.SourceConversationId}': {ex.Message}", ex);
                 }
-                if (!replay && state.ReaderVersion == adapter.AdapterVersion
-                    && string.Equals(state.Fingerprint, evidenceFingerprint, StringComparison.Ordinal)) continue;
+                // Even when a newer generation has identical conversation evidence, publish its
+                // verified cursor through ImportService. This commits coverage with the
+                // conversation transaction and refreshes account participant metadata, so a
+                // later scoped run can skip this generation without reopening its artifacts.
 
                 var nextCheckpoint = new IngestCheckpoint
                 {

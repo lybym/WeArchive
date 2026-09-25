@@ -204,7 +204,7 @@ public sealed class RebuildServiceTests
     }
 
     [Fact]
-    public async Task RawVaultIngestDoesNotRegressCoveredConversationsOrAdvanceUnchangedConversationCheckpoints()
+    public async Task RawVaultIngestDoesNotRegressCoveredConversationsAndAdvancesUnchangedConversationCheckpoints()
     {
         using var temp = new TempDirectory();
         var vault = new RawVaultStore(temp.Combine("vault"));
@@ -224,11 +224,12 @@ public sealed class RebuildServiceTests
 
         var middle = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
-        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(2, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
 
         var checkpointBAfter = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
             "conversation", conversationB.Id, CancellationToken.None);
-        Assert.Equal(checkpointBBefore!.CheckpointJson, checkpointBAfter!.CheckpointJson);
+        Assert.NotEqual(checkpointBBefore!.CheckpointJson, checkpointBAfter!.CheckpointJson);
+        Assert.Contains(middle.GenerationId, checkpointBAfter.CheckpointJson, StringComparison.Ordinal);
         Assert.Equal("A changed", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
         Assert.Equal("B stable", Assert.Single(await archive.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
 
@@ -237,7 +238,7 @@ public sealed class RebuildServiceTests
             await stream.WriteAsync(new byte[] { 0x01 });
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A newest", "reader-1", CapturedAt.AddHours(2),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
-        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(2, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
         Assert.Equal("A newest", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
     }
 
@@ -328,6 +329,67 @@ public sealed class RebuildServiceTests
         Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_bob", null, CancellationToken.None));
         var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
         Assert.Equal("new scoped data", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+    }
+
+    [Fact]
+    public async Task RawVaultScopedIngestAdvancesUnchangedConversationCoverageAndSkipsOnRepeat()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A first", "reader-1", CapturedAt,
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B unchanged");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_b", null, CancellationToken.None));
+        var conversationB = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        var firstCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversationB.Id, CancellationToken.None);
+        Assert.NotNull(firstCheckpoint);
+
+        var newer = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B unchanged");
+        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_b", null, CancellationToken.None));
+        var advancedCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversationB.Id, CancellationToken.None);
+        Assert.NotNull(advancedCheckpoint);
+        Assert.Contains(newer.GenerationId, advancedCheckpoint.CheckpointJson, StringComparison.Ordinal);
+
+        var changedArtifact = Path.Combine(newer.GenerationDirectory, newer.Manifest.Artifacts[0].ContentRef);
+        await using (var stream = new FileStream(changedArtifact, FileMode.Append, FileAccess.Write, FileShare.Read))
+            await stream.WriteAsync(new byte[] { 0x01 });
+
+        Assert.Equal(0, await ingester.IngestAsync(accountId, "wxid_b", null, CancellationToken.None));
+        Assert.Equal(advancedCheckpoint.CheckpointJson,
+            (await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+                "conversation", conversationB.Id, CancellationToken.None))?.CheckpointJson);
+        Assert.Equal("B unchanged", Assert.Single(await archive.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
+        Assert.NotEqual(firstCheckpoint.CheckpointJson, advancedCheckpoint.CheckpointJson);
+    }
+
+    [Fact]
+    public async Task RawVaultIngestRefreshesParticipantMetadataFromContactOnlyGeneration()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "same messages", "reader-1", CapturedAt,
+            conversationId: "wxid_bob", participantRemark: "Old remark");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var participantId = StableIds.Participant(accountId, "wxid_bob");
+        Assert.Equal("Old remark", Assert.Single(await archive.ListParticipantsAsync(accountId, CancellationToken.None),
+            participant => participant.Id == participantId).LatestRemark);
+
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "same messages", "reader-1", CapturedAt.AddHours(1),
+            conversationId: "wxid_bob", participantRemark: "New remark");
+
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal("New remark", Assert.Single(await archive.ListParticipantsAsync(accountId, CancellationToken.None),
+            participant => participant.Id == participantId).LatestRemark);
     }
 
     [Fact]
@@ -558,7 +620,8 @@ public sealed class RebuildServiceTests
         string? additionalConversationId = null,
         string? additionalText = null,
         bool additionalHasMessageTable = true,
-        int messageCount = 1)
+        int messageCount = 1,
+        string participantRemark = "Bob")
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
@@ -574,8 +637,8 @@ public sealed class RebuildServiceTests
             """);
         BuildDb(Path.Combine(dbRoot, "contact.db"), $"""
             CREATE TABLE contact (username TEXT PRIMARY KEY, remark TEXT, nick_name TEXT, alias TEXT, local_type INTEGER);
-            INSERT INTO contact VALUES ('{conversationId}', 'Bob', 'Bob', NULL, 1);
-            {(additionalConversationId is null ? string.Empty : $"INSERT INTO contact VALUES ('{additionalConversationId}', 'Bob', 'Bob', NULL, 1);")}
+            INSERT INTO contact VALUES ('{conversationId}', '{participantRemark}', 'Bob', NULL, 1);
+            {(additionalConversationId is null ? string.Empty : $"INSERT INTO contact VALUES ('{additionalConversationId}', '{participantRemark}', 'Bob', NULL, 1);")}
             CREATE TABLE stranger (username TEXT PRIMARY KEY, nick_name TEXT);
             """);
         var messageSql = $"""
