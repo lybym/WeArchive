@@ -528,6 +528,30 @@ public sealed class SqliteArchiveStore : IArchiveStore
                 : UpsertMessagesCore(connection, transaction, messages, cancellationToken));
         }
 
+        public Task SetIngestCheckpointAsync(IngestCheckpoint checkpoint, CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(checkpoint);
+            EnsureStaged();
+            cancellationToken.ThrowIfCancellationRequested();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO ingest_checkpoints (id, account_id, adapter_family, scope_kind, scope_id, checkpoint_json, updated_at)
+                VALUES ($id, $account, $family, $kind, $scope, $json, $updated)
+                ON CONFLICT(account_id, adapter_family, scope_kind, scope_id) DO UPDATE SET
+                    checkpoint_json=excluded.checkpoint_json, updated_at=excluded.updated_at;
+                """;
+            command.Parameters.AddWithValue("$id", checkpoint.Id);
+            command.Parameters.AddWithValue("$account", checkpoint.AccountId);
+            command.Parameters.AddWithValue("$family", checkpoint.AdapterFamily);
+            command.Parameters.AddWithValue("$kind", checkpoint.ScopeKind);
+            command.Parameters.AddWithValue("$scope", checkpoint.ScopeId);
+            command.Parameters.AddWithValue("$json", checkpoint.CheckpointJson);
+            command.Parameters.AddWithValue("$updated", Format(checkpoint.UpdatedAt));
+            command.ExecuteNonQuery();
+            return Task.CompletedTask;
+        }
+
         public Task CommitAsync(CancellationToken cancellationToken)
         {
             EnsureStaged();
@@ -817,6 +841,27 @@ public sealed class SqliteArchiveStore : IArchiveStore
         }
 
         return Task.FromResult(stats);
+    }
+
+    public Task<IngestCheckpoint?> GetIngestCheckpointAsync(
+        string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, account_id, adapter_family, scope_kind, scope_id, checkpoint_json, updated_at FROM ingest_checkpoints WHERE account_id=$account AND adapter_family=$family AND scope_kind=$kind AND scope_id=$scope;";
+        command.Parameters.AddWithValue("$account", accountId);
+        command.Parameters.AddWithValue("$family", adapterFamily);
+        command.Parameters.AddWithValue("$kind", scopeKind);
+        command.Parameters.AddWithValue("$scope", scopeId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return Task.FromResult<IngestCheckpoint?>(null);
+        return Task.FromResult<IngestCheckpoint?>(new IngestCheckpoint
+        {
+            Id = reader.GetString(0), AccountId = reader.GetString(1), AdapterFamily = reader.GetString(2),
+            ScopeKind = reader.GetString(3), ScopeId = reader.GetString(4), CheckpointJson = reader.GetString(5),
+            UpdatedAt = ParseTimestamp(reader.GetString(6)),
+        });
     }
 
     private SqliteConnection Open()

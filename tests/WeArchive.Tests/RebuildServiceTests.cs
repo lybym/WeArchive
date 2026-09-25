@@ -153,6 +153,29 @@ public sealed class RebuildServiceTests
         Assert.Equal(before, await FileHashAsync(archivePath));
     }
 
+    [Fact]
+    public async Task RawVaultIngestTracksConversationGenerationAndSkipsAnUnchangedSecondRun()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var first = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "first evidence", "reader-1", CapturedAt);
+        var second = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "second evidence", "reader-1", CapturedAt.AddHours(1));
+        var repaired = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "reparsed evidence", "reader-2", CapturedAt.AddHours(2));
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+
+        Assert.Equal(3, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(0, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("reparsed evidence", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+        var checkpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, "conversation", conversation.Id, CancellationToken.None);
+        Assert.NotNull(checkpoint);
+        Assert.Contains(repaired.GenerationId, checkpoint!.CheckpointJson, StringComparison.Ordinal);
+        Assert.NotEqual(first.GenerationId, second.GenerationId);
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,

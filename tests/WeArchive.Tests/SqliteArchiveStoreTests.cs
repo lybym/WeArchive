@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Infrastructure.Archive;
@@ -453,5 +454,83 @@ public sealed class SqliteArchiveStoreTests
         await second.InitializeAsync(CancellationToken.None);
 
         Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task MigrationOneArchiveUpgradesWithoutChangingLegacySourceCheckpoint()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Combine("archive.db");
+        var store = new SqliteArchiveStore(path, new FixedClock());
+        await store.InitializeAsync(CancellationToken.None);
+        await store.UpsertAccountAsync(new ArchiveAccount
+        {
+            Id = "account-1", SourceProfileId = "profile-1", AdapterName = "fixture", AdapterVersion = "1",
+        }, CancellationToken.None);
+        await store.UpsertConversationsAsync([new ArchiveConversation
+        {
+            Id = "conversation-1", AccountId = "account-1", SourceConversationId = "source-1", Kind = ConversationKind.Direct,
+        }], CancellationToken.None);
+        var run = await store.BeginImportRunAsync("account-1", new SourceDescriptor
+        {
+            AdapterName = "fixture", AdapterVersion = "1", IsAvailable = true,
+        }, CancellationToken.None);
+        await store.CompleteImportRunAsync(run with { Status = ImportRunStatus.Completed, FinishedAt = When }, CancellationToken.None);
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO source_checkpoints(id,account_id,adapter_name,adapter_version,checkpoint_json,updated_at) VALUES('legacy','account-1','fixture','old','{\"cursor\":7}','2026-01-01T00:00:00+00:00'); DELETE FROM schema_migrations WHERE version=2; DROP TABLE ingest_checkpoints; PRAGMA user_version=1;";
+            command.ExecuteNonQuery();
+        }
+
+        await store.InitializeAsync(CancellationToken.None);
+        var preserved = await store.GetArchiveStatsAsync(CancellationToken.None);
+        Assert.Equal(1, preserved.AccountCount);
+        Assert.Equal(1, preserved.ConversationCount);
+        Assert.Null(await store.GetIngestCheckpointAsync("account-1", "fixture", "conversation", "conversation-1", CancellationToken.None));
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT checkpoint_json FROM source_checkpoints WHERE id='legacy'; SELECT user_version FROM pragma_user_version;";
+            Assert.Equal("{\"cursor\":7}", command.ExecuteScalar());
+            command.CommandText = "SELECT COUNT(*) FROM import_runs;";
+            Assert.Equal(1L, command.ExecuteScalar());
+        }
+    }
+
+    [Fact]
+    public async Task IngestCheckpointCommitsAndRollsBackWithConversationPublication()
+    {
+        using var temp = new TempDirectory();
+        var store = await CreateStoreAsync(temp);
+        var account = new ArchiveAccount { Id = "account-1", SourceProfileId = "profile-1", AdapterName = "fixture" };
+        await store.UpsertAccountAsync(account, CancellationToken.None);
+        var checkpoint = new IngestCheckpoint
+        {
+            Id = "ingest-1", AccountId = account.Id, AdapterFamily = "fixture", ScopeKind = "conversation",
+            ScopeId = "conversation-1", CheckpointJson = "{\"version\":1,\"generation_id\":\"gen-1\"}", UpdatedAt = When,
+        };
+        await using (var session = await store.BeginConversationImportAsync(new ArchiveConversation
+        {
+            Id = "conversation-1", AccountId = account.Id, SourceConversationId = "source-1", Kind = ConversationKind.Direct,
+        }, CancellationToken.None))
+        {
+            await session.SetIngestCheckpointAsync(checkpoint, CancellationToken.None);
+            await session.RollbackAsync();
+        }
+        Assert.Null(await store.GetIngestCheckpointAsync(account.Id, "fixture", "conversation", "conversation-1", CancellationToken.None));
+
+        await using (var session = await store.BeginConversationImportAsync(new ArchiveConversation
+        {
+            Id = "conversation-1", AccountId = account.Id, SourceConversationId = "source-1", Kind = ConversationKind.Direct,
+        }, CancellationToken.None))
+        {
+            await session.SetIngestCheckpointAsync(checkpoint, CancellationToken.None);
+            await session.CommitAsync(CancellationToken.None);
+        }
+        Assert.Equal(checkpoint.CheckpointJson,
+            (await store.GetIngestCheckpointAsync(account.Id, "fixture", "conversation", "conversation-1", CancellationToken.None))?.CheckpointJson);
     }
 }

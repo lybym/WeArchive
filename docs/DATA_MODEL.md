@@ -22,7 +22,7 @@ The canonical message semantics are defined by [MESSAGE_SCHEMA.md](MESSAGE_SCHEM
 
 ## 3. Entity relationship overview
 
-This is the shipped archive schema (SQLite, migration 1). Column names and types are normative.
+This is the shipped archive schema (SQLite, migrations 1–2). Column names and types are normative.
 
 ```mermaid
 erDiagram
@@ -32,6 +32,7 @@ erDiagram
     MESSAGE ||--o| MESSAGE : replies_to
     ACCOUNT ||--o{ PARTICIPANT : contains
     ACCOUNT ||--o{ SOURCE_CHECKPOINT : tracks
+    ACCOUNT ||--o{ INGEST_CHECKPOINT : tracks
 
     ACCOUNT {
         TEXT id PK
@@ -121,6 +122,16 @@ erDiagram
         TEXT checkpoint_json
         TEXT updated_at
     }
+
+    INGEST_CHECKPOINT {
+        TEXT id PK
+        TEXT account_id FK
+        TEXT adapter_family
+        TEXT scope_kind
+        TEXT scope_id
+        TEXT checkpoint_json
+        TEXT updated_at
+    }
 ```
 
 `ConversationParticipant` has no dedicated table in migration 1: a conversation's peer and
@@ -137,6 +148,7 @@ messages            (conversation_id, occurred_utc, source_order_key, id)   -- c
 messages            (conversation_id, source_message_id)
 messages            (conversation_id, type)
 source_checkpoints  unique (account_id, adapter_name)
+ingest_checkpoints  unique (account_id, adapter_family, scope_kind, scope_id)
 ```
 
 ## 4. Account
@@ -466,7 +478,13 @@ Rules:
 - adapter version changes may invalidate prior checkpoints;
 - uniqueness is `(account_id, adapter_name)`.
 
-**Status:** the table exists in migration 1, but the MVP importer does **not** read or advance checkpoints. Every import reads the full conversation and relies on `content_hash` idempotency instead. Incremental refresh is M1 completion work.
+**Status:** the legacy table exists in migration 1 and remains unchanged. Raw Vault ingestion does not reinterpret it; it uses the separate `IngestCheckpoint` table introduced by migration 2.
+
+### 14.1 IngestCheckpoint
+
+Migration 2 records Raw Vault to canonical progress independently for each account, adapter family and scope. The initial supported scope kind is `conversation`; `scope_id` is the stable canonical conversation ID. `checkpoint_json` is an opaque, versioned cursor (currently the last fully published Raw Vault generation ID). It contains no source database key or message content.
+
+The checkpoint is upserted inside the same SQLite transaction as that conversation's canonical publication. Fatal source/identity/coverage errors and caught cancellation roll back both. Replaying a generation remains idempotent by canonical stable message ID and content hash. Migration 2 does not backfill from `source_checkpoints`.
 
 ## 15. SourceArtifact / provenance
 
@@ -551,7 +569,7 @@ are valid data.
 - Backward-incompatible archive changes require a documented migration path.
 - Export and message schemas are independently versioned in `manifest.json`.
 
-Migration 1 (`initial canonical archive schema`) is the current version.
+Migration 1 creates the initial canonical schema. Migration 2 adds conversation-scoped `ingest_checkpoints`; it leaves migration-1 `source_checkpoints` and all existing archive rows untouched.
 
 ## 19. Search indexing
 

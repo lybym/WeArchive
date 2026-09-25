@@ -112,7 +112,7 @@ Delivered:
 
 Still missing:
 
-- **Incremental checkpoints.** Schema/rules exist, but importer does not yet read or advance them.
+- **Incremental checkpoints.** Conversation-scoped Raw Vault ingest checkpoint migration and consumer are delivered by Issue #24. Incremental live-source capture checkpoints and full partition-coverage reporting remain outstanding.
 - **Full partition-coverage reporting.** Missing/unreadable partitions are diagnosed, but complete expected/read/unread coverage reporting is not finished.
 
 Acceptance criteria still outstanding:
@@ -135,15 +135,16 @@ Delivered:
 - key non-persistence (no upstream key in vault, canonical SQLite, logs or CLI output);
 - unknown/source-specific fields preserved in captured evidence.
 
-Still missing (non-goals of this rebuild slice):
+Still missing (non-goals of the rebuild slice):
 
 - incremental capture/checkpoint optimization;
 - storage-dedup optimization;
 - Raw Vault encryption-at-rest;
-- conversation-scoped ingest checkpoints.
+- incremental live-source capture checkpoints.
 
-Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and
-`wearchive rebuild`; this does not complete M1.5 or authorize incremental capture/checkpoints.
+Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and `wearchive rebuild`.
+Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints; it does not authorize incremental
+live-source capture or collection orchestration.
 
 Acceptance criteria — met for the baseline slice:
 

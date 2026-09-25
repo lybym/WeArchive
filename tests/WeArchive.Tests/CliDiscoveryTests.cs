@@ -945,5 +945,8 @@ public sealed class CliDiscoveryTests
         public Task<ConversationStats> GetConversationStatsAsync(
             string conversationId, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
+
+        public Task<IngestCheckpoint?> GetIngestCheckpointAsync(string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
     }
 }

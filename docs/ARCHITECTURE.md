@@ -424,7 +424,7 @@ Rules:
 2. replay from an older checkpoint remains idempotent;
 3. adapter-version changes may explicitly invalidate checkpoints.
 
-Status: schema support exists, but the current importer does not yet consume/advance checkpoints.
+Raw Vault ingestion consumes verified generations in order and stores one versioned generation cursor per conversation. The cursor is committed in the same SQLite transaction as that conversation's canonical publication. The legacy migration-1 `source_checkpoints` remains readable and is not reinterpreted.
 
 ## 11. Error model
 

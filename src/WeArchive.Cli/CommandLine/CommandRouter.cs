@@ -71,6 +71,9 @@ public sealed class CommandRouter
             ["rebuild"] = new(sp => new Commands.RebuildCommand(
                 sp.GetRequiredService<WeArchive.Infrastructure.RebuildService>()),
                 "Rebuild the canonical archive from Raw Vault evidence."),
+            ["ingest"] = new(sp => new Commands.IngestCommand(
+                sp.GetRequiredService<WeArchive.Infrastructure.RawVaultIngestService>()),
+                "Ingest captured Raw Vault evidence into the canonical archive."),
         };
     }
 

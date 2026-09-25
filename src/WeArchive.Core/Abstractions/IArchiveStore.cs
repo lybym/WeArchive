@@ -79,6 +79,9 @@ public interface IArchiveStore
         CancellationToken cancellationToken);
 
     Task<ArchiveStats> GetArchiveStatsAsync(CancellationToken cancellationToken);
+
+    Task<IngestCheckpoint?> GetIngestCheckpointAsync(
+        string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken);
 }
 
 /// <summary>Injectable time source so that exports and runs stay testable and deterministic.</summary>
@@ -111,6 +114,9 @@ public interface IConversationImportSession : IAsyncDisposable
     Task<UpsertCounters> UpsertMessagesAsync(
         IReadOnlyList<CanonicalMessage> messages,
         CancellationToken cancellationToken);
+
+    /// <summary>Stages ingest progress in the same transaction as conversation publication.</summary>
+    Task SetIngestCheckpointAsync(IngestCheckpoint checkpoint, CancellationToken cancellationToken);
 
     /// <summary>
     /// Publishes the staged conversation — recomputing its first/last/message-count aggregates

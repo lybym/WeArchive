@@ -28,7 +28,7 @@ The 0.2.x implementation already provides:
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
 - incremental Raw Vault capture and explicit capture/ingest checkpoints;
-- explicit capture and ingest checkpoints;
+- explicit capture checkpoints (conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24);
 - conversation/collection-scoped incremental synchronization;
 - `ArchiveQueryService` retrieval API;
 - FTS/search/context CLI commands;
@@ -258,7 +258,7 @@ Target model:
 - capture checkpoint: live source -> Raw Vault;
 - ingest checkpoint: Raw Vault -> canonical archive, scoped to conversation/partition where appropriate.
 
-The shipped migration-1 generic `source_checkpoints` table is an earlier implementation and is not yet consumed by the importer.
+The shipped migration-1 generic `source_checkpoints` table is an earlier implementation and is not reinterpreted as ingest state. Raw Vault ingestion uses the migration-2 `ingest_checkpoints` table.
 
 ### FR-15 Search
 
@@ -354,6 +354,7 @@ Planned additive commands include:
 
 ```text
 wearchive capture
+wearchive ingest --account <raw-vault-account-id> [--conversation <source-conversation-id>]
 wearchive sync --collection <name>
 wearchive rebuild
 ```
@@ -469,7 +470,7 @@ CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portabl
 
 ### M1 — Live WeChat source adapter (partial)
 
-Core local-source discovery/parsing exists. Incremental checkpoint consumption and complete partition-coverage reporting remain outstanding.
+Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered; incremental live-source capture and complete partition-coverage reporting remain outstanding.
 
 ### M1.5 — Preservation/rebuild foundation (partial delivery)
 
@@ -477,7 +478,7 @@ Delivered by Issues #22 and #23: Raw Vault baseline capture, immutable generatio
 source-independent evidence retention, and a validated Raw-Vault-only canonical rebuild with
 stable-ID preservation.
 
-Still outstanding: incremental capture, separate capture/ingest progress state and checkpoints.
+Still outstanding: incremental capture checkpoints and full partition-coverage reporting. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24.
 
 ### M2 — Semantic completeness
 

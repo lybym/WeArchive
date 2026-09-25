@@ -435,6 +435,22 @@ The rebuild publication guarantee is limited to normal completion and caught in-
 Process crash, OS/filesystem crash and power loss during replacement are not guaranteed recovery
 classes. No persistent journal or rollback protocol is used.
 
+## `wearchive ingest`
+
+Ingests verified Raw Vault generations into the existing canonical archive. It reads preserved
+evidence only and does not contact live WeChat. By default it processes all conversations for the
+selected Raw Vault account; `--conversation` limits the operation to one upstream conversation
+ID. Each conversation's canonical writes and generation checkpoint commit in one SQLite
+transaction. A repeated run with no new generation skips already-covered conversations. A caught
+cancellation rolls back the current conversation and leaves its checkpoint unchanged.
+
+```text
+wearchive ingest --account <raw-vault-account-id> [--conversation <source-conversation-id>] [--json] [--no-input] [--quiet]
+```
+
+JSON success emits one object with `succeeded` and `conversations_ingested`. Failures use the
+standard JSON error envelope; cancellation exits `130`.
+
 ## Not yet implemented
 
 The `--conversation <id-or-alias>` selector resolves by the canonical stable archive id

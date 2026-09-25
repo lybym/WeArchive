@@ -329,6 +329,12 @@ does not add persistent journals or commit markers.
 
 Checkpoint advancement must occur only after the corresponding import publication boundary required by the checkpoint design.
 
+Raw Vault ingestion uses the same R2 per-conversation SQLite transaction for canonical records and
+its ingest checkpoint. A caught cancellation rolls back the in-flight conversation and leaves its
+checkpoint unchanged; already committed conversations remain published. Process-crash behavior is
+the normal SQLite committed/uncommitted transaction behavior described above, with no application
+journal or separate recovery state.
+
 ### 10.5 R3+ — Explicit crash-recovery protocol
 
 Any requirement that needs recovery across process crash/restart through persistent journals, commit markers, rollback state, multi-file transaction protocols or recovery state machines is **not a default engineering improvement**. It is a separate reliability feature and requires explicit PRD/Issue/milestone authorization before implementation.
