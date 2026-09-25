@@ -260,6 +260,7 @@ public sealed class RebuildServiceTests
         var messageSets = await Task.WhenAll(conversations.Select(c => archive.ReadMessagesAsync(c.Id, CancellationToken.None)));
         Assert.Contains(messageSets.SelectMany(m => m), m => m.Text == "A scoped");
         Assert.Contains(messageSets.SelectMany(m => m), m => m.Text == "B pending");
+        Assert.Equal(0, await ingester.IngestAsync(accountId, "wxid_a", null, CancellationToken.None));
     }
 
     [Fact]

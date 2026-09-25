@@ -45,11 +45,19 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
             return 0;
 
         var processed = 0;
-        var foundSelectedConversation = false;
+        var knownSelectedConversation = sourceConversationId is not null
+            && (await _archive.ListConversationsAsync(accountId, cancellationToken).ConfigureAwait(false))
+                .Any(conversation => string.Equals(conversation.SourceConversationId, sourceConversationId, StringComparison.Ordinal));
+        if (!replay && sourceConversationId is not null && knownSelectedConversation
+            && accountScan.ReaderVersion == currentReaderVersion
+            && generations.All(generation => accountScan.CoveredGenerationIds.Contains(generation.GenerationId)))
+            return 0;
+
+        var foundSelectedConversation = knownSelectedConversation;
         foreach (var summary in generations)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!replay && accountScan.ReaderVersion == currentReaderVersion
+            if (!replay && sourceConversationId is null && accountScan.ReaderVersion == currentReaderVersion
                 && accountScan.CoveredGenerationIds.Contains(summary.GenerationId))
                 continue;
 
