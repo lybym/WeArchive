@@ -232,10 +232,11 @@ public sealed class WeChatCaptureAdapterTests
             {
                 mutated = true;
 
-                // A committed WAL appears after the artifact was written but before the
-                // consistency recheck. The WAL is part of the partition fingerprint, so the
-                // evidence just written no longer describes the current source state. (The
-                // database file itself is still open for the artifact copy at this point.)
+                // A committed WAL appears after the partition was snapshotted (copied or
+                // materialized) but before the consistency recheck. The WAL is part of the
+                // partition fingerprint, so the evidence just written no longer describes the
+                // current source state. (The database file itself is still open for the artifact
+                // copy at this point, so the change is made through its WAL.)
                 File.WriteAllText(database + "-wal", "wal-after-snapshot");
             }
         });
@@ -543,7 +544,7 @@ public sealed class WeChatCaptureAdapterTests
 
         public string DatabaseDirectory { get; init; } = string.Empty;
 
-        public string SourceProfileId { get; init; } = "wxid_test";
+        public string SourceProfileId { get; init; } = FixtureSourceAdapter.FixtureAccountId;
 
         public string? ClientVersion { get; set; } = "4.1.13.12";
 
