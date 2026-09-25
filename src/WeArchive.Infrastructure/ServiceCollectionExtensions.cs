@@ -30,7 +30,10 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IClock, SystemClock>();
         services.TryAddSingleton<IArchiveStore>(sp =>
             new SqliteArchiveStore(archivePath, sp.GetRequiredService<IClock>()));
-        services.TryAddSingleton<IRawVaultStore>(new RawVaultStore(rawVaultRoot));
+        services.TryAddSingleton(new RawVaultStore(rawVaultRoot));
+        services.TryAddSingleton<IRawVaultStore>(sp => sp.GetRequiredService<RawVaultStore>());
+        services.TryAddSingleton(sp => new RebuildService(
+            sp.GetRequiredService<IRawVaultStore>(), archivePath, sp.GetRequiredService<IClock>()));
         services.TryAddSingleton<IDatasetExporter, JsonlDatasetExporter>();
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();

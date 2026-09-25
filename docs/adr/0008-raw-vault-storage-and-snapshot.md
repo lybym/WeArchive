@@ -143,12 +143,15 @@ but Fatal coverage never degrades to `complete`.
   WeChat client or key.
 - The vault root is a per-user application data directory (`%LOCALAPPDATA%\WeArchive\rawvault`).
 - `wearchive capture` is a thin CLI adapter over `CaptureService`.
-- This ADR does not authorize rebuild (ingest from Raw Vault), incremental capture,
-  storage-dedup optimization, encryption-at-rest, or any R3+ crash-recovery protocol.
+- This ADR does not authorize incremental capture, storage-dedup optimization,
+  encryption-at-rest, or any R3+ crash-recovery protocol. The bounded Raw-Vault-only
+  canonical rebuild is separately scoped and authorized by Issue #23; it adds no persistent
+  crash-recovery protocol.
 
 ## References
 
 - Issue #22 — Raw Vault baseline capture and immutable generation publication
+- Issue #23 — Raw-Vault-only canonical rebuild
 - `docs/RAW_VAULT.md` — Raw Vault specification
 - `docs/ARCHITECTURE.md` — Raw Vault section
 - `docs/DATA_MODEL.md` — Raw Vault entities section

@@ -27,8 +27,7 @@ The 0.2.x implementation already provides:
 
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
-- Raw Vault capture/generations;
-- Raw-Vault-only canonical rebuild;
+- incremental Raw Vault capture and explicit capture/ingest checkpoints;
 - explicit capture and ingest checkpoints;
 - conversation/collection-scoped incremental synchronization;
 - `ArchiveQueryService` retrieval API;
@@ -472,14 +471,13 @@ CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portabl
 
 Core local-source discovery/parsing exists. Incremental checkpoint consumption and complete partition-coverage reporting remain outstanding.
 
-### M1.5 — Preservation/rebuild foundation (target)
+### M1.5 — Preservation/rebuild foundation (partial delivery)
 
-- Raw Vault baseline/incremental capture;
-- immutable generations/manifests;
-- source deletion does not erase preserved history;
-- Raw-Vault-only canonical rebuild;
-- stable-ID rebuild invariant;
-- separate capture/ingest progress state.
+Delivered by Issues #22 and #23: Raw Vault baseline capture, immutable generations/manifests,
+source-independent evidence retention, and a validated Raw-Vault-only canonical rebuild with
+stable-ID preservation.
+
+Still outstanding: incremental capture, separate capture/ingest progress state and checkpoints.
 
 ### M2 — Semantic completeness
 

@@ -321,6 +321,12 @@ SQLite is the system of record. Required semantics:
 
 **Hard rule:** a Fatal source-coverage failure must never publish a partial conversation that a later reader could mistake for a complete one.
 
+Canonical rebuild stages a fresh migrated database beside the selected archive, replays each
+conversation under the normal R2 transaction, and runs SQLite integrity validation before
+replacement. If a caught failure occurs before replacement, the old archive remains selected.
+Replacement does not provide a process-crash, OS-crash or power-loss recovery guarantee; rebuild
+does not add persistent journals or commit markers.
+
 Checkpoint advancement must occur only after the corresponding import publication boundary required by the checkpoint design.
 
 ### 10.5 R3+ — Explicit crash-recovery protocol

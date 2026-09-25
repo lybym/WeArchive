@@ -627,8 +627,11 @@ Raw Vault format-version tests must verify that `manifest_version = 1` can be re
 independently of the capture process — i.e. a new `RawVaultStore` instance pointing at the same
 root can discover and validate a published generation without the capture adapter being alive.
 
-### 21.6 No canonical migration
+### 21.6 Rebuild and canonical migration
 
-The canonical `archive/wearchive.db` schema is unchanged in M1.5. The Raw Vault introduces no
-SQLite migration. The Raw Vault format version is tracked in each manifest, not in
-`schema_migrations`.
+The Raw Vault format introduces no canonical SQLite migration. Rebuild creates a new canonical
+database by applying the normal forward migration sequence to an empty file; it does not copy
+an older canonical database. Stable account, participant, conversation and message identities
+continue to use section 16 derivation. Existing `user_display_name` overrides are carried into
+the rebuilt database when a matching canonical participant remains present. The Raw Vault
+format version is tracked in each manifest, not in `schema_migrations`.

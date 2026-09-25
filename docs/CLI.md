@@ -410,6 +410,31 @@ Stable `error.code` values:
 | `conversation_not_found` | 1 | The conversation identifier resolved to nothing |
 | `conversation_describe_failed` | 1 | Describing a resolved conversation failed |
 
+## `wearchive rebuild`
+
+Rebuilds every captured account's canonical data from each account's latest published complete Raw Vault
+generation. This command does not inspect or contact live WeChat, does not acquire a database key,
+and does not consume JSONL exports. Supported generations must contain decrypted WeChat 4.x SQLite
+evidence whose manifest and artifact checksums validate.
+
+The command initializes a fresh canonical database through normal migrations, replays source
+records through the existing parser, normalizer and import transaction, preserves matching
+user-maintained participant display-name overrides, validates the completed SQLite file, then
+selects it as the active archive. Any failure before replacement leaves the selected archive
+untouched. Raw Vault generations and exports are not modified.
+
+```text
+wearchive rebuild [--json] [--no-input] [--quiet]
+```
+
+JSON success emits one object with `succeeded`, `archive_path`, `account_count`,
+`participant_count`, `conversation_count` and `message_count`. Failures use the standard JSON
+error envelope; cancellation exits `130`.
+
+The rebuild publication guarantee is limited to normal completion and caught in-process errors.
+Process crash, OS/filesystem crash and power loss during replacement are not guaranteed recovery
+classes. No persistent journal or rollback protocol is used.
+
 ## Not yet implemented
 
 The `--conversation <id-or-alias>` selector resolves by the canonical stable archive id

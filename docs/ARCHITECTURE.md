@@ -42,6 +42,8 @@ flowchart LR
     C --> CAP[CaptureService]
     CAP --> A
     A --> RV
+    RV --> RB[RebuildService / CapturedSourceReader]
+    RB --> N
     O --> A
     A --> N
     N --> V
@@ -286,6 +288,14 @@ Responsibilities:
 - record versioned manifests with source/capture provenance, artifact roles and SHA-256 checksums;
 - discover and validate published generations (checksum re-verification on open);
 - never inspect artifact internals — artifacts are opaque content objects.
+
+`RebuildService` is the only workflow that opens Raw Vault contents for semantic ingestion. It
+selects a captured-source reader in the WeChat Infrastructure boundary using manifest
+family/version and artifact format metadata. That reader reuses the existing WeChat 4.x parser
+and emits source-neutral records to the normalizer/import pipeline; it does not invoke live
+discovery, message reads or key acquisition. Rebuild initializes a fresh archive through normal
+migrations, validates it, and replaces the selected archive only after validation succeeds. No
+persistent recovery journal is added.
 
 The store treats artifacts as opaque. WeChat schema details (table names, column names, message
 type codes) live *inside* the artifacts, not in Core-visible manifest fields. Source acquisition,

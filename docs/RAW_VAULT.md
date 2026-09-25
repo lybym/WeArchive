@@ -18,6 +18,15 @@ Normative decisions are in [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md
 The Raw Vault is **not** the canonical archive. Canonical messages live in `wearchive.db`; the
 Raw Vault holds the raw source snapshot that a future parser can re-process.
 
+`wearchive rebuild` selects a reader by the preserved capture family, source version and
+artifact format metadata. The initial reader supports decrypted WeChat for Windows 4.x SQLite
+images from a generation marked `complete`; partial generations cannot establish complete
+canonical coverage and are rejected. It reads those images directly from the verified generation and has no live-source or
+database-key fallback. It creates the canonical target using the ordinary migration sequence,
+checks SQLite integrity, and only then replaces the selected canonical file. A failed read,
+normalization or validation leaves the selected archive untouched. Rebuild never writes into
+Raw Vault generations; exports remain separate derived outputs.
+
 ## 2. Entities
 
 Conceptual entities (independent of the canonical archive schema):

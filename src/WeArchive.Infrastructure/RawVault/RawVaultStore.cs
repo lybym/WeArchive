@@ -46,6 +46,23 @@ public sealed class RawVaultStore : IRawVaultStore
 
     public string VaultRoot => _vaultRoot;
 
+    /// <summary>Lists stable account directories present in the preservation store.</summary>
+    public Task<IReadOnlyList<string>> ListAccountIdsAsync(CancellationToken cancellationToken)
+    {
+        var root = Path.Combine(_vaultRoot, AccountsFolder);
+        if (!Directory.Exists(root))
+            return Task.FromResult<IReadOnlyList<string>>([]);
+
+        var ids = Directory.EnumerateDirectories(root)
+            .Select(Path.GetFileName)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .Cast<string>()
+            .ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<IReadOnlyList<string>>(ids);
+    }
+
     public Task<IRawGenerationSession> BeginGenerationAsync(
         RawGenerationContext context,
         CancellationToken cancellationToken)

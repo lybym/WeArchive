@@ -135,13 +135,15 @@ Delivered:
 - key non-persistence (no upstream key in vault, canonical SQLite, logs or CLI output);
 - unknown/source-specific fields preserved in captured evidence.
 
-Still missing (non-goals of M1.5 baseline):
+Still missing (non-goals of this rebuild slice):
 
 - incremental capture/checkpoint optimization;
-- canonical ingest from Raw Vault (`wearchive rebuild`);
 - storage-dedup optimization;
 - Raw Vault encryption-at-rest;
 - conversation-scoped ingest checkpoints.
+
+Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and
+`wearchive rebuild`; this does not complete M1.5 or authorize incremental capture/checkpoints.
 
 Acceptance criteria — met for the baseline slice:
 

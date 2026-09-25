@@ -157,12 +157,13 @@ public sealed class SqliteArchiveStore : IArchiveStore
         command.Transaction = transaction;
         command.CommandText =
             """
-            INSERT INTO participants (id, account_id, source_participant_id, latest_remark, nickname, alias)
-            VALUES ($id, $account, $source, $remark, $nickname, $alias)
+            INSERT INTO participants (id, account_id, source_participant_id, latest_remark, nickname, alias, user_display_name)
+            VALUES ($id, $account, $source, $remark, $nickname, $alias, $display)
             ON CONFLICT(id) DO UPDATE SET
                 latest_remark = COALESCE(excluded.latest_remark, participants.latest_remark),
                 nickname      = COALESCE(excluded.nickname, participants.nickname),
-                alias         = COALESCE(excluded.alias, participants.alias);
+                alias         = COALESCE(excluded.alias, participants.alias),
+                user_display_name = COALESCE(excluded.user_display_name, participants.user_display_name);
             """;
         var pId = command.Parameters.Add("$id", SqliteType.Text);
         var pAccount = command.Parameters.Add("$account", SqliteType.Text);
@@ -170,6 +171,7 @@ public sealed class SqliteArchiveStore : IArchiveStore
         var pRemark = command.Parameters.Add("$remark", SqliteType.Text);
         var pNick = command.Parameters.Add("$nickname", SqliteType.Text);
         var pAlias = command.Parameters.Add("$alias", SqliteType.Text);
+        var pDisplay = command.Parameters.Add("$display", SqliteType.Text);
 
         foreach (var participant in participants)
         {
@@ -180,6 +182,7 @@ public sealed class SqliteArchiveStore : IArchiveStore
             pRemark.Value = (object?)participant.LatestRemark ?? DBNull.Value;
             pNick.Value = (object?)participant.Nickname ?? DBNull.Value;
             pAlias.Value = (object?)participant.Alias ?? DBNull.Value;
+            pDisplay.Value = (object?)participant.UserDisplayName ?? DBNull.Value;
             command.ExecuteNonQuery();
         }
 
