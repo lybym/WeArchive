@@ -482,7 +482,7 @@ Rules:
 
 ### 14.1 IngestCheckpoint
 
-Migration 2 records Raw Vault to canonical progress independently for each account, adapter family and scope. The initial supported scope kind is `conversation`; `scope_id` is the stable canonical conversation ID. `checkpoint_json` is an opaque, versioned cursor (currently the last fully published Raw Vault generation ID). It contains no source database key or message content.
+Migration 2 records Raw Vault to canonical progress independently for each account, adapter family and scope. The initial supported scope kind is `conversation`; `scope_id` is the stable canonical conversation ID. `checkpoint_json` is an opaque, versioned cursor containing the last fully published Raw Vault generation ID and the executing reader version. It contains no source database key or message content. A reader upgrade invalidates older cursors; `wearchive ingest --replay` also allows parser repair to replay the latest preserved generation without live recapture.
 
 The checkpoint is upserted inside the same SQLite transaction as that conversation's canonical publication. Fatal source/identity/coverage errors and caught cancellation roll back both. Replaying a generation remains idempotent by canonical stable message ID and content hash. Migration 2 does not backfill from `source_checkpoints`.
 

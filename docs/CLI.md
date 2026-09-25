@@ -443,9 +443,11 @@ selected Raw Vault account; `--conversation` limits the operation to one upstrea
 ID. Each conversation's canonical writes and generation checkpoint commit in one SQLite
 transaction. A repeated run with no new generation skips already-covered conversations. A caught
 cancellation rolls back the current conversation and leaves its checkpoint unchanged.
+`--replay` deliberately reprocesses the latest preserved generation for parser repair without
+recapturing live source evidence. A reader-version change also invalidates existing ingest cursors.
 
 ```text
-wearchive ingest --account <raw-vault-account-id> [--conversation <source-conversation-id>] [--json] [--no-input] [--quiet]
+wearchive ingest --account <raw-vault-account-id> [--conversation <source-conversation-id>] [--replay] [--json] [--no-input] [--quiet]
 ```
 
 JSON success emits one object with `succeeded` and `conversations_ingested`. Failures use the

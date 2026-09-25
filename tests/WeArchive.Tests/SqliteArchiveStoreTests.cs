@@ -471,6 +471,22 @@ public sealed class SqliteArchiveStoreTests
         {
             Id = "conversation-1", AccountId = "account-1", SourceConversationId = "source-1", Kind = ConversationKind.Direct,
         }], CancellationToken.None);
+        await using (var session = await store.BeginConversationImportAsync(new ArchiveConversation
+        {
+            Id = "conversation-1", AccountId = "account-1", SourceConversationId = "source-1", Kind = ConversationKind.Direct,
+        }, CancellationToken.None))
+        {
+            await session.UpsertMessagesAsync([new CanonicalMessage
+            {
+                Id = "message-1", ConversationId = "conversation-1", OccurredAt = When,
+                Type = CanonicalMessageType.Text, Text = "preserved", Source = new SourceProvenance
+                {
+                    SourceProfileId = "profile-1", SourceConversationId = "source-1", SourceMessageId = "source-message-1",
+                    AdapterName = "fixture",
+                },
+            }], CancellationToken.None);
+            await session.CommitAsync(CancellationToken.None);
+        }
         var run = await store.BeginImportRunAsync("account-1", new SourceDescriptor
         {
             AdapterName = "fixture", AdapterVersion = "1", IsAvailable = true,
@@ -488,6 +504,8 @@ public sealed class SqliteArchiveStoreTests
         var preserved = await store.GetArchiveStatsAsync(CancellationToken.None);
         Assert.Equal(1, preserved.AccountCount);
         Assert.Equal(1, preserved.ConversationCount);
+        Assert.Equal(1, preserved.MessageCount);
+        Assert.Equal("preserved", Assert.Single(await store.ReadMessagesAsync("conversation-1", CancellationToken.None)).Text);
         Assert.Null(await store.GetIngestCheckpointAsync("account-1", "fixture", "conversation", "conversation-1", CancellationToken.None));
         using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
         {
@@ -496,6 +514,10 @@ public sealed class SqliteArchiveStoreTests
             command.CommandText = "SELECT checkpoint_json FROM source_checkpoints WHERE id='legacy'; SELECT user_version FROM pragma_user_version;";
             Assert.Equal("{\"cursor\":7}", command.ExecuteScalar());
             command.CommandText = "SELECT COUNT(*) FROM import_runs;";
+            Assert.Equal(1L, command.ExecuteScalar());
+            command.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+            Assert.Equal(2L, command.ExecuteScalar());
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ix_ingest_checkpoints_scope';";
             Assert.Equal(1L, command.ExecuteScalar());
         }
     }
@@ -532,5 +554,21 @@ public sealed class SqliteArchiveStoreTests
         }
         Assert.Equal(checkpoint.CheckpointJson,
             (await store.GetIngestCheckpointAsync(account.Id, "fixture", "conversation", "conversation-1", CancellationToken.None))?.CheckpointJson);
+
+        var independent = checkpoint with
+        {
+            Id = "ingest-2", ScopeId = "conversation-2", CheckpointJson = "{\"version\":1,\"generation_id\":\"gen-2\"}",
+        };
+        await using (var session = await store.BeginConversationImportAsync(new ArchiveConversation
+        {
+            Id = "conversation-2", AccountId = account.Id, SourceConversationId = "source-2", Kind = ConversationKind.Direct,
+        }, CancellationToken.None))
+        {
+            await session.SetIngestCheckpointAsync(independent, CancellationToken.None);
+            await session.RollbackAsync();
+        }
+        Assert.Equal(checkpoint.CheckpointJson,
+            (await store.GetIngestCheckpointAsync(account.Id, "fixture", "conversation", "conversation-1", CancellationToken.None))?.CheckpointJson);
+        Assert.Null(await store.GetIngestCheckpointAsync(account.Id, "fixture", "conversation", "conversation-2", CancellationToken.None));
     }
 }

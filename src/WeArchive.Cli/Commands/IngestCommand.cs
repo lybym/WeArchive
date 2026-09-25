@@ -14,6 +14,7 @@ public sealed class IngestCommand(RawVaultIngestService ingest) : ICliCommand
     {
         string? account = null;
         string? conversation = null;
+        var replay = false;
         for (var i = 0; i < args.Count; i++)
         {
             var value = args[i];
@@ -23,6 +24,7 @@ public sealed class IngestCommand(RawVaultIngestService ingest) : ICliCommand
                     throw new CliUsageException($"{value} requires a value.");
                 if (value == "--account") account = args[i]; else conversation = args[i];
             }
+            else if (value == "--replay") replay = true;
             else throw new CliUsageException($"unknown option '{value}' for ingest.");
         }
         if (string.IsNullOrWhiteSpace(account))
@@ -31,7 +33,7 @@ public sealed class IngestCommand(RawVaultIngestService ingest) : ICliCommand
         int processed;
         try
         {
-            processed = await ingest.IngestAsync(account, conversation, new Progress<string>(context.ReportProgress), cancellationToken).ConfigureAwait(false);
+            processed = await ingest.IngestAsync(account, conversation, new Progress<string>(context.ReportProgress), cancellationToken, replay).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

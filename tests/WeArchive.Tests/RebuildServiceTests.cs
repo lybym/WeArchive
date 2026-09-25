@@ -166,8 +166,9 @@ public sealed class RebuildServiceTests
         var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
         var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
 
-        Assert.Equal(3, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
         Assert.Equal(0, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None, replay: true));
         var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
         Assert.Equal("reparsed evidence", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
         var checkpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, "conversation", conversation.Id, CancellationToken.None);
