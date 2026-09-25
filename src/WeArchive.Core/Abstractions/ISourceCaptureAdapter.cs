@@ -44,7 +44,17 @@ public interface ISourceCaptureAdapter
         CancellationToken cancellationToken);
 }
 
-/// <summary>Optional safe incremental path for source families that can prove unchanged partitions.</summary>
+/// <summary>
+/// Optional safe incremental path for source families that can prove unchanged partitions.
+/// <para>
+/// The caller only passes a predecessor it has already verified as a complete generation whose
+/// checkpoint matches this adapter, but an implementation MUST re-validate that precondition
+/// itself and fall back to a full consistent snapshot when it cannot prove, from the predecessor
+/// and the live source, that reusing preserved evidence is safe. That fallback is reported with
+/// the <c>capture_full_fallback</c> diagnostic rather than being silent, and evidence that cannot
+/// be mapped unambiguously to a live partition is never reused.
+/// </para>
+/// </summary>
 public interface IIncrementalSourceCaptureAdapter : ISourceCaptureAdapter
 {
     Task<SourceCaptureResult> CaptureIncrementalAsync(

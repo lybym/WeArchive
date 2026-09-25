@@ -108,6 +108,16 @@ public sealed class CaptureCliTests
         Assert.Equal(1, summary.GetProperty("unavailable").GetInt32());
         Assert.Equal(1, summary.GetProperty("unsupported").GetInt32());
 
+        // Every coverage gap is attributable to its partition from the JSON alone, and the reason
+        // never carries the fingerprint or checksum that proves reuse safety.
+        foreach (var entry in doc.RootElement.GetProperty("coverage").EnumerateArray())
+        {
+            var status = entry.GetProperty("status").GetString();
+            var hasDiagnostic = entry.TryGetProperty("diagnostic", out var diagnostic)
+                && !string.IsNullOrWhiteSpace(diagnostic.GetString());
+            Assert.Equal(status != "captured", hasDiagnostic);
+        }
+
         // The JSON contract never exposes the source fingerprints used to prove reuse safety.
         Assert.DoesNotContain("s1", stdout, StringComparison.Ordinal);
         Assert.DoesNotContain("v1", stdout, StringComparison.Ordinal);

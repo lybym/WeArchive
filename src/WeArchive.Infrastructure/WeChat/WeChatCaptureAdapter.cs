@@ -39,16 +39,28 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
     private const string SourceDatabaseRole = "source-database";
 
     private readonly IWeChatDatabaseKeyAcquirer _keyAcquirer;
+    private readonly IWeChatCaptureEnvironment _environment;
     private bool _disposed;
 
     public WeChatCaptureAdapter()
-        : this(new WcdbCipherConfigKeyAcquirer())
+        : this(new WcdbCipherConfigKeyAcquirer(), new WeChatCaptureEnvironment())
     {
     }
 
     internal WeChatCaptureAdapter(IWeChatDatabaseKeyAcquirer keyAcquirer)
+        : this(keyAcquirer, new WeChatCaptureEnvironment())
+    {
+    }
+
+    /// <summary>
+    /// Test seam: the live-source facts and the materialization step are supplied rather than
+    /// reached through static discovery, so this shipped decision logic can be exercised against
+    /// a fixture source without a running client or a real database key (docs/PRD.md NFR-06).
+    /// </summary>
+    internal WeChatCaptureAdapter(IWeChatDatabaseKeyAcquirer keyAcquirer, IWeChatCaptureEnvironment environment)
     {
         _keyAcquirer = keyAcquirer ?? throw new ArgumentNullException(nameof(keyAcquirer));
+        _environment = environment ?? throw new ArgumentNullException(nameof(environment));
     }
 
     public string CaptureAdapterFamily => Family;
@@ -93,9 +105,8 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         });
 
         // Discover the account's data directory and all its encrypted databases.
-        var installations = WeChatDataLocator.Discover();
-        var account = installations
-            .SelectMany(i => i.Accounts)
+        var account = _environment
+            .DiscoverAccounts()
             .FirstOrDefault(a => string.Equals(a.SourceProfileId, sourceProfileId, StringComparison.OrdinalIgnoreCase));
 
         if (account is null)
@@ -110,7 +121,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             };
         }
 
-        var databases = WeChatDataLocator.EnumerateDatabases(account);
+        var databases = _environment.EnumerateDatabases(account);
         if (databases.Count == 0)
         {
             return new SourceCaptureResult
@@ -127,7 +138,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         var artifacts = new List<RawArtifactDescriptor>();
         var coverage = new List<RawPartitionCoverage>();
         var completeness = RawGenerationCompleteness.Complete;
-        var (clientVersion, _) = WeChatClient.DetectInstallation();
+        var clientVersion = _environment.DetectClientVersion();
         var current = databases
             .Select(path => new SourcePartition(
                 Path.GetRelativePath(account.DatabaseDirectory, path).Replace('\\', '/'), path))
@@ -192,7 +203,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
 
         // Acquire a transient key only if there is new or changed evidence to materialize.
         WeChatKeySet? keySet = null;
-        if (needsCapture && !WeChatClient.IsRunning())
+        if (needsCapture && !_environment.IsClientRunning())
         {
             return new SourceCaptureResult
             {
@@ -225,7 +236,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             keySet = keyResult.KeySet;
         }
 
-        using var cache = keySet is null ? null : new SqlCipherDatabaseCache(keySet);
+        using var materializer = keySet is null ? null : _environment.CreateMaterializer(keySet);
 
         progress?.Report(new CaptureProgress
         {
@@ -267,7 +278,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             DecryptionOutcome outcome;
             try
             {
-                outcome = cache!.GetPlaintext(databasePath);
+                outcome = materializer!.GetPlaintext(databasePath);
             }
             catch (WeChatKeyUnavailableException ex)
             {
@@ -394,7 +405,20 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         };
     }
 
-    private static Dictionary<string, PriorPartition>? BuildPriorMap(RawGeneration? previous)
+    /// <summary>
+    /// Maps the live partitions of a verified predecessor generation onto the artifacts that
+    /// already preserve them. Returns null when the predecessor cannot by itself prove that
+    /// reusing its evidence is safe, in which case the caller widens to a full snapshot.
+    /// <para>
+    /// The safety preconditions are enforced here rather than trusted from the caller, so the
+    /// adapter stays correct even when it is invoked with a predecessor the service would have
+    /// rejected: the manifest must be version 2 or newer, the generation must be
+    /// <see cref="RawGenerationCompleteness.Complete"/>, the checkpoint must name this exact
+    /// generation with the same adapter family/version, and every covered partition must map
+    /// unambiguously to exactly one artifact of the same generation whose checksum matches.
+    /// </para>
+    /// </summary>
+    internal static Dictionary<string, WeChatPriorPartition>? BuildPriorMap(RawGeneration? previous)
     {
         if (previous is null)
         {
@@ -409,6 +433,13 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             return null;
         }
 
+        // A partial predecessor cannot establish that its coverage is still current, so its
+        // evidence is never presented as unchanged source state.
+        if (previous.Manifest.Capture.Completeness != RawGenerationCompleteness.Complete)
+        {
+            return null;
+        }
+
         var artifacts = new Dictionary<string, RawArtifactDescriptor>(StringComparer.OrdinalIgnoreCase);
         foreach (var artifact in previous.Manifest.Artifacts)
         {
@@ -419,7 +450,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             }
         }
 
-        var result = new Dictionary<string, PriorPartition>(StringComparer.OrdinalIgnoreCase);
+        var result = new Dictionary<string, WeChatPriorPartition>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in previous.Manifest.Coverage)
         {
             if (item.Status is not (RawPartitionStatus.Captured or RawPartitionStatus.Reused) ||
@@ -428,7 +459,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
                 !string.Equals(fingerprint, item.SourceFingerprint, StringComparison.Ordinal) ||
                 !artifacts.TryGetValue(item.PartitionId, out var artifact) ||
                 !string.Equals(artifact.Sha256, item.ArtifactSha256, StringComparison.Ordinal) ||
-                !result.TryAdd(item.PartitionId, new PriorPartition(fingerprint, artifact)))
+                !result.TryAdd(item.PartitionId, new WeChatPriorPartition(fingerprint, artifact)))
             {
                 return null;
             }
@@ -472,8 +503,6 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
 
     private sealed record SourcePartition(string Id, string Path);
 
-    private sealed record PriorPartition(string Fingerprint, RawArtifactDescriptor Artifact);
-
     public void Dispose()
     {
         if (_disposed)
@@ -484,3 +513,9 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         _disposed = true;
     }
 }
+
+/// <summary>
+/// One partition of a verified predecessor generation that this adapter may present as
+/// unchanged source state: the fingerprint recorded for it and the artifact that preserves it.
+/// </summary>
+internal sealed record WeChatPriorPartition(string Fingerprint, RawArtifactDescriptor Artifact);

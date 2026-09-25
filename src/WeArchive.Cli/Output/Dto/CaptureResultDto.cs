@@ -60,12 +60,19 @@ public sealed record CaptureResultDto
     };
 }
 
+/// <summary>
+/// One partition's coverage. The source fingerprint and artifact checksum are deliberately not
+/// exposed: the field carries the engineering reason a partition was not captured, which allows
+/// a consumer to attribute a coverage gap without publishing the evidence used to prove reuse.
+/// </summary>
 public sealed record CaptureCoverageDto
 {
     [JsonPropertyName("partition_id")]
     public required string PartitionId { get; init; }
     [JsonPropertyName("status")]
     public required string Status { get; init; }
+    [JsonPropertyName("diagnostic")]
+    public string? Diagnostic { get; init; }
 }
 
 public sealed record CaptureCoverageSummaryDto

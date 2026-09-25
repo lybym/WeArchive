@@ -302,6 +302,12 @@ advances only with a successful publish-last publication and stays independent o
 ingest progress. Incremental capture keeps the R1 contract: no journal, commit marker or
 recovery state machine is added.
 
+The WeChat adapter reaches the live source only through an injectable environment seam — account
+and database discovery, the client-running probe, the detected client version and the
+materialization step. Production wires the real locator, client probe and SQLCipher cache; tests
+supply a fixture source, which is what puts the shipped fingerprint/prior-map/reuse/recheck
+decision under CI without a live client or a database key (NFR-06).
+
 `RebuildService` and `RawVaultIngestService` are the workflows that open Raw Vault contents for
 semantic ingestion: rebuild consumes the selected snapshot, while incremental ingestion commits
 verified generations conversation by conversation. They select a captured-source reader in the

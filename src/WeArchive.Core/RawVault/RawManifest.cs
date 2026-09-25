@@ -103,7 +103,10 @@ public sealed record RawManifestCapture
 
     public required string CaptureAdapterVersion { get; init; }
 
-    /// <summary>baseline for a full capture; incremental is reserved for future work.</summary>
+    /// <summary>
+    /// baseline when the whole supported source was read, incremental when unchanged partitions
+    /// reused evidence already published by the predecessor generation.
+    /// </summary>
     public required RawCaptureMode Mode { get; init; }
 
     public required RawGenerationCompleteness Completeness { get; init; }

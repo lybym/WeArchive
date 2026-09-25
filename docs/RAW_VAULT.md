@@ -187,6 +187,10 @@ source-partition id (never a chat content value):
 `expected` in the CLI rollup is the number of coverage entries, i.e. every partition this run
 accounted for — not a claim that every theoretical source partition was observed.
 
+Each entry also carries an optional `diagnostic`: the engineering reason a partition was not
+captured. It never contains a fingerprint, a checksum or source content, so it can be surfaced by
+the CLI (see [CLI.md](CLI.md)) and audited later without weakening the no-secret contract.
+
 `capture_checkpoint` is a versioned capture cursor, and **not** an ingest cursor:
 
 - it is written only inside a manifest that is being published, so publish-last publication is
@@ -213,6 +217,12 @@ A no-change capture has one deterministic behaviour: it still verifies every exp
 fingerprint, still publishes a new immutable generation that reuses the already-verified
 artifacts, and still advances the checkpoint to that new generation. It never claims that
 unobserved source material was checked, and it never deletes or rewrites an earlier generation.
+
+Incremental capture reduces **reacquisition**, not source I/O. Every run re-verifies the
+predecessor generation's artifacts (opening a generation re-hashes all of them), fingerprints each
+expected live partition before and after the snapshot, and re-hashes every reused copy into the new
+generation. That work is what makes reuse trustworthy, so `mode = incremental` must not be read as
+"cheap" for a multi-GB account.
 
 ## 5. Consistent snapshot strategy
 

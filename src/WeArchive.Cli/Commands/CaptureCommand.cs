@@ -130,6 +130,7 @@ public sealed class CaptureCommand : ICliCommand
             {
                 PartitionId = c.PartitionId,
                 Status = c.Status.ToString().ToLowerInvariant(),
+                Diagnostic = c.Diagnostic,
             })],
             CoverageSummary = new CaptureCoverageSummaryDto
             {

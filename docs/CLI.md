@@ -389,14 +389,19 @@ JSON shape (exit 0):
   "previous_generation_id": null,
   "diagnostics": [],
   "coverage": [
-    { "partition_id": "db_storage/session/session.db", "status": "captured" },
-    { "partition_id": "db_storage/message/message_0.db", "status": "reused" }
+    { "partition_id": "db_storage/session/session.db", "status": "captured", "diagnostic": null },
+    { "partition_id": "db_storage/message/message_0.db", "status": "reused", "diagnostic": null },
+    {
+      "partition_id": "db_storage/voice/voice.db",
+      "status": "unavailable",
+      "diagnostic": "Partition 'db_storage/voice/voice.db' could not be read."
+    }
   ],
   "coverage_summary": {
-    "expected": 2,
+    "expected": 3,
     "captured": 1,
     "reused": 1,
-    "unavailable": 0,
+    "unavailable": 1,
     "unsupported": 0
   }
 }
@@ -408,12 +413,18 @@ number of partitions this run accounted for; `captured + reused + unavailable + 
 equals `expected`. `previous_generation_id` links to the immediately preceding published
 generation for the same account, forming an append-only chain.
 
-`coverage` reports each partition's `captured`/`reused`/`unavailable`/`unsupported` status. It
-deliberately omits the source fingerprint and artifact checksum: the CLI contract exposes a
-verifiable completeness statement without publishing the evidence used to prove incremental
-safety, and never exposes source keys. When incremental safety cannot be proven the run reads the
-whole source and reports a `capture_full_fallback` diagnostic instead of claiming complete
-incremental coverage.
+`coverage` reports each partition's `captured`/`reused`/`unavailable`/`unsupported` status, and
+`diagnostic` gives the engineering reason for a partition that was not captured, so a consumer
+can attribute a coverage gap without parsing `diagnostics[].message`. Both deliberately omit the
+source fingerprint and artifact checksum: the CLI contract exposes a verifiable completeness
+statement without publishing the evidence used to prove incremental safety, and never exposes
+source keys. When incremental safety cannot be proven the run reads the whole source and reports a
+`capture_full_fallback` diagnostic instead of claiming complete incremental coverage.
+
+`mode: incremental` means evidence was not reacquired, not that the run was cheap: every capture
+still re-fingerprints each expected partition (database file plus committed WAL bytes) before and
+after the snapshot, and re-verifies the predecessor generation's artifacts before reusing any of
+them. Plan for a cost proportional to source size even when nothing changed.
 
 ## Failure document (`--json`)
 
