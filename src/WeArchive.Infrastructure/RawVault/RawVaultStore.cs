@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
@@ -131,6 +132,7 @@ public sealed class RawVaultStore : IRawVaultStore
                 CaptureTime = manifest.Capture.CaptureTime,
                 Completeness = manifest.Capture.Completeness,
                 ArtifactCount = manifest.Capture.ArtifactCount,
+                EvidenceFingerprint = ComputeEvidenceFingerprint(manifest.Artifacts),
                 PreviousGenerationId = manifest.PreviousGenerationId,
             });
         }
@@ -148,6 +150,15 @@ public sealed class RawVaultStore : IRawVaultStore
         var generations = await ListGenerationsAsync(accountId, cancellationToken)
             .ConfigureAwait(false);
         return generations.Count == 0 ? null : generations[^1];
+    }
+
+    private static string ComputeEvidenceFingerprint(IReadOnlyList<RawArtifactDescriptor> artifacts)
+    {
+        var identity = string.Join("\n", artifacts
+            .OrderBy(a => a.Role, StringComparer.Ordinal)
+            .ThenBy(a => a.Name, StringComparer.Ordinal)
+            .Select(a => $"{a.Role}\0{a.Name}\0{a.Sha256}"));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
     }
 
     public async Task<RawGeneration?> OpenGenerationAsync(

@@ -166,15 +166,41 @@ public sealed class RebuildServiceTests
         var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
         var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
 
-        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(3, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
         Assert.Equal(0, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
-        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None, replay: true));
+        Assert.Equal(3, await ingester.IngestAsync(accountId, null, null, CancellationToken.None, replay: true));
         var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
         Assert.Equal("reparsed evidence", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
         var checkpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, "conversation", conversation.Id, CancellationToken.None);
         Assert.NotNull(checkpoint);
         Assert.Contains(repaired.GenerationId, checkpoint!.CheckpointJson, StringComparison.Ordinal);
         Assert.NotEqual(first.GenerationId, second.GenerationId);
+    }
+
+    [Fact]
+    public async Task RawVaultIngestKeepsOlderConversationAndDiscoversANewConversationInLaterGeneration()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var older = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "older only evidence", "reader-1", CapturedAt, conversationId: "wxid_bob");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+
+        var oldArtifact = Path.Combine(older.GenerationDirectory, older.Manifest.Artifacts[0].ContentRef);
+        await using (var stream = new FileStream(oldArtifact, FileMode.Append, FileAccess.Write, FileShare.Read))
+            await stream.WriteAsync(new byte[] { 0x01 });
+
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "new conversation evidence", "reader-1", CapturedAt.AddHours(1), conversationId: "wxid_carol");
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+
+        var conversations = await archive.ListConversationsAsync(accountId, CancellationToken.None);
+        Assert.Equal(2, conversations.Count);
+        var messages = await Task.WhenAll(conversations.Select(c => archive.ReadMessagesAsync(c.Id, CancellationToken.None)));
+        Assert.Contains(messages.SelectMany(m => m), m => m.Text == "older only evidence");
+        Assert.Contains(messages.SelectMany(m => m), m => m.Text == "new conversation evidence");
     }
 
     private static async Task<RawGeneration> PublishGenerationAsync(
@@ -187,11 +213,11 @@ public sealed class RebuildServiceTests
         DateTimeOffset capturedAt,
         bool hasMessageTable = true,
         long sourceType = 1,
-        RawGenerationCompleteness completeness = RawGenerationCompleteness.Complete)
+        RawGenerationCompleteness completeness = RawGenerationCompleteness.Complete,
+        string conversationId = "wxid_bob")
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
-        var conversationId = "wxid_bob";
         var table = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(conversationId))).ToLowerInvariant();
         BuildDb(Path.Combine(dbRoot, "session.db"), $"""
             CREATE TABLE SessionTable (username TEXT PRIMARY KEY, sort_timestamp INTEGER, last_timestamp INTEGER, last_msg_type INTEGER, last_msg_sub_type INTEGER, summary TEXT);
