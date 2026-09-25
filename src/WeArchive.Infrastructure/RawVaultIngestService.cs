@@ -11,6 +11,7 @@ namespace WeArchive.Infrastructure;
 public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore archive, IClock clock)
 {
     private const string ScopeKind = "conversation";
+    private const string ConversationCoverageScopeKind = "conversation_coverage";
     private const string AccountScopeKind = "account";
     private readonly IRawVaultStore _rawVault = rawVault ?? throw new ArgumentNullException(nameof(rawVault));
     private readonly IArchiveStore _archive = archive ?? throw new ArgumentNullException(nameof(archive));
@@ -55,6 +56,11 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
             : await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, ScopeKind,
                 selectedConversation.Id, cancellationToken).ConfigureAwait(false);
         var selectedState = ReadCheckpoint(selectedCheckpoint?.CheckpointJson);
+        var selectedCoverageCheckpoint = selectedConversation is null
+            ? null
+            : await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+                ConversationCoverageScopeKind, selectedConversation.Id, cancellationToken).ConfigureAwait(false);
+        var selectedCoverageState = ReadCheckpoint(selectedCoverageCheckpoint?.CheckpointJson);
         if (!replay && sourceConversationId is not null && knownSelectedConversation
             && accountScan.ReaderVersion == currentReaderVersion
             && generations.All(generation => accountScan.CoveredGenerationIds.Contains(generation.GenerationId)))
@@ -72,25 +78,43 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 if (sourceConversationId is not null && selectedState.ReaderVersion == currentReaderVersion
                     && IsAncestorOrSelf(generationsById, summary.GenerationId, selectedState.GenerationId))
                     continue;
+                if (sourceConversationId is not null && selectedCoverageState.ReaderVersion == currentReaderVersion
+                    && IsAncestorOrSelf(generationsById, summary.GenerationId, selectedCoverageState.GenerationId))
+                    continue;
             }
 
-            // Covered history is skipped using each conversation's committed generation cursor.
-            // Newer generations are opened and validated; unchanged conversations are fingerprinted
-            // but neither reimported nor advanced, while absent conversations retain old canonical data.
+            // Covered history is skipped using its committed generation cursor. Content checkpoints
+            // advance only when evidence changes; scoped scans use a separate transactional coverage
+            // cursor for verified unchanged generations.
             var generation = await _rawVault.OpenGenerationAsync(accountId, summary.GenerationId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException($"Raw Vault generation '{summary.GenerationId}' failed manifest or checksum validation.");
             using var adapter = CapturedWeChatSourceAdapter.Create(generation);
             var account = (await adapter.ListAccountsAsync(cancellationToken).ConfigureAwait(false)).Single();
             if (!string.Equals(StableIds.Account(adapter.AdapterName, account.SourceProfileId), accountId, StringComparison.Ordinal))
                 throw new InvalidDataException("Raw Vault account identity does not match the stable source identity.");
+            IReadOnlyList<SourceConversation> sourceConversations;
+            try
+            {
+                await RefreshParticipantsAsync(adapter, accountId, account.SourceProfileId, cancellationToken).ConfigureAwait(false);
+                sourceConversations = await adapter.ListConversationsAsync(account.SourceProfileId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (SourceCoverageException ex)
+            {
+                throw new InvalidDataException(
+                    $"Raw Vault generation '{summary.GenerationId}' has incomplete coverage for account scope " +
+                    $"'{accountId}': {ex.Message}", ex);
+            }
             var importer = new ImportService(adapter, _archive, _clock);
-            var conversations = await adapter.ListConversationsAsync(account.SourceProfileId, cancellationToken).ConfigureAwait(false);
+            var conversations = sourceConversations;
             if (sourceConversationId is not null)
                 conversations = conversations.Where(c => string.Equals(c.SourceConversationId, sourceConversationId, StringComparison.Ordinal)).ToArray();
 
+            var selectedFoundInGeneration = false;
             foreach (var conversation in conversations)
             {
                 foundSelectedConversation = true;
+                selectedFoundInGeneration = true;
                 cancellationToken.ThrowIfCancellationRequested();
                 var conversationId = StableIds.Conversation(accountId, conversation.Kind, conversation.SourceConversationId, conversation.PeerSourceUserId);
                 var checkpoint = await _archive.GetIngestCheckpointAsync(accountId, generation.Manifest.Capture.CaptureAdapterFamily,
@@ -98,6 +122,13 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 var state = ReadCheckpoint(checkpoint?.CheckpointJson);
                 if (!replay && state.ReaderVersion == adapter.AdapterVersion
                     && IsAncestorOrSelf(generationsById, summary.GenerationId, state.GenerationId))
+                    continue;
+                var coverageCheckpoint = await _archive.GetIngestCheckpointAsync(accountId,
+                    generation.Manifest.Capture.CaptureAdapterFamily, ConversationCoverageScopeKind,
+                    conversationId, cancellationToken).ConfigureAwait(false);
+                var coverageState = ReadCheckpoint(coverageCheckpoint?.CheckpointJson);
+                if (!replay && coverageState.ReaderVersion == adapter.AdapterVersion
+                    && IsAncestorOrSelf(generationsById, summary.GenerationId, coverageState.GenerationId))
                     continue;
                 SourceConversationDetail detail;
                 string evidenceFingerprint;
@@ -114,10 +145,22 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                         $"Raw Vault generation '{summary.GenerationId}' has incomplete coverage for conversation scope " +
                         $"'{conversation.SourceConversationId}': {ex.Message}", ex);
                 }
-                // Even when a newer generation has identical conversation evidence, publish its
-                // verified cursor through ImportService. This commits coverage with the
-                // conversation transaction and refreshes account participant metadata, so a
-                // later scoped run can skip this generation without reopening its artifacts.
+                if (!replay && state.ReaderVersion == adapter.AdapterVersion
+                    && string.Equals(state.Fingerprint, evidenceFingerprint, StringComparison.Ordinal))
+                {
+                    if (sourceConversationId is not null)
+                    {
+                        var existingConversation = await _archive.GetConversationAsync(conversationId, cancellationToken)
+                            .ConfigureAwait(false)
+                            ?? throw new InvalidDataException($"Conversation '{conversationId}' has a checkpoint but is absent from the archive.");
+                        var coverage = CreateConversationCoverageCheckpoint(accountId,
+                            generation.Manifest.Capture.CaptureAdapterFamily, conversationId, adapter.AdapterVersion,
+                            summary.GenerationId, evidenceFingerprint, _clock.UtcNow);
+                        await CommitCoverageCheckpointAsync(existingConversation, coverage, cancellationToken).ConfigureAwait(false);
+                        selectedCoverageState = ReadCheckpoint(coverage.CheckpointJson);
+                    }
+                    continue;
+                }
 
                 var nextCheckpoint = new IngestCheckpoint
                 {
@@ -157,6 +200,15 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 }
                 processed++;
                 progress?.Report($"Ingested {conversationId} from generation {summary.GenerationId}");
+            }
+
+            if (sourceConversationId is not null && !selectedFoundInGeneration && selectedConversation is not null)
+            {
+                var coverage = CreateConversationCoverageCheckpoint(accountId,
+                    generation.Manifest.Capture.CaptureAdapterFamily, selectedConversation.Id, adapter.AdapterVersion,
+                    summary.GenerationId, selectedState.Fingerprint ?? "conversation_absent", _clock.UtcNow);
+                await CommitCoverageCheckpointAsync(selectedConversation, coverage, cancellationToken).ConfigureAwait(false);
+                selectedCoverageState = ReadCheckpoint(coverage.CheckpointJson);
             }
 
             if (sourceConversationId is null)
@@ -213,6 +265,63 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         }),
         UpdatedAt = updatedAt,
     };
+
+    private static IngestCheckpoint CreateConversationCoverageCheckpoint(string accountId, string adapterFamily,
+        string conversationId, string readerVersion, string generationId, string evidenceFingerprint,
+        DateTimeOffset updatedAt) => new()
+    {
+        Id = "ingest_" + Guid.NewGuid().ToString("N"),
+        AccountId = accountId,
+        AdapterFamily = adapterFamily,
+        ScopeKind = ConversationCoverageScopeKind,
+        ScopeId = conversationId,
+        CheckpointJson = JsonSerializer.Serialize(new
+        {
+            version = 1,
+            reader_version = readerVersion,
+            generation_id = generationId,
+            evidence_fingerprint = evidenceFingerprint,
+        }),
+        UpdatedAt = updatedAt,
+    };
+
+    private async Task CommitCoverageCheckpointAsync(ArchiveConversation conversation,
+        IngestCheckpoint checkpoint, CancellationToken cancellationToken)
+    {
+        await using var session = await _archive.BeginConversationImportAsync(conversation, cancellationToken)
+            .ConfigureAwait(false);
+        await session.SetIngestCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+        await session.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task RefreshParticipantsAsync(ISourceAdapter adapter, string accountId, string profileId,
+        CancellationToken cancellationToken)
+    {
+        var descriptor = await adapter.DescribeSourceAsync(cancellationToken).ConfigureAwait(false);
+        if (!descriptor.IsAvailable)
+            throw new InvalidOperationException(descriptor.UnavailableReason ?? "The captured source is not available.");
+
+        await _archive.UpsertAccountAsync(new ArchiveAccount
+        {
+            Id = accountId,
+            SourceProfileId = profileId,
+            AdapterName = adapter.AdapterName,
+            AdapterVersion = adapter.AdapterVersion,
+            SourceVersion = descriptor.SourceVersion,
+            DisplayName = profileId,
+        }, cancellationToken).ConfigureAwait(false);
+
+        var participants = await adapter.ListParticipantsAsync(profileId, cancellationToken).ConfigureAwait(false);
+        await _archive.UpsertParticipantsAsync(participants.Select(participant => new ArchiveParticipant
+        {
+            Id = StableIds.Participant(accountId, participant.SourceUserId),
+            AccountId = accountId,
+            SourceParticipantId = participant.SourceUserId,
+            LatestRemark = participant.Remark,
+            Nickname = participant.Nickname,
+            Alias = participant.Alias,
+        }), cancellationToken).ConfigureAwait(false);
+    }
 
     private static async Task<string> FingerprintConversationAsync(ISourceAdapter adapter, string profileId,
         SourceConversation conversation, SourceConversationDetail detail, CancellationToken cancellationToken)

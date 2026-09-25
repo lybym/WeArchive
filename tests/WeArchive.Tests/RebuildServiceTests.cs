@@ -204,7 +204,7 @@ public sealed class RebuildServiceTests
     }
 
     [Fact]
-    public async Task RawVaultIngestDoesNotRegressCoveredConversationsAndAdvancesUnchangedConversationCheckpoints()
+    public async Task RawVaultIngestDoesNotRegressCoveredConversationsOrAdvanceUnchangedConversationCheckpoints()
     {
         using var temp = new TempDirectory();
         var vault = new RawVaultStore(temp.Combine("vault"));
@@ -224,12 +224,11 @@ public sealed class RebuildServiceTests
 
         var middle = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
-        Assert.Equal(2, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
 
         var checkpointBAfter = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
             "conversation", conversationB.Id, CancellationToken.None);
-        Assert.NotEqual(checkpointBBefore!.CheckpointJson, checkpointBAfter!.CheckpointJson);
-        Assert.Contains(middle.GenerationId, checkpointBAfter.CheckpointJson, StringComparison.Ordinal);
+        Assert.Equal(checkpointBBefore!.CheckpointJson, checkpointBAfter!.CheckpointJson);
         Assert.Equal("A changed", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
         Assert.Equal("B stable", Assert.Single(await archive.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
 
@@ -238,7 +237,7 @@ public sealed class RebuildServiceTests
             await stream.WriteAsync(new byte[] { 0x01 });
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A newest", "reader-1", CapturedAt.AddHours(2),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
-        Assert.Equal(2, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
         Assert.Equal("A newest", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
     }
 
@@ -347,25 +346,43 @@ public sealed class RebuildServiceTests
         var firstCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
             "conversation", conversationB.Id, CancellationToken.None);
         Assert.NotNull(firstCheckpoint);
+        long ImportRunCount()
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = archive.ArchivePath,
+                Pooling = false,
+            }.ToString());
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM import_runs;";
+            return (long)command.ExecuteScalar()!;
+        }
+        var runsBeforeNewGeneration = ImportRunCount();
 
         var newer = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
             conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B unchanged");
-        Assert.Equal(1, await ingester.IngestAsync(accountId, "wxid_b", null, CancellationToken.None));
-        var advancedCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+        Assert.Equal(0, await ingester.IngestAsync(accountId, "wxid_b", null, CancellationToken.None));
+        var unchangedCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
             "conversation", conversationB.Id, CancellationToken.None);
-        Assert.NotNull(advancedCheckpoint);
-        Assert.Contains(newer.GenerationId, advancedCheckpoint.CheckpointJson, StringComparison.Ordinal);
+        Assert.NotNull(unchangedCheckpoint);
+        Assert.Equal(firstCheckpoint.CheckpointJson, unchangedCheckpoint.CheckpointJson);
+        var coverageCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation_coverage", conversationB.Id, CancellationToken.None);
+        Assert.NotNull(coverageCheckpoint);
+        Assert.Contains(newer.GenerationId, coverageCheckpoint.CheckpointJson, StringComparison.Ordinal);
+        Assert.Equal(runsBeforeNewGeneration, ImportRunCount());
 
         var changedArtifact = Path.Combine(newer.GenerationDirectory, newer.Manifest.Artifacts[0].ContentRef);
         await using (var stream = new FileStream(changedArtifact, FileMode.Append, FileAccess.Write, FileShare.Read))
             await stream.WriteAsync(new byte[] { 0x01 });
 
         Assert.Equal(0, await ingester.IngestAsync(accountId, "wxid_b", null, CancellationToken.None));
-        Assert.Equal(advancedCheckpoint.CheckpointJson,
+        Assert.Equal(unchangedCheckpoint.CheckpointJson,
             (await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
                 "conversation", conversationB.Id, CancellationToken.None))?.CheckpointJson);
         Assert.Equal("B unchanged", Assert.Single(await archive.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
-        Assert.NotEqual(firstCheckpoint.CheckpointJson, advancedCheckpoint.CheckpointJson);
+        Assert.Equal(runsBeforeNewGeneration, ImportRunCount());
     }
 
     [Fact]
