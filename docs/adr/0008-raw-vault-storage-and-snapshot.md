@@ -143,7 +143,12 @@ but Fatal coverage never degrades to `complete`.
   WeChat client or key.
 - The vault root is a per-user application data directory (`%LOCALAPPDATA%\WeArchive\rawvault`).
 - `wearchive capture` is a thin CLI adapter over `CaptureService`.
-- This ADR does not authorize incremental capture, storage-dedup optimization,
+- Issue #25 extends the manifest to version 2 with explicit coverage and a versioned capture
+  checkpoint embedded in the published generation. This preserves the existing publish-last
+  boundary: a failed capture cannot advance the checkpoint. Verified unchanged artifacts may be
+  copied into a later generation, while uncertain source evidence triggers a full snapshot.
+  The physical format remains version 1 and prior manifests remain readable.
+- This ADR does not authorize storage-dedup optimization,
   encryption-at-rest, or any R3+ crash-recovery protocol. The bounded Raw-Vault-only
   canonical rebuild is separately scoped and authorized by Issue #23; it adds no persistent
   crash-recovery protocol.

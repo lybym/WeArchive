@@ -211,6 +211,12 @@ Capture supported source evidence into an independently recoverable, versioned p
 
 Capture must not intentionally modify WeChat data. A published generation records source version, artifact identity/checksums and completeness diagnostics.
 
+After a complete baseline, supported partitions may reuse verified preserved evidence when
+versioned source fingerprints prove they are unchanged. A capture that cannot establish safe
+incremental coverage falls back to a full consistent snapshot. Each generation reports explicit
+partition coverage; capture progress advances only with successful publication and remains
+independent of canonical ingest progress.
+
 ### FR-05 Immutable preservation
 
 Published Raw Vault generations are logically immutable. Source deletion/absence MUST NOT automatically delete preserved history.
@@ -470,7 +476,7 @@ CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portabl
 
 ### M1 — Live WeChat source adapter (partial)
 
-Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered; incremental live-source capture and complete partition-coverage reporting remain outstanding.
+Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. The canonical second-sync path and the remaining M1 milestones stay open.
 
 ### M1.5 — Preservation/rebuild foundation (partial delivery)
 
@@ -478,7 +484,12 @@ Delivered by Issues #22 and #23: Raw Vault baseline capture, immutable generatio
 source-independent evidence retention, and a validated Raw-Vault-only canonical rebuild with
 stable-ID preservation.
 
-Still outstanding: incremental capture checkpoints and full partition-coverage reporting. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24.
+Delivered by Issue #25: incremental capture checkpoints, explicit expected/captured/reused/
+unavailable/unsupported partition coverage, and an automatic full-snapshot fallback whenever
+incremental safety cannot be proven.
+
+Still outstanding: physical cross-generation storage dedup, Raw Vault encryption-at-rest, and
+real-environment verification on a supported Windows/WeChat 4.x installation.
 
 ### M2 — Semantic completeness
 

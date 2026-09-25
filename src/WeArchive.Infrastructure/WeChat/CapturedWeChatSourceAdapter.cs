@@ -23,7 +23,7 @@ internal static class CapturedWeChatSourceAdapter
             || string.IsNullOrWhiteSpace(manifest.SourceProfileId))
             throw new InvalidDataException("Raw Vault generation identity does not match its manifest.");
 
-        if (manifest.ManifestVersion != RawManifest.CurrentManifestVersion
+        if (manifest.ManifestVersion is < 1 or > RawManifest.CurrentManifestVersion
             || manifest.VaultFormatVersion != RawManifest.CurrentVaultFormatVersion)
             throw new NotSupportedException("No captured-source reader supports this Raw Vault manifest/format version.");
 

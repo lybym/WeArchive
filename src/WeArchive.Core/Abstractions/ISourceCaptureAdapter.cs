@@ -45,6 +45,27 @@ public interface ISourceCaptureAdapter
 }
 
 /// <summary>
+/// Optional safe incremental path for source families that can prove unchanged partitions.
+/// <para>
+/// The caller only passes a predecessor it has already verified as a complete generation whose
+/// checkpoint matches this adapter, but an implementation MUST re-validate that precondition
+/// itself and fall back to a full consistent snapshot when it cannot prove, from the predecessor
+/// and the live source, that reusing preserved evidence is safe. That fallback is reported with
+/// the <c>capture_full_fallback</c> diagnostic rather than being silent, and evidence that cannot
+/// be mapped unambiguously to a live partition is never reused.
+/// </para>
+/// </summary>
+public interface IIncrementalSourceCaptureAdapter : ISourceCaptureAdapter
+{
+    Task<SourceCaptureResult> CaptureIncrementalAsync(
+        string sourceProfileId,
+        IRawGenerationSession session,
+        RawGeneration previous,
+        IProgress<CaptureProgress>? progress,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// The outcome of one source-specific capture: the artifacts written, the diagnostics
 /// gathered and the completeness verdict. The <see cref="CaptureService"/> builds the manifest
 /// from this and decides whether to publish or discard.
@@ -54,6 +75,8 @@ public sealed record SourceCaptureResult
     public required IReadOnlyList<RawArtifactDescriptor> Artifacts { get; init; }
 
     public IReadOnlyList<RawManifestDiagnostic> Diagnostics { get; init; } = [];
+    public IReadOnlyList<RawPartitionCoverage> Coverage { get; init; } = [];
+    public RawCaptureMode Mode { get; init; } = RawCaptureMode.Baseline;
 
     public RawGenerationCompleteness Completeness { get; init; } = RawGenerationCompleteness.Complete;
 

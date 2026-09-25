@@ -112,18 +112,19 @@ Delivered:
 
 Still missing:
 
-- **Incremental checkpoints.** Conversation-scoped Raw Vault ingest checkpoint migration and consumer are delivered by Issue #24. Incremental live-source capture checkpoints and full partition-coverage reporting remain outstanding.
-- **Full partition-coverage reporting.** Missing/unreadable partitions are diagnosed, but complete expected/read/unread coverage reporting is not finished.
+- **Canonical second-sync path.** Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and live-source capture checkpoints plus explicit partition-coverage reporting are delivered by Issue #25; incremental canonical synchronization over the live adapter is still open.
+- **Full partition-coverage reporting on the canonical import path.** Capture-side expected/captured/reused/unavailable/unsupported coverage is delivered by Issue #25; the canonical import path still diagnoses missing/unreadable partitions without a complete expected/read rollup.
 
 Acceptance criteria still outstanding:
 
 - a second sync imports only new/changed records where supported;
-- source coverage reporting is explicit enough to distinguish complete and incomplete reads.
+- canonical source coverage reporting is explicit enough to distinguish complete and incomplete reads.
 
-## M1.5 — Raw Vault preservation (baseline capture delivered; milestone incomplete)
+## M1.5 — Raw Vault preservation (incremental capture delivered; milestone incomplete)
 
 **Goal:** capture a supported local WeChat account into a durable, versioned, immutable Raw Vault
-generation that remains readable without the original WeChat database key.
+generation that remains readable without the original WeChat database key, and keep that capture
+current without reacquiring unchanged evidence.
 
 Delivered:
 
@@ -133,20 +134,23 @@ Delivered:
 - `wearchive capture` CLI command as a thin adapter over `CaptureService`;
 - generation discovery/validation (list, latest, open-with-checksum-verification);
 - key non-persistence (no upstream key in vault, canonical SQLite, logs or CLI output);
-- unknown/source-specific fields preserved in captured evidence.
+- unknown/source-specific fields preserved in captured evidence;
+- versioned capture checkpoints published inside the generation manifest (Issue #25);
+- per-partition change detection over source database + committed WAL content (Issue #25);
+- explicit expected/captured/reused/unavailable/unsupported partition coverage (Issue #25);
+- automatic widening to a full consistent snapshot whenever incremental safety cannot be proven (Issue #25).
 
 Still missing (non-goals of the rebuild slice):
 
-- incremental capture/checkpoint optimization;
-- storage-dedup optimization;
+- physical cross-generation storage-dedup optimization;
 - Raw Vault encryption-at-rest;
-- incremental live-source capture checkpoints.
+- real-environment verification on a supported Windows/WeChat 4.x installation.
 
 Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and `wearchive rebuild`.
-Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints; it does not authorize incremental
-live-source capture or collection orchestration.
+Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints. Issue #25 adds incremental
+live-source capture with partition coverage; it does not authorize collection orchestration.
 
-Acceptance criteria — met for the baseline slice:
+Acceptance criteria — met for the capture slice:
 
 - a supported WeChat account can be captured into a versioned Raw Vault generation;
 - a successful capture produces a complete, parseable, versioned manifest;
@@ -155,7 +159,10 @@ Acceptance criteria — met for the baseline slice:
 - published generations are logically immutable; later capture never edits an earlier generation;
 - captured evidence remains readable after live WeChat access/original DB key are unavailable;
 - no WeChat DB key is written to Raw Vault, canonical SQLite, logs or CLI output;
-- no persistent recovery journal, rollback ledger or complex R3+ state machine is added.
+- no persistent recovery journal, rollback ledger or complex R3+ state machine is added;
+- after a complete baseline a later capture distinguishes unchanged from new/changed partitions and reacquires only the latter (Issue #25);
+- the capture checkpoint advances only with a successfully published complete generation, and a Fatal publication leaves it unchanged (Issue #25);
+- a disappeared source partition is reported and never deletes an earlier generation or its evidence (Issue #25).
 
 Do not mark M1.5 complete in this Issue.
 
@@ -271,8 +278,8 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-1. **M1.5 Raw Vault baseline capture** (Issue #22): capture a supported WeChat account into a versioned, immutable generation.
-2. Finish M1 incremental checkpoints and full partition-coverage reporting.
+1. **M1.5 Raw Vault capture** (Issues #22/#25): versioned immutable generations with safe incremental capture and explicit partition coverage.
+2. Finish the remaining M1 incremental synchronization (canonical second-sync path).
 3. Continue M2 semantic depth.
 4. Build M3 retrieval and M4 Harness workflows on the CLI contract.
 

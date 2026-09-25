@@ -1,8 +1,9 @@
 namespace WeArchive.Core.RawVault;
 
 /// <summary>
-/// Capture mode. Only <see cref="Baseline"/> (full capture) is implemented in M1.5;
-/// <see cref="Incremental"/> is reserved for future work and is explicitly a non-goal of
+/// Capture mode. <see cref="Baseline"/> reads the whole supported source;
+/// <see cref="Incremental"/> reuses already-verified evidence for the partitions the adapter can
+/// prove unchanged. Incremental capture is delivered by Issue #25 and was an explicit non-goal of
 /// Issue #22.
 /// </summary>
 public enum RawCaptureMode
@@ -10,7 +11,7 @@ public enum RawCaptureMode
     /// <summary>Capture the entire supported source snapshot into one generation.</summary>
     Baseline,
 
-    /// <summary>Reserved for future incremental capture; not implemented.</summary>
+    /// <summary>Unchanged source partitions reuse preserved evidence.</summary>
     Incremental,
 }
 
@@ -105,6 +106,8 @@ public sealed record CaptureResult
     public required int ArtifactCount { get; init; }
 
     public IReadOnlyList<RawManifestDiagnostic> Diagnostics { get; init; } = [];
+    public IReadOnlyList<RawPartitionCoverage> Coverage { get; init; } = [];
+    public RawCaptureMode Mode { get; init; } = RawCaptureMode.Baseline;
 
     public string? PreviousGenerationId { get; init; }
 

@@ -68,7 +68,7 @@ The difficult archive/source/export engine is already implemented:
 - canonical normalization for text and documented non-text/event types;
 - reply/quote, forwarded bundle, link/app-share and provenance handling;
 - SQLite archive with migrations and idempotent import behavior;
-- Raw Vault baseline capture — source-faithful, immutable generations with SHA-256 checksums, readable without the WeChat key ([RAW_VAULT.md](docs/RAW_VAULT.md));
+- Raw Vault capture — source-faithful, immutable generations with SHA-256 checksums, readable without the WeChat key, with safe incremental capture and explicit partition coverage ([RAW_VAULT.md](docs/RAW_VAULT.md));
 - Raw-Vault-only canonical rebuild with a WeChat 4.x captured-source reader and validated archive replacement;
 - deterministic machine export to monthly JSONL plus YAML/JSON catalogs;
 - structured Fatal/Partial/Info diagnostics;
@@ -147,8 +147,8 @@ In scope:
 Not yet complete:
 
 - CLI product-surface migration itself;
-- incremental checkpoints;
-- complete partition-coverage reporting;
+- incremental canonical (second-sync) synchronization;
+- canonical partition-coverage reporting;
 - full-text archive search;
 - collection/time-range CLI workflows.
 

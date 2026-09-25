@@ -304,6 +304,17 @@ loss are not guaranteed recovery classes. No journal, commit marker or rollback 
 persisted. See [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md) and
 [RAW_VAULT.md](RAW_VAULT.md).
 
+Incremental capture (Issue #25) retains R1. Its versioned checkpoint is embedded in the
+publish-last manifest and therefore advances only with a successfully published complete
+generation. A partial generation records coverage without advancing the checkpoint; caught
+failure and cancellation do not publish a new checkpoint. No separate recovery protocol is
+introduced.
+
+Per section 7's fixture strategy, the WeChat capture adapter reaches the live source through an
+injectable environment seam (discovery, client-running probe, materialization), so the shipped
+fingerprint/prior-map/reuse/recheck decision is covered by fixture tests without a live client or
+a database key; only the end-to-end real-environment run remains manual.
+
 ### 10.4 R2 — Database transaction publication
 
 This is the baseline for one-conversation import publication.

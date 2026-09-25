@@ -345,6 +345,14 @@ FR-13/FR-20, [RAW_VAULT.md](RAW_VAULT.md)). The command delegates the entire sna
 publish operation to `CaptureService`; it contains no key-acquisition, SQLCipher or manifest
 publication logic.
 
+After a complete version-2 baseline, a later run verifies partition fingerprints and reuses
+unchanged preserved artifacts. If incremental safety cannot be proven it performs a full
+consistent capture. `--json` reports `mode`, `generation_id`, `completeness`, `coverage` and
+`coverage_summary` (`expected`, `captured`, `reused`, `unavailable`, `unsupported`) plus
+diagnostics. The output never contains source keys or fingerprint contents. A no-change run
+publishes a new generation only after checking the current source partitions, and reports reused
+coverage explicitly.
+
 Account resolution (never prompts, safe under `--no-input`): `--account <id>` selects explicitly
 by the account's stable id (`a_...`) **or** its source profile id; otherwise the current account
 (`is_current`) is used, falling back to the first account.
@@ -379,13 +387,44 @@ JSON shape (exit 0):
   "capture_adapter_version": "0.1.0",
   "artifact_count": 5,
   "previous_generation_id": null,
-  "diagnostics": []
+  "diagnostics": [],
+  "coverage": [
+    { "partition_id": "db_storage/session/session.db", "status": "captured", "diagnostic": null },
+    { "partition_id": "db_storage/message/message_0.db", "status": "reused", "diagnostic": null },
+    {
+      "partition_id": "db_storage/voice/voice.db",
+      "status": "unavailable",
+      "diagnostic": "Partition 'db_storage/voice/voice.db' could not be read."
+    }
+  ],
+  "coverage_summary": {
+    "expected": 3,
+    "captured": 1,
+    "reused": 1,
+    "unavailable": 1,
+    "unsupported": 0
+  }
 }
 ```
 
-`completeness` is `complete` or `partial`. `mode` is `baseline` (full capture; incremental is
-future work). `previous_generation_id` links to the immediately preceding published generation
-for the same account, forming an append-only chain.
+`completeness` is `complete` or `partial`. `mode` is `baseline` for a full consistent snapshot
+and `incremental` when unchanged partitions reused already-published evidence. `expected` is the
+number of partitions this run accounted for; `captured + reused + unavailable + unsupported`
+equals `expected`. `previous_generation_id` links to the immediately preceding published
+generation for the same account, forming an append-only chain.
+
+`coverage` reports each partition's `captured`/`reused`/`unavailable`/`unsupported` status, and
+`diagnostic` gives the engineering reason for a partition that was not captured, so a consumer
+can attribute a coverage gap without parsing `diagnostics[].message`. Both deliberately omit the
+source fingerprint and artifact checksum: the CLI contract exposes a verifiable completeness
+statement without publishing the evidence used to prove incremental safety, and never exposes
+source keys. When incremental safety cannot be proven the run reads the whole source and reports a
+`capture_full_fallback` diagnostic instead of claiming complete incremental coverage.
+
+`mode: incremental` means evidence was not reacquired, not that the run was cheap: every capture
+still re-fingerprints each expected partition (database file plus committed WAL bytes) before and
+after the snapshot, and re-verifies the predecessor generation's artifacts before reusing any of
+them. Plan for a cost proportional to source size even when nothing changed.
 
 ## Failure document (`--json`)
 

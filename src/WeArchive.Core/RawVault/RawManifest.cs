@@ -18,7 +18,7 @@ public sealed record RawManifest
     /// The manifest schema version. Increment only when the manifest's own structure changes;
     /// it is independent of the canonical SQLite, message-schema and export-schema versions.
     /// </summary>
-    public const int CurrentManifestVersion = 1;
+    public const int CurrentManifestVersion = 2;
 
     public const int CurrentVaultFormatVersion = 1;
 
@@ -45,12 +45,39 @@ public sealed record RawManifest
 
     public IReadOnlyList<RawManifestDiagnostic> Diagnostics { get; init; } = [];
 
+    /// <summary>Explicit source partition coverage for this logical generation.</summary>
+    public IReadOnlyList<RawPartitionCoverage> Coverage { get; init; } = [];
+
+    /// <summary>Capture progress published with this generation, independent of canonical ingest.</summary>
+    public RawCaptureCheckpoint? CaptureCheckpoint { get; init; }
+
     /// <summary>
     /// The immediately preceding published generation for the same account, or null when this
     /// is the first generation. Forms an append-only chain so later captures never edit earlier
     /// generations (Issue #22 immutability acceptance criterion).
     /// </summary>
     public string? PreviousGenerationId { get; init; }
+}
+
+public enum RawPartitionStatus { Captured, Reused, Unavailable, Unsupported }
+
+public sealed record RawPartitionCoverage
+{
+    public required string PartitionId { get; init; }
+    public required RawPartitionStatus Status { get; init; }
+    public string? SourceFingerprint { get; init; }
+    public string? ArtifactSha256 { get; init; }
+    public string? Diagnostic { get; init; }
+}
+
+/// <summary>Versioned Raw Vault capture cursor. It is part of the publish-last manifest.</summary>
+public sealed record RawCaptureCheckpoint
+{
+    public int Version { get; init; } = 1;
+    public required string GenerationId { get; init; }
+    public required string CaptureAdapterFamily { get; init; }
+    public required string CaptureAdapterVersion { get; init; }
+    public required IReadOnlyDictionary<string, string> PartitionFingerprints { get; init; }
 }
 
 /// <summary>Source product/adapter evidence recorded in the manifest.</summary>
@@ -76,7 +103,10 @@ public sealed record RawManifestCapture
 
     public required string CaptureAdapterVersion { get; init; }
 
-    /// <summary>baseline for a full capture; incremental is reserved for future work.</summary>
+    /// <summary>
+    /// baseline when the whole supported source was read, incremental when unchanged partitions
+    /// reused evidence already published by the predecessor generation.
+    /// </summary>
     public required RawCaptureMode Mode { get; init; }
 
     public required RawGenerationCompleteness Completeness { get; init; }

@@ -5,9 +5,9 @@ using WeArchive.Core.RawVault;
 namespace WeArchive.Core.Services;
 
 /// <summary>
-/// Orchestrates a Raw Vault baseline capture: source discovery -&gt; source-specific
-/// snapshot -&gt; immutable generation publication. docs/RAW_VAULT.md, docs/ARCHITECTURE.md
-/// (Raw Vault section), Issue #22.
+/// Orchestrates a Raw Vault capture: source discovery -&gt; source-specific snapshot -&gt;
+/// immutable generation publication. docs/RAW_VAULT.md, docs/ARCHITECTURE.md (Raw Vault
+/// section), Issues #22 and #25.
 /// <para>
 /// This service is source-independent. It resolves the account through
 /// <see cref="ISourceAdapter"/>, delegates artifact production to
@@ -15,11 +15,22 @@ namespace WeArchive.Core.Services;
 /// It never touches WeChat files, key acquisition or SQLCipher directly.
 /// </para>
 /// <para>
+/// Incremental capture (Issue #25): when the immediately preceding published generation is a
+/// complete version-2 generation whose capture checkpoint matches this capture adapter, the
+/// adapter's optional incremental path may reuse already-verified artifacts. The checkpoint
+/// lives in the publish-last manifest, so it advances only when a complete generation is
+/// actually published; a partial generation records coverage without advancing it, and a
+/// failed or cancelled capture leaves the previous checkpoint unchanged. When no compatible
+/// checkpoint exists, capture widens to a full consistent snapshot and reports
+/// <see cref="DiagnosticCodes.CaptureFullFallback"/>. The capture checkpoint is independent of
+/// canonical ingest progress (docs/DATA_MODEL.md section 21).
+/// </para>
+/// <para>
 /// Reliability — R1 (in-process publication): a normal success publishes exactly one complete
-/// generation. A Fatal diagnostic or caught cancellation/I/O failure discards the staged
-/// material best-effort and publishes nothing, so an incomplete snapshot is never mistaken
-/// for a complete generation. No persistent journal, commit marker or rollback ledger is
-/// introduced (Issue #22 non-goals).
+/// or partial generation. A Fatal diagnostic or caught cancellation/I/O failure discards the
+/// staged material best-effort and publishes nothing, so an incomplete snapshot is never
+/// mistaken for a complete generation. No persistent journal, commit marker or rollback
+/// ledger is introduced (Issue #22/#25 non-goals).
 /// </para>
 /// </summary>
 public sealed class CaptureService
@@ -99,6 +110,25 @@ public sealed class CaptureService
             CaptureAdapterVersion = _captureAdapter.CaptureAdapterVersion,
         };
 
+        RawGeneration? reusable = null;
+        var fallbackDiagnostics = new List<RawManifestDiagnostic>();
+        if (previous is not null && _captureAdapter is IIncrementalSourceCaptureAdapter)
+        {
+            reusable = await _vault.OpenGenerationAsync(accountId, previous.GenerationId, cancellationToken)
+                .ConfigureAwait(false);
+            var checkpoint = reusable?.Manifest.CaptureCheckpoint;
+            if (reusable is null || reusable.Manifest.Capture.Completeness != RawGenerationCompleteness.Complete ||
+                checkpoint is null || checkpoint.Version != 1 ||
+                checkpoint.GenerationId != previous.GenerationId ||
+                checkpoint.CaptureAdapterFamily != _captureAdapter.CaptureAdapterFamily ||
+                checkpoint.CaptureAdapterVersion != _captureAdapter.CaptureAdapterVersion)
+            {
+                reusable = null;
+                fallbackDiagnostics.Add(RawManifestDiagnostic.Info(DiagnosticCodes.CaptureFullFallback,
+                    "No compatible, verified capture checkpoint is available; the whole source was read."));
+            }
+        }
+
         var session = await _vault
             .BeginGenerationAsync(context, cancellationToken)
             .ConfigureAwait(false);
@@ -106,9 +136,9 @@ public sealed class CaptureService
         SourceCaptureResult captureResult;
         try
         {
-            captureResult = await _captureAdapter
-                .CaptureAsync(account.SourceProfileId, session, progress, cancellationToken)
-                .ConfigureAwait(false);
+            captureResult = reusable is not null && _captureAdapter is IIncrementalSourceCaptureAdapter incremental
+                ? await incremental.CaptureIncrementalAsync(account.SourceProfileId, session, reusable, progress, cancellationToken).ConfigureAwait(false)
+                : await _captureAdapter.CaptureAsync(account.SourceProfileId, session, progress, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -146,6 +176,24 @@ public sealed class CaptureService
                 message, captureResult.Diagnostics);
         }
 
+        var diagnostics = fallbackDiagnostics.Concat(captureResult.Diagnostics).ToArray();
+        var checkpointValue = captureResult.Completeness == RawGenerationCompleteness.Complete &&
+            captureResult.Coverage.Count > 0 &&
+            captureResult.Coverage.All(c =>
+                (c.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused) &&
+                !string.IsNullOrWhiteSpace(c.SourceFingerprint) &&
+                !string.IsNullOrWhiteSpace(c.ArtifactSha256) &&
+                captureResult.Artifacts.Any(a => a.Sha256 == c.ArtifactSha256))
+            ? new RawCaptureCheckpoint
+            {
+                GenerationId = session.GenerationId,
+                CaptureAdapterFamily = _captureAdapter.CaptureAdapterFamily,
+                CaptureAdapterVersion = _captureAdapter.CaptureAdapterVersion,
+                PartitionFingerprints = captureResult.Coverage.ToDictionary(
+                    c => c.PartitionId, c => c.SourceFingerprint!, StringComparer.Ordinal),
+            }
+            : null;
+
         var manifest = new RawManifest
         {
             GenerationId = session.GenerationId,
@@ -163,12 +211,14 @@ public sealed class CaptureService
                 CaptureTime = captureTime,
                 CaptureAdapterFamily = _captureAdapter.CaptureAdapterFamily,
                 CaptureAdapterVersion = _captureAdapter.CaptureAdapterVersion,
-                Mode = RawCaptureMode.Baseline,
+                Mode = captureResult.Mode,
                 Completeness = captureResult.Completeness,
                 ArtifactCount = captureResult.Artifacts.Count,
             },
             Artifacts = captureResult.Artifacts,
-            Diagnostics = captureResult.Diagnostics,
+            Diagnostics = diagnostics,
+            Coverage = captureResult.Coverage,
+            CaptureCheckpoint = checkpointValue,
             PreviousGenerationId = previous?.GenerationId,
         };
 
@@ -201,7 +251,9 @@ public sealed class CaptureService
             CaptureTime = captureTime,
             Completeness = captureResult.Completeness,
             ArtifactCount = captureResult.Artifacts.Count,
-            Diagnostics = captureResult.Diagnostics,
+            Diagnostics = diagnostics,
+            Coverage = captureResult.Coverage,
+            Mode = captureResult.Mode,
             PreviousGenerationId = previous?.GenerationId,
         };
     }

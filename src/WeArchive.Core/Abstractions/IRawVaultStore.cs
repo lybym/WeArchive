@@ -84,6 +84,12 @@ public interface IRawGenerationSession : IAsyncDisposable
         IReadOnlyDictionary<string, string>? metadata,
         CancellationToken cancellationToken);
 
+    /// <summary>Reuse previously verified evidence without reacquiring the live source.</summary>
+    Task<RawArtifactDescriptor> ReuseArtifactAsync(
+        RawGeneration previous,
+        RawArtifactDescriptor artifact,
+        CancellationToken cancellationToken);
+
     /// <summary>
     /// Publishes the generation: writes the manifest to the staging directory and atomically
     /// renames it to its final location. Before this call nothing is discoverable. A

@@ -58,6 +58,25 @@ internal static class RawManifestSerializer
             return null;
         }
 
+        if (manifest.ManifestVersion >= 2)
+        {
+            if (manifest.Coverage is null || manifest.Coverage.Any(c => string.IsNullOrWhiteSpace(c.PartitionId)) ||
+                manifest.Coverage.Select(c => c.PartitionId).Distinct(StringComparer.Ordinal).Count() != manifest.Coverage.Count)
+                return null;
+            var checkpoint = manifest.CaptureCheckpoint;
+            if (checkpoint is not null && (checkpoint.Version != 1 ||
+                checkpoint.GenerationId != manifest.GenerationId ||
+                checkpoint.CaptureAdapterFamily != manifest.Capture.CaptureAdapterFamily ||
+                checkpoint.CaptureAdapterVersion != manifest.Capture.CaptureAdapterVersion ||
+                checkpoint.PartitionFingerprints is null ||
+                checkpoint.PartitionFingerprints.Count != manifest.Coverage.Count ||
+                manifest.Coverage.Any(c => !checkpoint.PartitionFingerprints.TryGetValue(c.PartitionId, out var fingerprint) ||
+                    fingerprint != c.SourceFingerprint ||
+                    string.IsNullOrWhiteSpace(c.ArtifactSha256) ||
+                    !manifest.Artifacts.Any(a => a.Sha256 == c.ArtifactSha256))))
+                return null;
+        }
+
         return manifest;
     }
 }
