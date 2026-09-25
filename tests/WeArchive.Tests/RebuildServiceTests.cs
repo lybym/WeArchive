@@ -203,6 +203,41 @@ public sealed class RebuildServiceTests
         Assert.Contains(messages.SelectMany(m => m), m => m.Text == "new conversation evidence");
     }
 
+    [Fact]
+    public async Task RawVaultIngestDoesNotRegressCoveredConversationsOrAdvanceUnchangedConversationCheckpoints()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A old", "reader-1", CapturedAt,
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(2, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+
+        var initialConversations = await archive.ListConversationsAsync(accountId, CancellationToken.None);
+        var conversationA = Assert.Single(initialConversations, c => c.SourceConversationId == "wxid_a");
+        var conversationB = Assert.Single(initialConversations, c => c.SourceConversationId == "wxid_b");
+        var checkpointBBefore = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversationB.Id, CancellationToken.None);
+
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A changed", "reader-1", CapturedAt.AddHours(1),
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+
+        var checkpointBAfter = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversationB.Id, CancellationToken.None);
+        Assert.Equal(checkpointBBefore!.CheckpointJson, checkpointBAfter!.CheckpointJson);
+        Assert.Equal("A changed", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
+        Assert.Equal("B stable", Assert.Single(await archive.ReadMessagesAsync(conversationB.Id, CancellationToken.None)).Text);
+
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A newest", "reader-1", CapturedAt.AddHours(2),
+            conversationId: "wxid_a", additionalConversationId: "wxid_b", additionalText: "B stable");
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        Assert.Equal("A newest", Assert.Single(await archive.ReadMessagesAsync(conversationA.Id, CancellationToken.None)).Text);
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,
@@ -214,26 +249,34 @@ public sealed class RebuildServiceTests
         bool hasMessageTable = true,
         long sourceType = 1,
         RawGenerationCompleteness completeness = RawGenerationCompleteness.Complete,
-        string conversationId = "wxid_bob")
+        string conversationId = "wxid_bob",
+        string? additionalConversationId = null,
+        string? additionalText = null)
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
         var table = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(conversationId))).ToLowerInvariant();
+        var additionalTable = additionalConversationId is null ? null
+            : "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(additionalConversationId))).ToLowerInvariant();
         BuildDb(Path.Combine(dbRoot, "session.db"), $"""
             CREATE TABLE SessionTable (username TEXT PRIMARY KEY, sort_timestamp INTEGER, last_timestamp INTEGER, last_msg_type INTEGER, last_msg_sub_type INTEGER, summary TEXT);
             INSERT INTO SessionTable VALUES ('{conversationId}', 1737244800, 1737244800, 1, 0, NULL);
+            {(additionalConversationId is null ? string.Empty : $"INSERT INTO SessionTable VALUES ('{additionalConversationId}', 1737244800, 1737244800, 1, 0, NULL);")}
             """);
         BuildDb(Path.Combine(dbRoot, "contact.db"), $"""
             CREATE TABLE contact (username TEXT PRIMARY KEY, remark TEXT, nick_name TEXT, alias TEXT, local_type INTEGER);
             INSERT INTO contact VALUES ('{conversationId}', 'Bob', 'Bob', NULL, 1);
+            {(additionalConversationId is null ? string.Empty : $"INSERT INTO contact VALUES ('{additionalConversationId}', 'Bob', 'Bob', NULL, 1);")}
             CREATE TABLE stranger (username TEXT PRIMARY KEY, nick_name TEXT);
             """);
         var messageSql = $"""
                 CREATE TABLE Name2Id (rowid INTEGER PRIMARY KEY, user_name TEXT);
                 INSERT INTO Name2Id VALUES (1, '{conversationId}');
+                {(additionalConversationId is null ? string.Empty : $"INSERT INTO Name2Id VALUES (2, '{additionalConversationId}');")}
                 """ + (hasMessageTable ? $"""
                 CREATE TABLE "{table}" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB);
                 INSERT INTO "{table}" VALUES (1, 7001, {sourceType}, 1, 1736907600, '{text}', 0, NULL);
+                {(additionalTable is null ? string.Empty : $"CREATE TABLE \"{additionalTable}\" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB); INSERT INTO \"{additionalTable}\" VALUES (1, 7002, {sourceType}, 1, 1736907600, '{additionalText ?? text}', 0, NULL);")}
                 """ : string.Empty);
         BuildDb(Path.Combine(dbRoot, "message_0.db"), messageSql);
 
