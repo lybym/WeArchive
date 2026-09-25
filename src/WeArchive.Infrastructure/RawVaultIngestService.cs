@@ -99,9 +99,21 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 if (!replay && state.ReaderVersion == adapter.AdapterVersion
                     && IsAncestorOrSelf(generationsById, summary.GenerationId, state.GenerationId))
                     continue;
-                var detail = await adapter.DescribeConversationAsync(account.SourceProfileId, conversation.SourceConversationId, cancellationToken).ConfigureAwait(false);
-                var evidenceFingerprint = await FingerprintConversationAsync(adapter, account.SourceProfileId,
-                    conversation, detail, cancellationToken).ConfigureAwait(false);
+                SourceConversationDetail detail;
+                string evidenceFingerprint;
+                try
+                {
+                    detail = await adapter.DescribeConversationAsync(account.SourceProfileId,
+                        conversation.SourceConversationId, cancellationToken).ConfigureAwait(false);
+                    evidenceFingerprint = await FingerprintConversationAsync(adapter, account.SourceProfileId,
+                        conversation, detail, cancellationToken).ConfigureAwait(false);
+                }
+                catch (SourceCoverageException ex)
+                {
+                    throw new InvalidDataException(
+                        $"Raw Vault generation '{summary.GenerationId}' has incomplete coverage for conversation scope " +
+                        $"'{conversation.SourceConversationId}': {ex.Message}", ex);
+                }
                 if (!replay && state.ReaderVersion == adapter.AdapterVersion
                     && string.Equals(state.Fingerprint, evidenceFingerprint, StringComparison.Ordinal)) continue;
 
@@ -134,7 +146,13 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 }, progress is null ? null : new ImportStageProgress(progress, conversationId, summary.GenerationId),
                     cancellationToken).ConfigureAwait(false);
                 if (outcome.Run.Status != ImportRunStatus.Completed)
-                    throw new InvalidDataException($"Ingest failed for conversation scope '{conversationId}'.");
+                {
+                    var fatal = outcome.Diagnostics.LastOrDefault(diagnostic => diagnostic.Severity == DiagnosticSeverity.Fatal);
+                    throw new InvalidDataException(
+                        $"Ingest failed for Raw Vault generation '{summary.GenerationId}', conversation scope " +
+                        $"'{conversation.SourceConversationId}' ({conversationId})" +
+                        (fatal is null ? "." : $": {fatal.Message}"));
+                }
                 processed++;
                 progress?.Report($"Ingested {conversationId} from generation {summary.GenerationId}");
             }

@@ -498,6 +498,51 @@ public sealed class RebuildServiceTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RawVaultIngestReportsGenerationAndConversationWhenLaterCoverageFails()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "prior complete data", "reader-1", CapturedAt);
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        var priorConversationCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "conversation", conversation.Id, CancellationToken.None);
+        var priorAccountCheckpoint = await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            "account", accountId, CancellationToken.None);
+        Assert.NotNull(priorConversationCheckpoint);
+        Assert.NotNull(priorAccountCheckpoint);
+
+        var incomplete = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "unavailable later shard",
+            "reader-1", CapturedAt.AddHours(1), hasMessageTable: false);
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exitCode = await new IngestCommand(ingester).ExecuteAsync(
+            new CliContext(stdout, stderr, new GlobalOptions { Json = true, NoInput = true }),
+            ["--account", accountId], CancellationToken.None);
+        Assert.Equal(ExitCode.Failure, exitCode);
+        Assert.Contains(incomplete.GenerationId, stderr.ToString(), StringComparison.Ordinal);
+        Assert.Contains("wxid_bob", stderr.ToString(), StringComparison.Ordinal);
+        using (var errorDocument = System.Text.Json.JsonDocument.Parse(stdout.ToString()))
+        {
+            var errorMessage = errorDocument.RootElement.GetProperty("error").GetProperty("message").GetString();
+            Assert.Contains(incomplete.GenerationId, errorMessage, StringComparison.Ordinal);
+            Assert.Contains("wxid_bob", errorMessage, StringComparison.Ordinal);
+        }
+        Assert.Equal(priorConversationCheckpoint.CheckpointJson,
+            (await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+                "conversation", conversation.Id, CancellationToken.None))?.CheckpointJson);
+        Assert.Equal(priorAccountCheckpoint.CheckpointJson,
+            (await archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+                "account", accountId, CancellationToken.None))?.CheckpointJson);
+        Assert.Equal("prior complete data", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,
