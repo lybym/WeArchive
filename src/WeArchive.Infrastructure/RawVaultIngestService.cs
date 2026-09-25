@@ -24,18 +24,24 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         var generations = await _rawVault.ListGenerationsAsync(accountId, cancellationToken).ConfigureAwait(false);
         if (generations.Count == 0)
             throw new InvalidOperationException("No published Raw Vault generations are available for this account.");
+        var generationsById = generations.ToDictionary(generation => generation.GenerationId, StringComparer.Ordinal);
 
         // The checkpoint catalog lets an unchanged repeat return before any generation's
         // artifacts are opened. Per-conversation fingerprints below distinguish changed source
         // records after a newer generation is opened.
         var currentReaderVersion = WeChatWindowsSourceAdapter.Version;
-        var accountScanCheckpoint = sourceConversationId is null
-            ? await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, AccountScopeKind, accountId, cancellationToken).ConfigureAwait(false)
-            : null;
+        var accountScanCheckpoint = await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family,
+            AccountScopeKind, accountId, cancellationToken).ConfigureAwait(false);
         var accountScan = ReadCheckpoint(accountScanCheckpoint?.CheckpointJson);
-        var accountScanIndex = IndexOfGeneration(generations, accountScan.GenerationId);
+        if (replay && accountScanCheckpoint is not null && accountScan.CoveredGenerationIds.Count > 0)
+        {
+            var invalidatedScan = CreateAccountScanCheckpoint(accountId, WeChatCaptureAdapter.Family,
+                currentReaderVersion, [], _clock.UtcNow);
+            await _archive.SetIngestCheckpointAsync(invalidatedScan, cancellationToken).ConfigureAwait(false);
+            accountScan = ReadCheckpoint(invalidatedScan.CheckpointJson);
+        }
         if (!replay && sourceConversationId is null && accountScan.ReaderVersion == currentReaderVersion
-            && accountScanIndex == generations.Count - 1)
+            && generations.All(generation => accountScan.CoveredGenerationIds.Contains(generation.GenerationId)))
             return 0;
 
         var processed = 0;
@@ -43,9 +49,8 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         foreach (var summary in generations)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var generationIndex = IndexOfGeneration(generations, summary.GenerationId);
-            if (!replay && sourceConversationId is null && accountScan.ReaderVersion == currentReaderVersion
-                && accountScanIndex >= generationIndex)
+            if (!replay && accountScan.ReaderVersion == currentReaderVersion
+                && accountScan.CoveredGenerationIds.Contains(summary.GenerationId))
                 continue;
 
             // Covered history is skipped using each conversation's committed generation cursor.
@@ -70,8 +75,8 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 var checkpoint = await _archive.GetIngestCheckpointAsync(accountId, generation.Manifest.Capture.CaptureAdapterFamily,
                     ScopeKind, conversationId, cancellationToken).ConfigureAwait(false);
                 var state = ReadCheckpoint(checkpoint?.CheckpointJson);
-                var checkpointIndex = IndexOfGeneration(generations, state.GenerationId);
-                if (!replay && state.ReaderVersion == adapter.AdapterVersion && checkpointIndex >= generationIndex)
+                if (!replay && state.ReaderVersion == adapter.AdapterVersion
+                    && IsAncestorOrSelf(generationsById, summary.GenerationId, state.GenerationId))
                     continue;
                 var detail = await adapter.DescribeConversationAsync(account.SourceProfileId, conversation.SourceConversationId, cancellationToken).ConfigureAwait(false);
                 var evidenceFingerprint = await FingerprintConversationAsync(adapter, account.SourceProfileId,
@@ -112,27 +117,20 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 progress?.Report($"Ingested {conversationId} from generation {summary.GenerationId}");
             }
 
-            if (!replay && sourceConversationId is null)
+            if (sourceConversationId is null)
             {
-                var scanCheckpoint = new IngestCheckpoint
+                var covered = new HashSet<string>(
+                    accountScan.ReaderVersion == adapter.AdapterVersion
+                        ? accountScan.CoveredGenerationIds
+                        : [],
+                    StringComparer.Ordinal)
                 {
-                    Id = "ingest_" + Guid.NewGuid().ToString("N"),
-                    AccountId = accountId,
-                    AdapterFamily = generation.Manifest.Capture.CaptureAdapterFamily,
-                    ScopeKind = AccountScopeKind,
-                    ScopeId = accountId,
-                    CheckpointJson = JsonSerializer.Serialize(new
-                    {
-                        version = 1,
-                        reader_version = adapter.AdapterVersion,
-                        generation_id = summary.GenerationId,
-                        evidence_fingerprint = "complete_account_scan",
-                    }),
-                    UpdatedAt = _clock.UtcNow,
+                    summary.GenerationId,
                 };
+                var scanCheckpoint = CreateAccountScanCheckpoint(accountId,
+                    generation.Manifest.Capture.CaptureAdapterFamily, adapter.AdapterVersion, covered, _clock.UtcNow);
                 await _archive.SetIngestCheckpointAsync(scanCheckpoint, cancellationToken).ConfigureAwait(false);
                 accountScan = ReadCheckpoint(scanCheckpoint.CheckpointJson);
-                accountScanIndex = generationIndex;
             }
         }
 
@@ -141,12 +139,38 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         return processed;
     }
 
-    private static int IndexOfGeneration(IReadOnlyList<Core.RawVault.RawGenerationSummary> generations, string? generationId)
+    private static bool IsAncestorOrSelf(IReadOnlyDictionary<string, Core.RawVault.RawGenerationSummary> generations,
+        string candidateGenerationId, string? descendantGenerationId)
     {
-        for (var index = 0; index < generations.Count; index++)
-            if (generations[index].GenerationId == generationId) return index;
-        return -1;
+        var current = descendantGenerationId;
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (current is not null && visited.Add(current))
+        {
+            if (current == candidateGenerationId) return true;
+            if (!generations.TryGetValue(current, out var summary)) return false;
+            current = summary.PreviousGenerationId;
+        }
+        return false;
     }
+
+    private static IngestCheckpoint CreateAccountScanCheckpoint(string accountId, string adapterFamily,
+        string readerVersion, IEnumerable<string> coveredGenerationIds, DateTimeOffset updatedAt) => new()
+    {
+        Id = "ingest_" + Guid.NewGuid().ToString("N"),
+        AccountId = accountId,
+        AdapterFamily = adapterFamily,
+        ScopeKind = AccountScopeKind,
+        ScopeId = accountId,
+        CheckpointJson = JsonSerializer.Serialize(new
+        {
+            version = 1,
+            reader_version = readerVersion,
+            generation_id = "",
+            evidence_fingerprint = "complete_account_scan",
+            covered_generation_ids = coveredGenerationIds.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+        }),
+        UpdatedAt = updatedAt,
+    };
 
     private static async Task<string> FingerprintConversationAsync(ISourceAdapter adapter, string profileId,
         SourceConversation conversation, SourceConversationDetail detail, CancellationToken cancellationToken)
@@ -168,9 +192,9 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         hash.AppendData(value);
     }
 
-    private static (string? ReaderVersion, string? GenerationId, string? Fingerprint) ReadCheckpoint(string? checkpointJson)
+    private static (string? ReaderVersion, string? GenerationId, string? Fingerprint, HashSet<string> CoveredGenerationIds) ReadCheckpoint(string? checkpointJson)
     {
-        if (checkpointJson is null) return (null, null, null);
+        if (checkpointJson is null) return (null, null, null, new HashSet<string>(StringComparer.Ordinal));
         try
         {
             using var document = JsonDocument.Parse(checkpointJson);
@@ -181,7 +205,20 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 || !root.TryGetProperty("generation_id", out var generationId)
                 || !root.TryGetProperty("evidence_fingerprint", out var fingerprint))
                 throw new InvalidDataException("The stored ingest checkpoint is missing required cursor fields.");
-            return (readerVersion.GetString(), generationId.GetString(), fingerprint.GetString());
+            var covered = new HashSet<string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("covered_generation_ids", out var coveredIds))
+            {
+                if (coveredIds.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException("The account scan cursor contains invalid covered generation identities.");
+                foreach (var coveredId in coveredIds.EnumerateArray())
+                {
+                    var id = coveredId.GetString();
+                    if (string.IsNullOrWhiteSpace(id))
+                        throw new InvalidDataException("The account scan cursor contains an empty generation identity.");
+                    covered.Add(id);
+                }
+            }
+            return (readerVersion.GetString(), generationId.GetString(), fingerprint.GetString(), covered);
         }
         catch (JsonException ex)
         {

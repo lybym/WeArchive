@@ -262,6 +262,50 @@ public sealed class RebuildServiceTests
         Assert.Contains(messageSets.SelectMany(m => m), m => m.Text == "B pending");
     }
 
+    [Fact]
+    public async Task RawVaultIngestFollowsPublicationLineageWhenCaptureTimeMovesBackward()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "first capture", "reader-1", CapturedAt);
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "clock-corrected capture", "reader-1", CapturedAt.AddHours(-1));
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("clock-corrected capture", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+    }
+
+    [Fact]
+    public async Task RawVaultIngestRetriesNormallyAfterReplayIsCancelledBetweenGenerations()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "older evidence", "reader-1", CapturedAt);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "newer evidence", "reader-1", CapturedAt.AddHours(1));
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(2, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+
+        using var cancellation = new CancellationTokenSource();
+        var progress = new CallbackProgress<string>(message =>
+        {
+            if (message.Contains("generation", StringComparison.Ordinal)) cancellation.Cancel();
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ingester.IngestAsync(accountId, null, progress, cancellation.Token, replay: true));
+
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("newer evidence", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,
@@ -312,6 +356,7 @@ public sealed class RebuildServiceTests
             CaptureAdapterFamily = WeChatCaptureAdapter.Family,
             CaptureAdapterVersion = readerVersion,
         };
+        var previous = await vault.GetLatestGenerationAsync(accountId, CancellationToken.None);
         var session = await vault.BeginGenerationAsync(context, CancellationToken.None);
         var artifacts = new List<RawArtifactDescriptor>();
         foreach (var (name, path) in new[]
@@ -336,6 +381,7 @@ public sealed class RebuildServiceTests
             Source = new RawManifestSource { AdapterName = WeChatWindowsSourceAdapter.Name, AdapterVersion = readerVersion, SourceProductName = "WeChat for Windows", SourceVersion = "4.1.13.12" },
             Capture = new RawManifestCapture { CaptureTime = capturedAt, CaptureAdapterFamily = WeChatCaptureAdapter.Family, CaptureAdapterVersion = readerVersion, Mode = RawCaptureMode.Baseline, Completeness = completeness, ArtifactCount = artifacts.Count },
             Artifacts = artifacts,
+            PreviousGenerationId = previous?.GenerationId,
         };
         var result = await session.PublishAsync(manifest, CancellationToken.None);
         await session.DisposeAsync();
@@ -367,5 +413,10 @@ public sealed class RebuildServiceTests
     {
         await using var stream = File.OpenRead(path);
         return Convert.ToHexString(await SHA256.HashDataAsync(stream)).ToLowerInvariant();
+    }
+
+    private sealed class CallbackProgress<T>(Action<T> callback) : IProgress<T>
+    {
+        public void Report(T value) => callback(value);
     }
 }

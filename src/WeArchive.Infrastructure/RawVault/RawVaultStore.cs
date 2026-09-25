@@ -137,10 +137,40 @@ public sealed class RawVaultStore : IRawVaultStore
             });
         }
 
-        return summaries
-            .OrderBy(s => s.CaptureTime)
-            .ThenBy(s => s.GenerationId, StringComparer.Ordinal)
-            .ToList();
+        return OrderByLineage(summaries);
+    }
+
+    private static IReadOnlyList<RawGenerationSummary> OrderByLineage(IReadOnlyList<RawGenerationSummary> summaries)
+    {
+        var byId = summaries.ToDictionary(s => s.GenerationId, StringComparer.Ordinal);
+        var remaining = new HashSet<string>(byId.Keys, StringComparer.Ordinal);
+        var emitted = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<RawGenerationSummary>(summaries.Count);
+
+        while (remaining.Count > 0)
+        {
+            var next = remaining
+                .Select(id => byId[id])
+                .Where(summary => summary.PreviousGenerationId is null
+                    || !byId.ContainsKey(summary.PreviousGenerationId)
+                    || emitted.Contains(summary.PreviousGenerationId))
+                .OrderBy(summary => summary.CaptureTime)
+                .ThenBy(summary => summary.GenerationId, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            // A malformed cycle should not hide otherwise published evidence. Break it
+            // deterministically; manifest validation remains responsible for rejecting it.
+            next ??= remaining.Select(id => byId[id])
+                .OrderBy(summary => summary.CaptureTime)
+                .ThenBy(summary => summary.GenerationId, StringComparer.Ordinal)
+                .First();
+
+            ordered.Add(next);
+            remaining.Remove(next.GenerationId);
+            emitted.Add(next.GenerationId);
+        }
+
+        return ordered;
     }
 
     public async Task<RawGenerationSummary?> GetLatestGenerationAsync(
