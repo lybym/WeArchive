@@ -32,6 +32,16 @@ public interface IRawVaultStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Stable account IDs with at least one account directory in the vault, ordered ordinal.
+    /// <para>
+    /// This lets a caller report capture progress that exists before any canonical ingest, without
+    /// learning the vault's physical layout: the returned value is the same stable account ID the
+    /// canonical archive uses.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<string>> ListAccountIdsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
     /// Published generations for an account, ordered by capture time ascending. A final
     /// generation directory with a missing, unreadable, or invalid manifest fails the listing
     /// with <see cref="System.IO.InvalidDataException"/> instead of being silently omitted;

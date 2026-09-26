@@ -137,7 +137,7 @@ wearchive capture [--account <id>]
 
 Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 
-Current priority is **M1.5 — Raw Vault capture and canonical rebuild** (Issues #22/#23/#25; foundation and incremental capture delivered, milestone remains incomplete), then remaining M1 work. Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit partition-coverage reporting. Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Continue to M2/M3/M4 after M1 completion.
+Current priority is **M1.5 — Raw Vault capture and canonical rebuild** (Issues #22/#23/#25; foundation and incremental capture delivered, milestone remains incomplete), then remaining M1 work. Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit partition-coverage reporting. Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Issue #27 delivers the M3a minimum structured retrieval slice: `ArchiveQueryService` plus the `message list` / `context` CLI contract, read-only over the canonical archive with no FTS index and no schema migration. Continue to M2/M3/M4 after M1 completion.
 
 Collection remains the one scope abstraction: do not add a `sync-group`, `watch-list` or `harness-dataset` model, and do not make the derived export-package `collections.yaml` authoritative for product behavior.
 

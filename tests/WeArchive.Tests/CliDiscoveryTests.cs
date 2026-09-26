@@ -942,6 +942,17 @@ public sealed class CliDiscoveryTests
         public Task<int> ResolveReplyTargetsAsync(string conversationId, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 
+        public Task<ArchiveMessagePage> QueryMessagesAsync(
+            ArchiveMessageQuery query, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
+        public Task<ArchiveMessageContext?> ReadMessageContextAsync(
+            string messageId, int before, int after, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
+        public Task<IReadOnlyList<IngestCheckpoint>> ListIngestCheckpointsAsync(CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
         public Task<ConversationStats> GetConversationStatsAsync(
             string conversationId, CancellationToken cancellationToken) =>
             throw new NotImplementedException();

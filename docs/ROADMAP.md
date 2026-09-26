@@ -208,6 +208,33 @@ Acceptance criteria:
 - indexes are rebuildable entirely from canonical archive data;
 - large archives remain usable from CLI workflows.
 
+### M3a — Minimum structured retrieval (delivered by Issue #27)
+
+**Goal:** let humans, scripts and Harnesses retrieve bounded canonical message ranges and context
+windows directly from `wearchive.db` through a stable source-independent API and CLI JSON contract.
+
+Delivered:
+
+- `ArchiveQueryService` (Core) as the single source-independent retrieval boundary, returning
+  canonical DTOs and stable IDs rather than SQLite rows or WeChat structures;
+- message listing by stable conversation with inclusive `since`/`until` bounds, canonical
+  participant and canonical type filters, bounded page size and opaque keyset cursor pagination;
+- context-window retrieval around a stable message ID (bounded before/target/after);
+- `wearchive message list` and `wearchive context` as thin CLI transports with a pinned
+  `--json` contract (`items`, `next_cursor`, `has_more`; before/target/after) and documented
+  exit/error semantics;
+- capture/ingest/canonical freshness exposed by the service without revealing checkpoint tables or
+  Raw Vault layout;
+- no new index, no schema migration and no FTS table: bounded retrieval uses the migration-1
+  timeline index.
+
+Not delivered by M3a (still open in M3):
+
+- SQLite FTS5 index and `wearchive search` keyword retrieval;
+- archive statistics and activity timeline beyond basic freshness;
+- a CLI status command and MCP transport over the query service;
+- Collection-scoped query filtering.
+
 ## M4 — Harness-oriented workflows
 
 **Goal:** make repeated LLM/Harness analysis easy without introducing a separate derived-data layer.
@@ -301,5 +328,9 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 Issue #26 delivered the M4 Collection sync foundation (Collection catalog, `collection list`/`show`,
 `sync --collection`); Collection-scoped query/search and export selection remain follow-up work.
+
+Issue #27 delivered the M3a minimum retrieval slice (`ArchiveQueryService`, `message list`,
+`context`); the FTS index, keyword search, statistics/activity timelines, a CLI status command and
+MCP transport remain open.
 
 The migration must preserve the foundation already delivered: generic adapter contract, canonical message schema, normalized models, SQLite system of record, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic export.

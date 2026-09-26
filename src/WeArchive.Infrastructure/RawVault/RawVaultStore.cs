@@ -47,7 +47,12 @@ public sealed class RawVaultStore : IRawVaultStore
 
     public string VaultRoot => _vaultRoot;
 
-    /// <summary>Lists stable account directories present in the preservation store.</summary>
+    /// <summary>
+    /// Lists stable account directories present in the preservation store. The returned value is
+    /// the stable account ID (a_...) known to the canonical archive, so freshness can report
+    /// captured evidence that has not been ingested yet without exposing vault layout
+    /// (docs/HARNESS.md section 10).
+    /// </summary>
     public Task<IReadOnlyList<string>> ListAccountIdsAsync(CancellationToken cancellationToken)
     {
         var root = Path.Combine(_vaultRoot, AccountsFolder);

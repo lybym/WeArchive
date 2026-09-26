@@ -51,4 +51,21 @@ public static class CliErrorCode
 
     /// <summary>Capturing live-source evidence for a Collection did not publish a usable generation.</summary>
     public const string CaptureFailed = "capture_failed";
+
+    // ---- Query family (Issue #27 / M3a) ----
+    // `cursor_invalid` is caller-input validation (exit 2), matching the documented exit-code
+    // family; the other two are runtime/operation failures (exit 1).
+
+    /// <summary>A stable message ID did not resolve to any archived message.</summary>
+    public const string MessageNotFound = "message_not_found";
+
+    /// <summary>A pagination cursor is malformed, unsupported or belongs to a different query (exit 2).</summary>
+    public const string CursorInvalid = "cursor_invalid";
+
+    /// <summary>
+    /// The canonical archive could not be read. A missing archive file is not this failure: the
+    /// store creates and migrates it, so it reads as an empty archive, exactly as <c>doctor</c>
+    /// reports it.
+    /// </summary>
+    public const string ArchiveUnavailable = "archive_unavailable";
 }

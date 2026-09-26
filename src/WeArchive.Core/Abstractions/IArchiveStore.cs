@@ -69,6 +69,46 @@ public interface IArchiveStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Reads one bounded page of a conversation's canonical timeline.
+    /// docs/DATA_MODEL.md section 23, docs/HARNESS.md section 5.
+    /// <para>
+    /// Ordering is the canonical timeline order <c>(occurred_utc, source_order_key, id)</c>, and
+    /// <see cref="ArchiveMessageQuery.After"/> is an exclusive keyset position, so consecutive
+    /// pages neither repeat nor omit a record with an equal timestamp.
+    /// </para>
+    /// <para>
+    /// The implementation returns at most <see cref="ArchiveMessageQuery.Limit"/> items and reports
+    /// whether the archive held further matching records.
+    /// </para>
+    /// </summary>
+    Task<ArchiveMessagePage> QueryMessagesAsync(
+        ArchiveMessageQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads the bounded canonical window around one stable message ID, or null when the archive
+    /// holds no such message. The window is taken in canonical timeline order within the target's
+    /// own conversation.
+    /// </summary>
+    Task<ArchiveMessageContext?> ReadMessageContextAsync(
+        string messageId,
+        int before,
+        int after,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Enumerates every persisted ingest checkpoint row.
+    /// <para>
+    /// This is a neutral read of rows the archive owns: it does not interpret the opaque
+    /// <see cref="IngestCheckpoint.CheckpointJson"/> payload and does not classify the scope
+    /// vocabulary, both of which belong to the component that writes the cursor. A caller that
+    /// needs a summary of ingest progress projects it through
+    /// <see cref="IIngestProgressSource"/>.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<IngestCheckpoint>> ListIngestCheckpointsAsync(CancellationToken cancellationToken);
+
+    /// <summary>
     /// Resolves reply targets for a conversation from archived records only.
     /// Used to upgrade quote snapshots into real relationships without inventing IDs.
     /// </summary>

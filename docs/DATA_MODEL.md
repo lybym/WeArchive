@@ -725,3 +725,79 @@ Ownership, rebuild-survival semantics and stable-ID membership rules are recorde
 Moving Collection definitions into canonical SQLite would be a persistent schema change and would
 require a documented migration, a migration test, and an explicit rebuild-preservation rule that does
 not exist today (section 18, `docs/PRD.md` FR-11).
+
+## 23. Query model (M3a)
+
+`ArchiveQueryService` (`src/WeArchive.Core/Services`) is the single source-independent retrieval
+boundary over the canonical archive; CLI `--json` and a future MCP transport are adapters over it
+(`docs/HARNESS.md` sections 2–5, `docs/ARCHITECTURE.md` section 3.9).
+
+This slice adds **no** canonical schema change: bounded retrieval orders and filters with the
+existing migration-1 timeline index `(conversation_id, occurred_utc, source_order_key, id)`, and
+section 19 still holds — there is no FTS table, virtual table or second search engine.
+
+### 23.1 Bounded retrieval
+
+Canonical timeline order remains `occurred_utc`, then `COALESCE(source_order_key, '')`, then the
+stable message id (section 8.1). A bounded page reads one record beyond its page size, so
+`has_more` is a fact about the archive rather than an inference from a full page.
+
+Filters map onto canonical columns only:
+
+```text
+since / until   -> occurred_utc range, both bounds inclusive
+participant     -> messages.sender_id, a stable u_<16 hex> participant id
+type            -> messages.type, a canonical wire name (section 8.4)
+```
+
+A date-only or offset-less bound denotes that instant in the machine's local offset — the same
+offset the archive renders canonical timestamps with (section 8.1) — so a range never depends on the
+timezone of whichever process parses it. Bounds are compared at the archive's one-second resolution
+(section 8.1 stores `occurred_utc` as epoch seconds): a sub-second component is truncated before
+comparison.
+
+### 23.2 Pagination cursors
+
+Cursors are **API tokens, not persistent archive records**: nothing is written to SQLite, no
+migration is involved, and no recovery semantics apply. A cursor carries the exclusive keyset
+position of the last returned record (epoch instant, normalized order key, stable message id) plus a
+fingerprint of the normalized filter set (conversation, date range, participant, type). Page size is
+deliberately excluded so a caller may change `--limit` between pages of the same listing.
+
+A cursor is opaque to callers, and an empty, malformed, unsupported-version or filter-mismatched
+cursor is a deterministic validation failure (`docs/CLI.md`), never a silently different page.
+Because resumption is keyset-based rather than offset-based, records that share an instant are
+neither repeated nor skipped.
+
+### 23.3 Freshness
+
+Freshness is reported from three independent sources and is never inferred across them
+(`docs/HARNESS.md` section 10):
+
+- **capture** — the latest published generation per known account, read through the Core
+  `IRawVaultStore` contract and projected without partition fingerprints, artifact checksums or
+  artifact contents (section 21.3);
+- **ingest** — the most recently committed conversation-scope canonical publication and the last
+  completed account-wide generation scan, projected from `ingest_checkpoints` (section 14.1)
+  without exposing the cursor payload, its encoding or its scope vocabulary;
+- **canonical** — archive counts plus the newest archived message instant, which is what says how
+  current the queryable state is.
+
+Ownership of that ingest projection follows the cursor: `IArchiveStore` only *enumerates* the
+checkpoint rows it persists, verbatim and without interpreting the payload or the scope vocabulary,
+and the Raw Vault ingest component that writes the cursor performs the projection behind the Core
+`IIngestProgressSource` contract. That keeps the canonical persistence boundary free of the ingest
+implementation's private encoding, so a future cursor version cannot be misread by the store.
+
+A null generation means "no valid published generation can be reported for this account" — because
+none exists yet, or because the preservation store could not be read. It never means a generation
+matched. Every capture failure degrades to that null plus an explicit reason
+(`CaptureFreshness.UnavailableReason`, and `ArchiveFreshness.CaptureUnavailableReason` when the store
+could not even be enumerated), so the canonical half of the report always survives and a
+captured-but-not-yet-ingested account is still visible as such.
+
+### 23.4 Read-only guarantee
+
+Query is **R0**: it adds no table, index, checkpoint, journal, transaction protocol or recovery
+state, and no query failure — validation, not-found or unreadable-archive — mutates canonical data,
+Raw Vault evidence, the capture checkpoint or an ingest checkpoint.

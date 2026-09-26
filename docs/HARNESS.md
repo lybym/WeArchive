@@ -26,7 +26,9 @@ Harnesses MUST NOT normally:
 - recursively scan JSONL exports for interactive retrieval when a query API exists;
 - depend on WeChat table names, numeric message types or parser-specific source structures.
 
-This is a target contract. The 0.2.x release does not yet implement the full query command family or MCP transport.
+This contract is now partially shipped. `ArchiveQueryService`, `wearchive message list` and
+`wearchive context` are implemented (Issue #27 / M3a) and are read-only over the canonical archive.
+Keyword/full-text search, a CLI archive-status command and MCP transport are not implemented yet.
 
 ## 2. Layer responsibilities
 
@@ -61,7 +63,13 @@ Portable interchange/offline dataset. Appropriate for transfer, audit, offline b
 
 It must return canonical DTOs and stable IDs, not SQLite implementation details.
 
-## 4. Planned CLI query surface
+**Shipped by Issue #27 (M3a minimum retrieval):** listing messages by stable conversation, date
+range, canonical sender and canonical type with opaque cursor pagination; bounded context-window
+retrieval around a stable message id; and capture/ingest/canonical freshness. Keyword/full-text
+search and statistics/activity summaries remain target behavior, and no CLI status command is wired
+to the freshness API yet.
+
+## 4. CLI query surface
 
 Target commands include:
 
@@ -85,7 +93,10 @@ wearchive context m_xxx `
   --json
 ```
 
-The exact command/JSON contract becomes normative in `CLI.md` when implemented.
+`message list` and `context` are **shipped** and normative in [`CLI.md`](CLI.md) — including the
+`items` / `next_cursor` / `has_more` page shape, the context DTO that separates the target message
+from the messages before and after it, the `--participant` / `--type` filters and the time grammar.
+`search` remains target behavior: it needs the FTS index of section 7, which does not exist.
 
 ## 5. Pagination
 
@@ -219,6 +230,31 @@ Agents need to distinguish:
 - optional export generation time.
 
 A future `get_archive_status` query/MCP tool should expose these values without requiring the Harness to inspect internal database tables.
+
+**Shipped by Issue #27.** `ArchiveQueryService.GetFreshnessAsync` already reports them from three
+independent sources, so the distinction is available to the eventual status command/MCP tool:
+
+```text
+capture    latest published Raw Vault generation per known account, through the Core
+           IRawVaultStore contract, without partition fingerprints, checksums or artifacts
+ingest     most recently committed conversation-scope canonical publication and last completed
+           account-wide generation scan, without exposing the checkpoint payload or table layout;
+           projected by the Raw Vault ingest component that owns the cursor encoding, behind the
+           Core IIngestProgressSource contract
+canonical  archive counts plus the newest archived message instant, as of the moment of the read
+```
+
+They are deliberately never inferred from one another: captured evidence may not be ingested yet,
+and an ingest may be older than the newest capture. An account that was captured but never ingested
+is reported with capture progress and null ingest progress. No CLI status command is wired to this
+yet, so a Harness currently reaches it through the application service rather than through
+`--json`.
+
+A stage that cannot be read degrades instead of failing the report: an unreadable preservation
+store yields a null generation plus an explicit reason, so the canonical status stays available and
+a real defect remains diagnosable rather than presenting as an unavailable archive. That reason is
+the failure's exception type and message — engineering diagnostics a caller reports, not an input it
+parses, and never artifact contents, a fingerprint, a checksum or message content.
 
 ## 11. Future MCP transport
 

@@ -280,11 +280,23 @@ Expose message listing/filtering and context-window retrieval by stable conversa
 
 Results are paginated/cursor-based for large result sets.
 
+Shipped by Issue #27 (M3a minimum retrieval) through `ArchiveQueryService` and the
+`message list` / `context` CLI commands ([`CLI.md`](CLI.md)): listing is bounded and resumed with an
+opaque keyset cursor, `since`/`until` bounds are inclusive instants, participant and canonical type
+filters use stable canonical semantics, and `context` returns a bounded before/target/after window
+around a stable message ID. Keyword search and archive statistics remain M3b/FR-15 work.
+
 ### FR-17 ArchiveQueryService
 
 All interactive query/search/context operations are implemented behind a source-independent application service. CLI and future MCP are transports over this service.
 
 Harnesses must not be required to know SQLite table layouts.
+
+Shipped by Issue #27 for structured retrieval, context windows and capture/ingest/canonical
+freshness. It reads only the canonical archive: it never opens live WeChat, acquires a key, reads
+Raw Vault artifacts or uses exported JSONL as a runtime store, and it returns canonical DTOs and
+stable IDs rather than SQLite rows or WeChat structures. Keyword search is not implemented yet, so
+FR-17 is not yet complete for search.
 
 ### FR-18 Selective export
 
@@ -396,6 +408,10 @@ scope abstraction.
 ### FR-30 Target query commands
 
 Planned query commands include message listing, keyword search and message-context retrieval with stable JSON pagination. Exact syntax becomes normative in `CLI.md` only when implemented.
+
+Shipped status: `wearchive message list` and `wearchive context` are implemented (Issue #27) and
+normative in [`CLI.md`](CLI.md), including their `--json` DTOs and exit/error codes. Keyword search
+(`wearchive search`) and a CLI archive-status command are not implemented.
 
 ### FR-31 Future MCP transport
 
