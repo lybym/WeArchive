@@ -97,10 +97,16 @@ public interface IArchiveStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Summarizes committed ingest progress per account without exposing the checkpoint payload,
-    /// its encoding or the checkpoint table shape. docs/HARNESS.md section 10.
+    /// Enumerates every persisted ingest checkpoint row.
+    /// <para>
+    /// This is a neutral read of rows the archive owns: it does not interpret the opaque
+    /// <see cref="IngestCheckpoint.CheckpointJson"/> payload and does not classify the scope
+    /// vocabulary, both of which belong to the component that writes the cursor. A caller that
+    /// needs a summary of ingest progress projects it through
+    /// <see cref="IIngestProgressSource"/>.
+    /// </para>
     /// </summary>
-    Task<IReadOnlyList<IngestFreshness>> ListIngestFreshnessAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<IngestCheckpoint>> ListIngestCheckpointsAsync(CancellationToken cancellationToken);
 
     /// <summary>
     /// Resolves reply targets for a conversation from archived records only.

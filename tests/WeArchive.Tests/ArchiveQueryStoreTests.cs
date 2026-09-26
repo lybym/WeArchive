@@ -134,7 +134,7 @@ public sealed class ArchiveQueryStoreTests
             () => harness.Store.ReadMessageContextAsync(ArchiveQueryHarness.ImageId, 1, 1, cancelled.Token));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => harness.Store.ListIngestFreshnessAsync(cancelled.Token));
+            () => harness.Store.ListIngestCheckpointsAsync(cancelled.Token));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => harness.Service.ListMessagesAsync(
@@ -171,101 +171,54 @@ public sealed class ArchiveQueryStoreTests
     }
 
     [Fact]
-    public async Task IngestFreshnessProjectsOnlyCanonicalPublicationScopes()
+    public async Task IngestCheckpointEnumerationIsNeutralAndDeterministic()
     {
         using var harness = await SeededAsync();
-
-        // A coverage cursor says "verified unchanged"; it must not be reported as a publication.
         await harness.Store.SetIngestCheckpointAsync(Checkpoint(
-            "ingest_coverage",
-            "conversation_coverage",
-            ArchiveQueryHarness.GroupConversationId,
-            """{"version":1,"generation_id":"gen_coverage"}""",
-            ArchiveQueryHarness.At(4, 1)), CancellationToken.None);
-
-        // An unrecognised scope kind is not this projection's business and must not be guessed at.
-        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
-            "ingest_other",
+            "ingest_b",
             "some_future_scope",
-            "x",
-            """{"version":1,"generation_id":"gen_other"}""",
+            "z",
+            """{"version":1,"generation_id":"gen_z"}""",
             ArchiveQueryHarness.At(4, 2)), CancellationToken.None);
-
-        var freshness = Assert.Single(await harness.Store.ListIngestFreshnessAsync(CancellationToken.None));
-
-        Assert.Equal(ArchiveQueryHarness.AccountId, freshness.AccountId);
-        Assert.Null(freshness.LastIngestAt);
-        Assert.Null(freshness.LatestIngestedGenerationId);
-        Assert.Null(freshness.LastAccountScanAt);
-    }
-
-    [Fact]
-    public async Task IngestFreshnessReportsTheMostRecentlyCommittedConversationPublication()
-    {
-        using var harness = await SeededAsync();
-
-        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
-            "ingest_old",
-            "conversation",
-            ArchiveQueryHarness.GroupConversationId,
-            """{"version":1,"generation_id":"gen_old"}""",
-            ArchiveQueryHarness.At(4, 1)), CancellationToken.None);
-
-        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
-            "ingest_new",
-            "conversation",
-            ArchiveQueryHarness.SecondConversationId,
-            """{"version":1,"generation_id":"gen_new"}""",
-            ArchiveQueryHarness.At(4, 2)), CancellationToken.None);
-
-        var freshness = Assert.Single(await harness.Store.ListIngestFreshnessAsync(CancellationToken.None));
-
-        Assert.Equal(ArchiveQueryHarness.At(4, 2), freshness.LastIngestAt);
-        Assert.Equal("gen_new", freshness.LatestIngestedGenerationId);
-        Assert.Equal(ArchiveQueryHarness.SecondConversationId, freshness.LatestIngestedConversationId);
-    }
-
-    [Fact]
-    public async Task IngestFreshnessIsDeterministicWhenTwoPublicationsShareAnInstant()
-    {
-        using var harness = await SeededAsync();
-
         await harness.Store.SetIngestCheckpointAsync(Checkpoint(
             "ingest_a",
             "conversation",
             ArchiveQueryHarness.GroupConversationId,
-            """{"version":1,"generation_id":"gen_a"}""",
+            """{"version":9,"payload":"this build does not know it"}""",
             ArchiveQueryHarness.At(4, 1)), CancellationToken.None);
 
-        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
-            "ingest_b",
-            "conversation",
-            ArchiveQueryHarness.SecondConversationId,
-            """{"version":1,"generation_id":"gen_b"}""",
-            ArchiveQueryHarness.At(4, 1)), CancellationToken.None);
+        var rows = await harness.Store.ListIngestCheckpointsAsync(CancellationToken.None);
 
-        var freshness = Assert.Single(await harness.Store.ListIngestFreshnessAsync(CancellationToken.None));
-
-        // Ties break on the stable scope id, so the reported "latest" never depends on row order.
-        Assert.Equal(ArchiveQueryHarness.SecondConversationId, freshness.LatestIngestedConversationId);
-        Assert.Equal("gen_b", freshness.LatestIngestedGenerationId);
+        // The store reports the rows it owns verbatim — scope kinds, payload and times — and does
+        // not interpret any of them: interpreting them is the cursor owner's job.
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(
+            [ArchiveQueryHarness.GroupConversationId, "z"],
+            rows.Select(row => row.ScopeId));
+        Assert.Equal(
+            ["conversation", "some_future_scope"],
+            rows.Select(row => row.ScopeKind));
+        Assert.Equal(
+            [ArchiveQueryHarness.At(4, 1), ArchiveQueryHarness.At(4, 2)],
+            rows.Select(row => row.UpdatedAt));
+        Assert.Equal(
+            ["""{"version":9,"payload":"this build does not know it"}""", """{"version":1,"generation_id":"gen_z"}"""],
+            rows.Select(row => row.CheckpointJson));
+        Assert.All(rows, row => Assert.Equal(ArchiveQueryHarness.AccountId, row.AccountId));
     }
 
     [Fact]
-    public async Task UnreadableCursorPayloadContributesNoGenerationRatherThanFailingTheRead()
+    public async Task EmptyArchiveHasNoIngestCheckpoints()
     {
-        using var harness = await SeededAsync();
-        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
-            "ingest_broken",
-            "conversation",
-            ArchiveQueryHarness.GroupConversationId,
-            "this is not json",
-            ArchiveQueryHarness.At(4, 1)), CancellationToken.None);
-
-        var freshness = Assert.Single(await harness.Store.ListIngestFreshnessAsync(CancellationToken.None));
-
-        Assert.Equal(ArchiveQueryHarness.At(4, 1), freshness.LastIngestAt);
-        Assert.Null(freshness.LatestIngestedGenerationId);
+        var harness = new ArchiveQueryHarness();
+        try
+        {
+            Assert.Empty(await harness.Store.ListIngestCheckpointsAsync(CancellationToken.None));
+        }
+        finally
+        {
+            harness.Dispose();
+        }
     }
 
     [Fact]

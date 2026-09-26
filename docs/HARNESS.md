@@ -238,7 +238,9 @@ independent sources, so the distinction is available to the eventual status comm
 capture    latest published Raw Vault generation per known account, through the Core
            IRawVaultStore contract, without partition fingerprints, checksums or artifacts
 ingest     most recently committed conversation-scope canonical publication and last completed
-           account-wide generation scan, without exposing the checkpoint payload or table layout
+           account-wide generation scan, without exposing the checkpoint payload or table layout;
+           projected by the Raw Vault ingest component that owns the cursor encoding, behind the
+           Core IIngestProgressSource contract
 canonical  archive counts plus the newest archived message instant, as of the moment of the read
 ```
 
@@ -247,6 +249,10 @@ and an ingest may be older than the newest capture. An account that was captured
 is reported with capture progress and null ingest progress. No CLI status command is wired to this
 yet, so a Harness currently reaches it through the application service rather than through
 `--json`.
+
+A stage that cannot be read degrades instead of failing the report: an unreadable preservation
+store yields a null generation plus an explicit reason, so the canonical status stays available and
+a real defect remains diagnosable rather than presenting as an unavailable archive.
 
 ## 11. Future MCP transport
 

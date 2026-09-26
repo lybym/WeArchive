@@ -9,25 +9,147 @@ namespace WeArchive.Infrastructure;
 
 /// <summary>Incrementally publishes verified Raw Vault evidence into the canonical archive.</summary>
 public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore archive, IClock clock)
-    : IConversationIngestService
+    : IConversationIngestService, IIngestProgressSource
 {
     /// <summary>
     /// Scope kind of a conversation's canonical content cursor. It advances only when that
     /// conversation's evidence changed and was published (docs/DATA_MODEL.md section 14.1).
+    /// <para>
+    /// The scope vocabulary and the cursor payload are private to this component on purpose: the
+    /// canonical archive store only enumerates the rows it persists, so the checkpoint encoding
+    /// cannot leak into the persistence boundary or into a caller.
+    /// </para>
     /// </summary>
-    public const string ConversationScopeKind = "conversation";
+    private const string ConversationScopeKind = "conversation";
 
     /// <summary>
     /// Scope kind of a conversation's coverage cursor: newer generations were verified and found
     /// unchanged, so no canonical publication happened.
     /// </summary>
-    public const string ConversationCoverageScopeKind = "conversation_coverage";
+    private const string ConversationCoverageScopeKind = "conversation_coverage";
 
     /// <summary>Scope kind of the account-wide generation scan cursor.</summary>
-    public const string AccountScopeKind = "account";
+    private const string AccountScopeKind = "account";
     private readonly IRawVaultStore _rawVault = rawVault ?? throw new ArgumentNullException(nameof(rawVault));
     private readonly IArchiveStore _archive = archive ?? throw new ArgumentNullException(nameof(archive));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+
+    /// <summary>
+    /// Reports committed ingest progress per account for freshness, interpreting the cursors this
+    /// component owns. docs/HARNESS.md section 10, docs/DATA_MODEL.md section 23.3.
+    /// <para>
+    /// Conversation content progress and the account-wide generation scan are reported separately
+    /// because they advance independently: a scoped ingest never advances the account scan, and a
+    /// conversation whose newer evidence verified unchanged keeps its older content generation.
+    /// A cursor this build cannot interpret contributes no generation rather than failing the whole
+    /// status read — the row is still reported by time.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<IngestFreshness>> GetIngestFreshnessAsync(
+        CancellationToken cancellationToken)
+    {
+        var checkpoints = await _archive.ListIngestCheckpointsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var byAccount = new Dictionary<string, IngestProgress>(StringComparer.Ordinal);
+        foreach (var checkpoint in checkpoints)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!byAccount.TryGetValue(checkpoint.AccountId, out var progress))
+            {
+                progress = new IngestProgress();
+                byAccount[checkpoint.AccountId] = progress;
+            }
+
+            if (string.Equals(checkpoint.ScopeKind, ConversationScopeKind, StringComparison.Ordinal))
+            {
+                // Ties are broken by the stable scope id so the reported "latest" ingest is
+                // deterministic even when two cursors share an update instant.
+                var isNewer = progress.LastIngestAt is null
+                    || checkpoint.UpdatedAt > progress.LastIngestAt
+                    || (checkpoint.UpdatedAt == progress.LastIngestAt
+                        && string.CompareOrdinal(
+                            checkpoint.ScopeId,
+                            progress.LatestIngestedConversationId ?? string.Empty) > 0);
+                if (isNewer)
+                {
+                    progress.LastIngestAt = checkpoint.UpdatedAt;
+                    progress.LatestIngestedConversationId = checkpoint.ScopeId;
+                    progress.LatestIngestedGenerationId = TryReadContentGenerationId(checkpoint.CheckpointJson);
+                }
+            }
+            else if (string.Equals(checkpoint.ScopeKind, AccountScopeKind, StringComparison.Ordinal)
+                && (progress.LastAccountScanAt is null || checkpoint.UpdatedAt > progress.LastAccountScanAt))
+            {
+                progress.LastAccountScanAt = checkpoint.UpdatedAt;
+            }
+        }
+
+        return
+        [
+            .. byAccount
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => new IngestFreshness
+                {
+                    AccountId = pair.Key,
+                    LastIngestAt = pair.Value.LastIngestAt,
+                    LatestIngestedGenerationId = pair.Value.LatestIngestedGenerationId,
+                    LatestIngestedConversationId = pair.Value.LatestIngestedConversationId,
+                    LastAccountScanAt = pair.Value.LastAccountScanAt,
+                }),
+        ];
+    }
+
+    /// <summary>
+    /// Reads the generation a conversation content cursor records, tolerantly: a payload this build
+    /// cannot interpret contributes no generation instead of failing the status projection.
+    /// <para>
+    /// The cursor's own format version is checked first, so a future version that renames or nests
+    /// this field degrades to "no generation reported" rather than being misread as if the field
+    /// still meant the same thing. An account-scan cursor spells the field empty because it records
+    /// covered generation identities separately, so an empty value means "no single generation"
+    /// rather than a generation named <c>""</c>.
+    /// </para>
+    /// </summary>
+    private static string? TryReadContentGenerationId(string checkpointJson)
+    {
+        const int SupportedCursorVersion = 1;
+
+        try
+        {
+            using var document = JsonDocument.Parse(checkpointJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("version", out var version)
+                || version.ValueKind != JsonValueKind.Number
+                || !version.TryGetInt32(out var versionNumber)
+                || versionNumber != SupportedCursorVersion
+                || !root.TryGetProperty("generation_id", out var value)
+                || value.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            var generationId = value.GetString();
+            return string.IsNullOrWhiteSpace(generationId) ? null : generationId;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private sealed class IngestProgress
+    {
+        public DateTimeOffset? LastIngestAt { get; set; }
+
+        public string? LatestIngestedGenerationId { get; set; }
+
+        public string? LatestIngestedConversationId { get; set; }
+
+        public DateTimeOffset? LastAccountScanAt { get; set; }
+    }
 
     /// <summary>
     /// Ingests one conversation selected by its stable conversation id or its upstream source

@@ -600,6 +600,10 @@ same offset the archive renders canonical timestamps with (a `Z` or explicit off
 date-only `--until 2026-09-01` therefore means `2026-09-01T00:00:00`, not "all of 1 September". An
 unparseable value is a usage failure, never a silently widened query.
 
+Bounds are compared at the archive's one-second resolution, because that is how the canonical
+timeline stores message instants: a sub-second component is truncated before comparison, so
+`--until 2026-09-01T09:30:00.500+08:00` still includes a message at `09:30:00`.
+
 An unknown option, a repeated option or an option without a value is a usage failure. A bare `--`
 ends option parsing, so an identifier that begins with `-` stays addressable.
 
@@ -726,7 +730,7 @@ Stable `error.code` values:
 | `capture_failed` | 1 | `sync --collection` could not capture usable live-source evidence |
 | `message_not_found` | 1 | A stable message id resolved to no archived message |
 | `cursor_invalid` | 2 | A pagination cursor is malformed, unsupported or belongs to a different query |
-| `archive_unavailable` | 1 | The canonical archive exists but could not be opened or queried |
+| `archive_unavailable` | 1 | The canonical archive could not be read (a missing archive file is created as an empty archive, exactly as `doctor` reports it) |
 
 ## `wearchive rebuild`
 

@@ -41,12 +41,18 @@ public sealed class ArchiveQueryService
 
     private readonly IArchiveStore _archive;
     private readonly IRawVaultStore _rawVault;
+    private readonly IIngestProgressSource _ingestProgress;
     private readonly IClock _clock;
 
-    public ArchiveQueryService(IArchiveStore archive, IRawVaultStore rawVault, IClock clock)
+    public ArchiveQueryService(
+        IArchiveStore archive,
+        IRawVaultStore rawVault,
+        IIngestProgressSource ingestProgress,
+        IClock clock)
     {
         _archive = archive ?? throw new ArgumentNullException(nameof(archive));
         _rawVault = rawVault ?? throw new ArgumentNullException(nameof(rawVault));
+        _ingestProgress = ingestProgress ?? throw new ArgumentNullException(nameof(ingestProgress));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
@@ -156,6 +162,12 @@ public sealed class ArchiveQueryService
     /// Reports capture, ingest and canonical freshness together, so a caller can tell which stage
     /// is behind without reading a checkpoint table or a Raw Vault manifest
     /// (docs/HARNESS.md section 10).
+    /// <para>
+    /// Canonical status is always reported. A preservation store that cannot be read degrades the
+    /// capture half into an explicit reason instead of failing the whole read, because a status
+    /// projection that disappears when one stage is unreadable is less useful than one that says
+    /// which stage is unreadable.
+    /// </para>
     /// </summary>
     public async Task<ArchiveFreshness> GetFreshnessAsync(CancellationToken cancellationToken)
     {
@@ -168,10 +180,11 @@ public sealed class ArchiveQueryService
             cancellationToken).ConfigureAwait(false);
 
         var ingest = await ReadAsync(
-            () => _archive.ListIngestFreshnessAsync(cancellationToken),
+            () => _ingestProgress.GetIngestFreshnessAsync(cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
-        var accountIds = await KnownAccountIdsAsync(accounts, cancellationToken).ConfigureAwait(false);
+        var (accountIds, captureUnavailableReason) =
+            await KnownAccountIdsAsync(accounts, cancellationToken).ConfigureAwait(false);
         var ingestByAccount = ingest.ToDictionary(row => row.AccountId, StringComparer.Ordinal);
 
         var capture = new List<CaptureFreshness>(accountIds.Count);
@@ -200,6 +213,7 @@ public sealed class ArchiveQueryService
                 LastMessageAt = stats.LastMessageAt,
                 QueriedAt = _clock.UtcNow,
             },
+            CaptureUnavailableReason = captureUnavailableReason,
             Capture = capture,
             Ingest = ingestRows,
         };
@@ -285,7 +299,7 @@ public sealed class ArchiveQueryService
 
     // ---- freshness helpers --------------------------------------------------
 
-    private async Task<IReadOnlyList<string>> KnownAccountIdsAsync(
+    private async Task<(IReadOnlyList<string> AccountIds, string? UnavailableReason)> KnownAccountIdsAsync(
         IReadOnlyList<ArchiveAccount> accounts,
         CancellationToken cancellationToken)
     {
@@ -294,26 +308,32 @@ public sealed class ArchiveQueryService
             ids.Add(account.Id);
 
         // Captured evidence can exist before anything was ingested, and that gap is exactly what
-        // freshness must show. The preservation store exposes account ids through its Core
-        // contract, not through its file layout.
+        // freshness must show. When the preservation store cannot be enumerated at all, the
+        // canonical accounts are still reported and the failure is returned as an explicit reason,
+        // so a vault-only account is visibly unknown instead of silently missing.
         try
         {
             foreach (var accountId in await _rawVault.ListAccountIdsAsync(cancellationToken).ConfigureAwait(false))
                 ids.Add(accountId);
+
+            return ([.. ids], null);
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            // An unreadable preservation store is reported as "no capture generation known",
-            // never as a fabricated generation and never as a failed query.
+            return ([.. ids], Describe(ex));
         }
-
-        return [.. ids];
     }
 
+    /// <summary>
+    /// The latest published generation of one account, or an explicit reason why none can be
+    /// reported. Any non-cancellation failure degrades: the preservation store's failure vocabulary
+    /// is not this projection's contract, and a status read must not disappear because one stage of
+    /// it is unreadable.
+    /// </summary>
     private async Task<CaptureFreshness> ReadCaptureFreshnessAsync(
         string accountId,
         CancellationToken cancellationToken)
@@ -339,13 +359,19 @@ public sealed class ArchiveQueryService
         {
             throw;
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            // There is no discoverable valid generation for this account; reporting nulls is the
-            // honest answer and keeps the rest of the status readable.
-            return new CaptureFreshness { AccountId = accountId };
+            return new CaptureFreshness { AccountId = accountId, UnavailableReason = Describe(ex) };
         }
     }
+
+    /// <summary>
+    /// A short engineering reason for a stage that could not be read. It is an exception type and
+    /// message only, so a real defect stays diagnosable instead of merely presenting as an
+    /// unavailable archive.
+    /// </summary>
+    private static string Describe(Exception exception) =>
+        $"{exception.GetType().Name}: {exception.Message}";
 
     // ---- plumbing -----------------------------------------------------------
 

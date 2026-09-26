@@ -418,6 +418,12 @@ Vault source-format artifacts and never uses exported JSONL as a runtime store. 
 store is reached for one purpose only — capture freshness — through the Core `IRawVaultStore`
 contract, so no Raw Vault physical layout reaches a caller (`PRD.md` NFR-13).
 
+Ingest freshness follows the same ownership rule as the checkpoint it reports: the canonical
+archive store only enumerates the checkpoint rows it persists, and the Raw Vault ingest component
+that writes the cursor performs the projection behind the Core `IIngestProgressSource` contract. The
+canonical persistence boundary therefore carries no dependency on the ingest implementation's scope
+vocabulary or cursor payload.
+
 Query is read-only (**R0**): it adds no journal, checkpoint, transaction protocol or recovery state,
 and no failure path mutates canonical data, Raw Vault evidence or a checkpoint. Pagination cursors
 are opaque API tokens, not persistent archive records, so no migration is involved

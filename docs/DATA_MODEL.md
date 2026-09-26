@@ -752,7 +752,9 @@ type            -> messages.type, a canonical wire name (section 8.4)
 
 A date-only or offset-less bound denotes that instant in the machine's local offset — the same
 offset the archive renders canonical timestamps with (section 8.1) — so a range never depends on the
-timezone of whichever process parses it.
+timezone of whichever process parses it. Bounds are compared at the archive's one-second resolution
+(section 8.1 stores `occurred_utc` as epoch seconds): a sub-second component is truncated before
+comparison.
 
 ### 23.2 Pagination cursors
 
@@ -781,9 +783,18 @@ Freshness is reported from three independent sources and is never inferred acros
 - **canonical** — archive counts plus the newest archived message instant, which is what says how
   current the queryable state is.
 
-A null generation means "no valid published generation is discoverable for this account"; it never
-means a generation matched. An account captured but not yet ingested is reported with capture
-progress and null ingest progress, which is the distinction section 21.5 requires.
+Ownership of that ingest projection follows the cursor: `IArchiveStore` only *enumerates* the
+checkpoint rows it persists, verbatim and without interpreting the payload or the scope vocabulary,
+and the Raw Vault ingest component that writes the cursor performs the projection behind the Core
+`IIngestProgressSource` contract. That keeps the canonical persistence boundary free of the ingest
+implementation's private encoding, so a future cursor version cannot be misread by the store.
+
+A null generation means "no valid published generation can be reported for this account" — because
+none exists yet, or because the preservation store could not be read. It never means a generation
+matched. Every capture failure degrades to that null plus an explicit reason
+(`CaptureFreshness.UnavailableReason`, and `ArchiveFreshness.CaptureUnavailableReason` when the store
+could not even be enumerated), so the canonical half of the report always survives and a
+captured-but-not-yet-ingested account is still visible as such.
 
 ### 23.4 Read-only guarantee
 

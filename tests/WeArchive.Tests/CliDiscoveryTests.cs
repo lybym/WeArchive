@@ -950,7 +950,7 @@ public sealed class CliDiscoveryTests
             string messageId, int before, int after, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 
-        public Task<IReadOnlyList<IngestFreshness>> ListIngestFreshnessAsync(CancellationToken cancellationToken) =>
+        public Task<IReadOnlyList<IngestCheckpoint>> ListIngestCheckpointsAsync(CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 
         public Task<ConversationStats> GetConversationStatsAsync(

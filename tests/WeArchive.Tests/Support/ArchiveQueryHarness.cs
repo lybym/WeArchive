@@ -3,6 +3,7 @@ using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
+using WeArchive.Infrastructure;
 using WeArchive.Infrastructure.Archive;
 
 namespace WeArchive.Tests.Support;
@@ -48,7 +49,12 @@ internal sealed class ArchiveQueryHarness : IDisposable
         ArchivePath = _temp.Combine("archive", "wearchive.db");
         Store = new SqliteArchiveStore(ArchivePath, Clock);
         Vault = new FakeRawVaultStore();
-        Service = new ArchiveQueryService(Store, Vault, Clock);
+
+        // The ingest-progress projection belongs to the component that owns the checkpoint
+        // encoding, so the harness uses the real ingest service over the same archive. It must not
+        // read the preservation store to report ingest progress, which ThrowingRawVaultStore proves.
+        IngestProgress = new RawVaultIngestService(new ThrowingRawVaultStore(), Store, Clock);
+        Service = new ArchiveQueryService(Store, Vault, IngestProgress, Clock);
     }
 
     public FixedClock Clock { get; }
@@ -58,6 +64,9 @@ internal sealed class ArchiveQueryHarness : IDisposable
     public SqliteArchiveStore Store { get; }
 
     public FakeRawVaultStore Vault { get; }
+
+    /// <summary>Real ingest-progress owner over the harness archive.</summary>
+    public RawVaultIngestService IngestProgress { get; }
 
     public ArchiveQueryService Service { get; }
 
@@ -173,7 +182,11 @@ internal sealed class ArchiveQueryHarness : IDisposable
 
     public void Dispose() => _temp.Dispose();
 
-    private static CanonicalMessage Message(
+    /// <summary>
+    /// Builds one canonical message with fixture provenance, so a test can add records to the
+    /// seeded archive the same way the real import path writes them.
+    /// </summary>
+    public static CanonicalMessage Message(
         string id,
         string conversationId,
         DateTimeOffset occurredAt,
@@ -235,9 +248,12 @@ internal sealed class FakeRawVaultStore : IRawVaultStore
 
     /// <summary>
     /// When set, the store behaves like an unreadable preservation store, so freshness reporting
-    /// can be asserted for the "cannot report a generation" case.
+    /// can be asserted for the "cannot report a generation" case. It fails every member.
     /// </summary>
     public Exception? Failure { get; set; }
+
+    /// <summary>Per-account failure for generation reads, so one unreadable account can be isolated.</summary>
+    public Dictionary<string, Exception> AccountFailures { get; } = new(StringComparer.Ordinal);
 
     public Task<IReadOnlyList<string>> ListAccountIdsAsync(CancellationToken cancellationToken)
     {
@@ -260,6 +276,9 @@ internal sealed class FakeRawVaultStore : IRawVaultStore
     {
         Calls.Add(nameof(GetLatestGenerationAsync));
         cancellationToken.ThrowIfCancellationRequested();
+        if (AccountFailures.TryGetValue(accountId, out var accountFailure))
+            throw accountFailure;
+
         if (Failure is not null)
             throw Failure;
 

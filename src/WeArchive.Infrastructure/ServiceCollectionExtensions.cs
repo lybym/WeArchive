@@ -49,6 +49,10 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRawVaultStore>(), sp.GetRequiredService<IArchiveStore>(), sp.GetRequiredService<IClock>()));
         services.TryAddSingleton<IConversationIngestService>(sp =>
             sp.GetRequiredService<RawVaultIngestService>());
+        // Ingest progress is projected by the component that owns the checkpoint encoding, not by
+        // the canonical archive store (docs/DATA_MODEL.md section 23.3).
+        services.TryAddSingleton<IIngestProgressSource>(sp =>
+            sp.GetRequiredService<RawVaultIngestService>());
         services.TryAddSingleton<IDatasetExporter, JsonlDatasetExporter>();
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();

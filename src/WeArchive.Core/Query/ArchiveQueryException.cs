@@ -35,7 +35,7 @@ public static class ArchiveQueryErrorCodes
     /// <summary>The requested stable message ID is not in the archive.</summary>
     public const string MessageNotFound = "message_not_found";
 
-    /// <summary>The canonical archive exists but could not be opened or queried.</summary>
+    /// <summary>The canonical archive could not be opened or queried.</summary>
     public const string ArchiveUnavailable = "archive_unavailable";
 }
 
@@ -82,10 +82,17 @@ public sealed class ArchiveQueryException : Exception
             ArchiveQueryErrorCodes.MessageNotFound,
             $"message '{messageId}' was not found in the archive.");
 
+    /// <summary>
+    /// The canonical archive could not be read. A missing archive file is not this failure: the
+    /// store creates and migrates it, so it reads as an empty archive, exactly as
+    /// <c>doctor</c> reports it.
+    /// </summary>
     public static ArchiveQueryException Unavailable(Exception inner) =>
         new(
             ArchiveQueryFailureKind.Unavailable,
             ArchiveQueryErrorCodes.ArchiveUnavailable,
-            $"the canonical archive could not be queried: {inner.Message}",
+            // The exception type is included so an unexpected defect stays diagnosable instead of
+            // being indistinguishable from an unreadable archive.
+            $"the canonical archive could not be queried ({inner.GetType().Name}): {inner.Message}",
             inner);
 }

@@ -2,7 +2,9 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.CommandLine;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
+using WeArchive.Core.Services;
 using WeArchive.Infrastructure;
 using WeArchive.Tests.Support;
 
@@ -560,6 +562,48 @@ public sealed class ArchiveQueryCliTests
         Assert.Equal(ExitCode.Cancelled, exit);
         using var document = ParseSingleDocument(stdout.ToString());
         Assert.Equal("cancelled", document.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task FreshnessIsWiredThroughTheCompositionRootAndReportsEveryStage()
+    {
+        using var harness = await SeededAsync();
+        harness.Vault.AccountIds = [ArchiveQueryHarness.AccountId];
+        harness.Vault.Latest[ArchiveQueryHarness.AccountId] = new RawGenerationSummary
+        {
+            GenerationId = "gen_00000000000000aa",
+            AccountId = ArchiveQueryHarness.AccountId,
+            CaptureTime = ArchiveQueryHarness.At(3, 1, 12),
+            Completeness = RawGenerationCompleteness.Complete,
+            ArtifactCount = 3,
+            EvidenceFingerprint = "fingerprint",
+        };
+        await harness.Store.SetIngestCheckpointAsync(new IngestCheckpoint
+        {
+            Id = "ingest_1",
+            AccountId = ArchiveQueryHarness.AccountId,
+            AdapterFamily = "wechat-windows",
+            ScopeKind = "conversation",
+            ScopeId = ArchiveQueryHarness.GroupConversationId,
+            CheckpointJson = """{"version":1,"reader_version":"0.1.0","generation_id":"gen_00000000000000aa","evidence_fingerprint":"f"}""",
+            UpdatedAt = ArchiveQueryHarness.At(3, 1, 13),
+        }, CancellationToken.None);
+
+        using var provider = BuildProvider(harness);
+
+        // Resolved from the same composition root the CLI uses, so the registration of the query
+        // service and of the ingest-progress owner is itself under test.
+        var query = provider.GetRequiredService<ArchiveQueryService>();
+        var freshness = await query.GetFreshnessAsync(CancellationToken.None);
+
+        Assert.Equal("gen_00000000000000aa", Assert.Single(freshness.Capture).GenerationId);
+        Assert.Equal("gen_00000000000000aa", Assert.Single(freshness.Ingest).LatestIngestedGenerationId);
+        Assert.Equal(ArchiveQueryHarness.At(3, 1, 13), freshness.Ingest[0].LastIngestAt);
+        Assert.Null(freshness.CaptureUnavailableReason);
+        Assert.Equal(1, freshness.Canonical.AccountCount);
+        Assert.Equal(
+            harness.GroupMessages.Count + harness.OtherMessages.Count,
+            freshness.Canonical.MessageCount);
     }
 
     [Fact]

@@ -392,6 +392,107 @@ public sealed class ArchiveQueryServiceTests
         Assert.Equal(ArchiveQueryHarness.At(1, 5).ToUnixTimeSeconds(), page.Items[0].OccurredAt.ToUnixTimeSeconds());
     }
 
+    [Fact]
+    public async Task ResumeAcrossARecordWithNoUpstreamOrderKeyStaysExact()
+    {
+        using var harness = await SeededAsync();
+        var expected = ArchiveQueryHarness.CanonicalOrder(harness.GroupMessages).Select(m => m.Id).ToList();
+
+        // Canonical order places the record with no order key first among the equal-instant group,
+        // so a page boundary lands exactly on the record whose key is NULL rather than ''.
+        var boundary = expected.IndexOf(ArchiveQueryHarness.NullOrderKeyId);
+        Assert.True(boundary > 0);
+
+        var first = await harness.Service.ListMessagesAsync(
+            Request(limit: boundary + 1),
+            CancellationToken.None);
+        Assert.Equal(expected.Take(boundary + 1), first.Items.Select(message => message.Id));
+        Assert.True(first.HasMore);
+        Assert.NotNull(first.NextCursor);
+
+        var rest = await harness.Service.ListMessagesAsync(
+            Request(limit: 20, cursor: first.NextCursor),
+            CancellationToken.None);
+
+        Assert.Equal(expected.Skip(boundary + 1), rest.Items.Select(message => message.Id));
+        Assert.False(rest.HasMore);
+    }
+
+    [Fact]
+    public async Task PagingStaysExactWhenTheArchiveIsWrittenBetweenPages()
+    {
+        using var harness = await SeededAsync();
+        var expected = ArchiveQueryHarness.CanonicalOrder(harness.GroupMessages).Select(m => m.Id).ToList();
+
+        var first = await harness.Service.ListMessagesAsync(Request(limit: 4), CancellationToken.None);
+        Assert.Equal(expected.Take(4), first.Items.Select(message => message.Id));
+        Assert.NotNull(first.NextCursor);
+
+        // Another run publishes a record that belongs in the second page's range.
+        var insertedId = "m_0000000000000200";
+        await harness.Store.UpsertMessagesAsync(
+        [
+            ArchiveQueryHarness.Message(
+                insertedId,
+                ArchiveQueryHarness.GroupConversationId,
+                ArchiveQueryHarness.At(1, 2, 12),
+                ArchiveQueryHarness.AliceId,
+                CanonicalMessageType.Text,
+                "written between pages",
+                "0001",
+                "l:message_0:200"),
+        ], CancellationToken.None);
+
+        var seen = new List<string>(first.Items.Select(message => message.Id));
+        var cursor = first.NextCursor;
+        var pages = 0;
+        while (cursor is not null)
+        {
+            var page = await harness.Service.ListMessagesAsync(
+                Request(limit: 4, cursor: cursor),
+                CancellationToken.None);
+            seen.AddRange(page.Items.Select(message => message.Id));
+            cursor = page.NextCursor;
+            Assert.True(++pages < 10, "paging did not terminate");
+        }
+
+        // Every record that existed before the write is seen exactly once, the record written
+        // between pages is picked up in timeline position, and nothing is repeated.
+        Assert.Equal(seen.Count, seen.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(expected, id => Assert.Contains(id, seen));
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder(
+                harness.GroupMessages.Concat(
+                [
+                    ArchiveQueryHarness.Message(
+                        insertedId,
+                        ArchiveQueryHarness.GroupConversationId,
+                        ArchiveQueryHarness.At(1, 2, 12),
+                        ArchiveQueryHarness.AliceId,
+                        CanonicalMessageType.Text,
+                        "written between pages",
+                        "0001",
+                        "l:message_0:200"),
+                ])).Select(message => message.Id),
+            seen);
+    }
+
+    [Fact]
+    public async Task SubSecondBoundsAreComparedAtTheArchiveResolution()
+    {
+        using var harness = await SeededAsync();
+
+        // The archive stores whole seconds, so a sub-second component is truncated before
+        // comparison: both bounds still include the record at that second (docs/CLI.md).
+        var page = await harness.Service.ListMessagesAsync(
+            Request(
+                since: "2026-01-02T09:00:00.500+08:00",
+                until: "2026-01-02T09:00:00.500+08:00"),
+            CancellationToken.None);
+
+        Assert.Equal([ArchiveQueryHarness.ImageId], page.Items.Select(message => message.Id));
+    }
+
     // ---- request validation -------------------------------------------------
 
     [Theory]
@@ -659,7 +760,11 @@ public sealed class ArchiveQueryServiceTests
     public async Task QuerySucceedsWhenThePreservationStoreIsUnusable()
     {
         using var harness = await SeededAsync();
-        var service = new ArchiveQueryService(harness.Store, new ThrowingRawVaultStore(), harness.Clock);
+        var service = new ArchiveQueryService(
+            harness.Store,
+            new ThrowingRawVaultStore(),
+            harness.IngestProgress,
+            harness.Clock);
 
         var page = await service.ListMessagesAsync(Request(), CancellationToken.None);
         var window = await service.GetContextAsync(ArchiveQueryHarness.ImageId, 1, 1, CancellationToken.None);
@@ -789,22 +894,109 @@ public sealed class ArchiveQueryServiceTests
         Assert.Equal(1, freshness.Canonical.AccountCount);
     }
 
-    [Fact]
-    public async Task FreshnessReportsNoGenerationWhenThePreservationStoreIsUnreadable()
+    [Theory]
+    [InlineData("InvalidDataException")]
+    [InlineData("IOException")]
+    [InlineData("UnauthorizedAccessException")]
+    [InlineData("ArgumentException")]
+    [InlineData("NotSupportedException")]
+    public async Task AnyPreservationStoreFailureDegradesCaptureFreshnessInsteadOfTheWholeReport(
+        string exceptionType)
     {
         using var harness = await SeededAsync();
         harness.Vault.AccountIds = [ArchiveQueryHarness.AccountId];
-        harness.Vault.Failure = new InvalidDataException("published generation has an invalid manifest");
+        harness.Vault.Failure = CreateFailure(exceptionType, "the preservation store is unreadable");
 
         var freshness = await harness.Service.GetFreshnessAsync(CancellationToken.None);
 
+        // The canonical half must survive a preservation-store failure: a status projection that
+        // disappears when one stage is unreadable is useless for diagnosing that stage.
+        Assert.Equal(1, freshness.Canonical.AccountCount);
+        Assert.Equal(harness.GroupMessages.Count + harness.OtherMessages.Count, freshness.Canonical.MessageCount);
+
+        // The vault listing failed, so only the canonically known account is listed, and the report
+        // says why rather than silently narrowing the account set.
         var capture = Assert.Single(freshness.Capture);
         Assert.Equal(ArchiveQueryHarness.AccountId, capture.AccountId);
         Assert.Null(capture.GenerationId);
         Assert.Null(capture.CaptureTime);
         Assert.Null(capture.Completeness);
-        Assert.Equal(harness.GroupMessages.Count + harness.OtherMessages.Count, freshness.Canonical.MessageCount);
+        Assert.NotNull(freshness.CaptureUnavailableReason);
+        Assert.Contains(exceptionType, freshness.CaptureUnavailableReason, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task VaultListingFailureNeverRemovesCanonicallyKnownAccounts()
+    {
+        using var harness = await SeededAsync();
+        // The archive knows the account even though the vault cannot be enumerated at all.
+        harness.Vault.Failure = new IOException("vault root disappeared");
+
+        var freshness = await harness.Service.GetFreshnessAsync(CancellationToken.None);
+
+        Assert.Equal([ArchiveQueryHarness.AccountId], freshness.Capture.Select(capture => capture.AccountId));
+        Assert.Equal([ArchiveQueryHarness.AccountId], freshness.Ingest.Select(ingest => ingest.AccountId));
+        Assert.NotNull(freshness.CaptureUnavailableReason);
+    }
+
+    [Fact]
+    public async Task GenerationReadFailureIsReportedPerAccountWithItsReason()
+    {
+        using var harness = await SeededAsync();
+        harness.Vault.AccountIds = [ArchiveQueryHarness.AccountId];
+        harness.Vault.AccountFailures[ArchiveQueryHarness.AccountId] =
+            new ArgumentException("duplicate generation identity");
+
+        var freshness = await harness.Service.GetFreshnessAsync(CancellationToken.None);
+
+        // The listing itself succeeded, so only this account's capture state is unknown.
+        Assert.Null(freshness.CaptureUnavailableReason);
+        var capture = Assert.Single(freshness.Capture);
+        Assert.Null(capture.GenerationId);
+        Assert.NotNull(capture.UnavailableReason);
+        Assert.Contains("ArgumentException", capture.UnavailableReason, StringComparison.Ordinal);
+        Assert.Contains("duplicate generation identity", capture.UnavailableReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AReadableAccountStillReportsItsGenerationWhenAnotherAccountIsUnreadable()
+    {
+        using var harness = await SeededAsync();
+        var otherAccountId = "a_00000000000000b9";
+        harness.Vault.AccountIds = [ArchiveQueryHarness.AccountId, otherAccountId];
+        harness.Vault.Latest[ArchiveQueryHarness.AccountId] = new RawGenerationSummary
+        {
+            GenerationId = "gen_00000000000000aa",
+            AccountId = ArchiveQueryHarness.AccountId,
+            CaptureTime = ArchiveQueryHarness.At(3, 1, 12),
+            Completeness = RawGenerationCompleteness.Complete,
+            ArtifactCount = 2,
+            EvidenceFingerprint = "fingerprint",
+        };
+        harness.Vault.AccountFailures[otherAccountId] = new InvalidDataException("invalid manifest");
+
+        var freshness = await harness.Service.GetFreshnessAsync(CancellationToken.None);
+
+        // One unreadable account degrades only itself; the readable account is still reported and
+        // the report as a whole stays available.
+        Assert.Null(freshness.CaptureUnavailableReason);
+        Assert.Equal(2, freshness.Capture.Count);
+        var readable = freshness.Capture.Single(capture => capture.AccountId == ArchiveQueryHarness.AccountId);
+        Assert.Equal("gen_00000000000000aa", readable.GenerationId);
+        Assert.Null(readable.UnavailableReason);
+        var unreadable = freshness.Capture.Single(capture => capture.AccountId == otherAccountId);
+        Assert.Null(unreadable.GenerationId);
+        Assert.NotNull(unreadable.UnavailableReason);
+    }
+
+    private static Exception CreateFailure(string exceptionType, string message) => exceptionType switch
+    {
+        "InvalidDataException" => new InvalidDataException(message),
+        "IOException" => new IOException(message),
+        "UnauthorizedAccessException" => new UnauthorizedAccessException(message),
+        "ArgumentException" => new ArgumentException(message),
+        _ => new NotSupportedException(message),
+    };
 
     [Fact]
     public async Task FreshnessOnAnEmptyArchiveIsAConsistentEmptyReport()

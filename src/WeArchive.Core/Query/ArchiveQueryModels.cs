@@ -65,6 +65,16 @@ public sealed record ArchiveFreshness
 {
     public required CanonicalFreshness Canonical { get; init; }
 
+    /// <summary>
+    /// Reason the preservation store could not be enumerated at all, or null when it was.
+    /// <para>
+    /// When this is set, <see cref="Capture"/> and <see cref="Ingest"/> list only the accounts the
+    /// canonical archive knows, so a vault-only account is visibly unknown rather than silently
+    /// absent. Reading canonical status never fails because the preservation store did.
+    /// </para>
+    /// </summary>
+    public string? CaptureUnavailableReason { get; init; }
+
     /// <summary>Latest successfully published Raw Vault generation per known account.</summary>
     public required IReadOnlyList<CaptureFreshness> Capture { get; init; }
 
@@ -101,9 +111,10 @@ public sealed record CaptureFreshness
     public required string AccountId { get; init; }
 
     /// <summary>
-    /// Generation ID of the latest valid published generation, or null when none is discoverable —
-    /// including when the preservation store is unreadable. Null means "no generation can be
-    /// reported", never "a generation was found and matched".
+    /// Generation ID of the latest valid published generation, or null when none can be reported —
+    /// because no generation exists yet, or because the preservation store could not be read
+    /// (see <see cref="UnavailableReason"/>). Null always means "no generation can be reported",
+    /// never "a generation was found and matched".
     /// </summary>
     public string? GenerationId { get; init; }
 
@@ -114,4 +125,12 @@ public sealed record CaptureFreshness
     public int ArtifactCount { get; init; }
 
     public string? PreviousGenerationId { get; init; }
+
+    /// <summary>
+    /// Short engineering reason when this account's capture state could not be read, or null when it
+    /// was read — including when the account simply has no generation yet. It carries an exception
+    /// type and message only: never artifact contents, a partition fingerprint, a checksum or
+    /// message content.
+    /// </summary>
+    public string? UnavailableReason { get; init; }
 }

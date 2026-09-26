@@ -939,107 +939,47 @@ public sealed class SqliteArchiveStore : IArchiveStore
         """;
 
     /// <summary>
-    /// Committed ingest progress per account, projected from the checkpoint table without exposing
-    /// its payload, encoding or scope vocabulary. docs/HARNESS.md section 10.
+    /// Enumerates every persisted ingest checkpoint row in a deterministic order.
     /// <para>
-    /// Conversation content progress and the account-wide generation scan are reported separately
-    /// because they advance independently: a scoped ingest never advances the account scan, and a
-    /// conversation whose newer evidence verified unchanged keeps its older content generation.
+    /// This is a neutral read of rows the archive owns: it deliberately does not interpret the
+    /// opaque <c>checkpoint_json</c> payload and does not classify scope kinds, because both are
+    /// owned by the component that writes the cursor. Interpreting them here would make the
+    /// canonical persistence boundary depend on the Raw Vault ingest implementation's vocabulary.
+    /// Ingest progress is projected by <c>RawVaultIngestService</c> through
+    /// <see cref="IIngestProgressSource"/>.
     /// </para>
     /// </summary>
-    public Task<IReadOnlyList<IngestFreshness>> ListIngestFreshnessAsync(CancellationToken cancellationToken)
+    public Task<IReadOnlyList<IngestCheckpoint>> ListIngestCheckpointsAsync(
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT account_id, scope_kind, scope_id, checkpoint_json, updated_at FROM ingest_checkpoints;";
+            """
+            SELECT id, account_id, adapter_family, scope_kind, scope_id, checkpoint_json, updated_at
+            FROM ingest_checkpoints
+            ORDER BY account_id, scope_kind, scope_id;
+            """;
 
         using var reader = command.ExecuteReader();
-        var byAccount = new Dictionary<string, IngestProgress>(StringComparer.Ordinal);
+        var rows = new List<IngestCheckpoint>();
         while (reader.Read())
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var accountId = reader.GetString(0);
-            var scopeKind = reader.GetString(1);
-            var scopeId = reader.GetString(2);
-            var updatedAt = ParseTimestamp(reader.GetString(4));
-
-            if (!byAccount.TryGetValue(accountId, out var progress))
+            rows.Add(new IngestCheckpoint
             {
-                progress = new IngestProgress();
-                byAccount[accountId] = progress;
-            }
-
-            if (string.Equals(scopeKind, RawVaultIngestService.ConversationScopeKind, StringComparison.Ordinal))
-            {
-                // Ties are broken by the stable scope id so the reported "latest" ingest is
-                // deterministic even when two cursors share an update instant.
-                var isNewer = progress.LastIngestAt is null
-                    || updatedAt > progress.LastIngestAt
-                    || (updatedAt == progress.LastIngestAt
-                        && string.CompareOrdinal(scopeId, progress.LatestIngestedConversationId ?? string.Empty) > 0);
-                if (isNewer)
-                {
-                    progress.LastIngestAt = updatedAt;
-                    progress.LatestIngestedConversationId = scopeId;
-                    progress.LatestIngestedGenerationId = ReadCursorGenerationId(reader.GetString(3));
-                }
-            }
-            else if (string.Equals(scopeKind, RawVaultIngestService.AccountScopeKind, StringComparison.Ordinal)
-                && (progress.LastAccountScanAt is null || updatedAt > progress.LastAccountScanAt))
-            {
-                progress.LastAccountScanAt = updatedAt;
-            }
+                Id = reader.GetString(0),
+                AccountId = reader.GetString(1),
+                AdapterFamily = reader.GetString(2),
+                ScopeKind = reader.GetString(3),
+                ScopeId = reader.GetString(4),
+                CheckpointJson = reader.GetString(5),
+                UpdatedAt = ParseTimestamp(reader.GetString(6)),
+            });
         }
 
-        var rows = byAccount
-            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair => new IngestFreshness
-            {
-                AccountId = pair.Key,
-                LastIngestAt = pair.Value.LastIngestAt,
-                LatestIngestedGenerationId = pair.Value.LatestIngestedGenerationId,
-                LatestIngestedConversationId = pair.Value.LatestIngestedConversationId,
-                LastAccountScanAt = pair.Value.LastAccountScanAt,
-            })
-            .ToArray();
-
-        return Task.FromResult<IReadOnlyList<IngestFreshness>>(rows);
-    }
-
-    /// <summary>
-    /// Reads the generation an opaque ingest cursor records, when its versioned payload has one.
-    /// An unreadable or differently shaped payload contributes no generation rather than failing
-    /// the whole status read: the cursor is opaque here, not defective.
-    /// </summary>
-    private static string? ReadCursorGenerationId(string checkpointJson)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(checkpointJson);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                && document.RootElement.TryGetProperty("generation_id", out var value)
-                && value.ValueKind == JsonValueKind.String
-                    ? value.GetString()
-                    : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    private sealed class IngestProgress
-    {
-        public DateTimeOffset? LastIngestAt { get; set; }
-
-        public string? LatestIngestedGenerationId { get; set; }
-
-        public string? LatestIngestedConversationId { get; set; }
-
-        public DateTimeOffset? LastAccountScanAt { get; set; }
+        return Task.FromResult<IReadOnlyList<IngestCheckpoint>>(rows);
     }
 
     public Task<int> ResolveReplyTargetsAsync(string conversationId, CancellationToken cancellationToken)
