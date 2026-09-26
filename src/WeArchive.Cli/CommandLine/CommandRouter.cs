@@ -79,6 +79,14 @@ public sealed class CommandRouter
             ["collection"] = new(sp => new Commands.CollectionCommand(
                 sp.GetRequiredService<CollectionCatalogService>()),
                 "List Collections or show one (list | show <name>)."),
+            // The query family is a thin transport over ArchiveQueryService and depends on no
+            // source adapter, so retrieval works while live WeChat is unavailable.
+            ["message"] = new(sp => new Commands.MessageCommand(
+                sp.GetRequiredService<ArchiveQueryService>()),
+                "List canonical archived messages (list)."),
+            ["context"] = new(sp => new Commands.ContextCommand(
+                sp.GetRequiredService<ArchiveQueryService>()),
+                "Show one canonical message with its surrounding context."),
         };
     }
 

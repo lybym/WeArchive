@@ -103,7 +103,7 @@ Write-Host "    version=$($version.version) framework=$($version.framework) plat
 # 2. --help --json
 $help = Invoke-Smoke -Label '--help --json' -Arguments @('--help', '--json')
 $commandNames = @($help.commands | ForEach-Object { $_.name })
-foreach ($required in @('doctor', 'account', 'conversation', 'sync', 'export')) {
+foreach ($required in @('doctor', 'account', 'conversation', 'sync', 'export', 'message', 'context')) {
     if ($commandNames -notcontains $required) {
         throw "Help document is missing the required '$required' command (FR-22)."
     }

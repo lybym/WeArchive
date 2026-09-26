@@ -2,9 +2,9 @@
 
 This document records the additive command, JSON and exit-code contract for the M0.5 CLI
 product-surface migration. It covers the read-only discovery commands (Issue #7), the
-`sync`/`export` commands (Issue #8), the Raw Vault capture/ingest/rebuild family (Issues #22–#25)
-and the Collection scope (Issue #26). It refines the high-level CLI contract in
-[`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
+`sync`/`export` commands (Issue #8), the Raw Vault capture/ingest/rebuild family (Issues #22–#25),
+the Collection scope (Issue #26) and the query family (Issue #27). It refines the high-level CLI
+contract in [`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
 [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is the primary product surface;
 this file is normative for the command shapes and machine-readable output described here.
 
@@ -558,6 +558,143 @@ structured per-scope result on every path, and the **exit status remains authori
 
 `--json` still emits exactly one JSON document on every one of those paths.
 
+## Commands (query family — Issue #27 / M3a)
+
+`message list` and `context` are the shipped minimum retrieval slice of M3a
+([`HARNESS.md`](HARNESS.md) sections 3–5, [`PRD.md`](PRD.md) FR-16/FR-17/FR-30).
+
+They are read-only (**R0**): they never mutate canonical data, never read the Raw Vault, never open
+live WeChat, never acquire a database key and never scan exported JSONL. They are thin adapters
+over `ArchiveQueryService`, which reads the canonical SQLite archive through its existing
+timeline index `(conversation_id, occurred_utc, source_order_key, id)`. No FTS table, no second
+search engine and no schema migration is introduced. Retrieval therefore works while live WeChat is
+unavailable, as long as canonical data exists.
+
+Query field names are pinned by `[JsonPropertyName]` in
+`src/WeArchive.Cli/Output/Dto/MessageResultDto.cs`, and the canonical message DTO mirrors the
+documented envelope of [`MESSAGE_SCHEMA.md`](MESSAGE_SCHEMA.md) sections 3–6. It never exposes a
+SQLite column name, a numeric upstream message type code or a WeChat table name.
+
+### `wearchive message list --conversation <stable-id>`
+
+Lists one conversation's canonical messages in deterministic timeline order.
+
+Options:
+
+```text
+--conversation <stable-id>   Required. Stable conversation id (g_<16 hex> / u_<16 hex>).
+                             The upstream source id and export-catalog aliases are not accepted here.
+--since <time>               Optional. Inclusive lower bound.
+--until <time>               Optional. Inclusive upper bound.
+--participant <stable-id>    Optional. Canonical participant id (u_<16 hex>) of the sender.
+--type <canonical-type>      Optional. Canonical message type wire name (text, image, …, unknown).
+--limit <n>                  Optional. Page size, 1–500. Default 100.
+--cursor <opaque-cursor>     Optional. Resume from a previous next_cursor.
+```
+
+**Time values.** `--since` and `--until` accept an ISO-8601 date (`2026-09-01`) or date-time
+(`2026-09-01T09:30:00`, `2026-09-01T09:30:00+08:00`, `2026-09-01T01:30:00Z`). Both bounds are
+**inclusive instants**; a date-only or offset-less value denotes that instant in the machine's
+local offset, which is the same offset the archive renders canonical timestamps with. A date-only
+`--until 2026-09-01` therefore means `2026-09-01T00:00:00`, not "all of 1 September". An
+unparseable value is a usage failure, never a silently widened query.
+
+**Ordering and paging.** Order is `occurred_utc`, then `source_order_key` (empty when the source
+supplied none), then the stable message id, so messages that share an instant are neither repeated
+nor skipped. Pagination is keyset-based, not offset-based: `next_cursor` is an opaque token bound
+to this conversation, date range, participant and type filter set — changing `--limit` between
+pages is allowed, changing a filter is not (that is `cursor_invalid`). `next_cursor` is null
+exactly when `has_more` is false.
+
+**Filters.** `--participant` addresses the canonical stable participant id stored as the message's
+sender; an unresolved sender is never fabricated into one. `--type` is the canonical semantic type,
+so `unknown` records defined by [`MESSAGE_SCHEMA.md`](MESSAGE_SCHEMA.md) are returned normally like
+any other type.
+
+JSON shape (exit 0):
+
+```json
+{
+  "items": [
+    {
+      "id": "m_<16-hex>",
+      "conversation_id": "g_<16-hex>",
+      "sender_id": "u_<16-hex>",
+      "occurred_at": "2026-01-15T09:00:00+08:00",
+      "type": "text",
+      "text": "下午三点开会。",
+      "payload": null,
+      "reply_to": {
+        "message_id": "m_<16-hex>",
+        "sender_id": "u_<16-hex>",
+        "sender_name": "Alice",
+        "text": "会议改到四点",
+        "time": "2026-01-15T08:59:00+08:00"
+      },
+      "is_partial": false,
+      "source": {
+        "source_message_id": "s:1234",
+        "source_type": "1",
+        "source_subtype": null,
+        "source_partition": "message_0",
+        "source_order_key": "1234"
+      }
+    }
+  ],
+  "next_cursor": "opaque-cursor-or-null",
+  "has_more": false
+}
+```
+
+`payload` is the canonical type-specific structure and is null when the type carries none.
+`reply_to` is null when the message is not a reply; its `message_id` is the resolved canonical
+target and is null while the target is not archived, in which case the locally available snapshot
+fields are still present. `source` is the documented canonical provenance block
+([`MESSAGE_SCHEMA.md`](MESSAGE_SCHEMA.md) section 3.4, [`PRD.md`](PRD.md) FR-19) — it is
+engineering traceability and is never an identity input.
+
+Human output prints one line per message, led by the stable message id, followed by the UTC
+timestamp, the sender, the canonical type and the semantic text, then the `next cursor:` line when
+the result is resumable.
+
+Exits `1` with `conversation_not_found` or `archive_unavailable`; `2` with `usage_error`
+(missing/unknown option, invalid value) or `cursor_invalid`; `130` on cancellation.
+
+### `wearchive context <message-id> [--before <n>] [--after <n>]`
+
+Returns the bounded canonical window around one stable message id. The message's own conversation
+scopes both sides, so a window never crosses into another conversation's timeline.
+
+Options:
+
+```text
+<message-id>     Required. Stable canonical message id (m_<16 hex>).
+--before <n>     Optional. Preceding messages, 0–100. Default 20.
+--after <n>      Optional. Following messages, 0–100. Default 20.
+```
+
+The target is a distinct field from the two arrays, so a caller never infers the anchor from a list
+position.
+
+JSON shape (exit 0):
+
+```json
+{
+  "message_id": "m_<16-hex>",
+  "conversation_id": "g_<16-hex>",
+  "before": [ { "id": "m_<16-hex>", "…": "…" } ],
+  "message": { "id": "m_<16-hex>", "…": "…" },
+  "after": [ { "id": "m_<16-hex>", "…": "…" } ]
+}
+```
+
+`before` and `after` contain the same item shape as `message list`. Fewer records are returned at
+the first and last edges of the timeline instead of failing; `--before 0 --after 0` returns only the
+target.
+
+Exits `1` with `message_not_found` or `archive_unavailable`; `2` with `usage_error`; `130` on
+cancellation.
+
 ## Failure document (`--json`)
 
 In `--json` mode a non-zero exit still writes exactly one JSON document to stdout so callers can
@@ -583,6 +720,9 @@ Stable `error.code` values:
 | `collection_not_found` | 1 | The Collection name is not defined by the authoritative configuration |
 | `collection_config_invalid` | 2 | The user-maintained Collection configuration exists but is invalid |
 | `capture_failed` | 1 | `sync --collection` could not capture usable live-source evidence |
+| `message_not_found` | 1 | A stable message id resolved to no archived message |
+| `cursor_invalid` | 2 | A pagination cursor is malformed, unsupported or belongs to a different query |
+| `archive_unavailable` | 1 | The canonical archive exists but could not be opened or queried |
 
 ## `wearchive rebuild`
 
@@ -643,6 +783,15 @@ time-range selection is a forward refinement layered on the same export engine
 Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26). Collection-scoped
 query/search, Collection-scoped export selection, time-range selection and an interactive Collection
 editor are not.
+
+`message list` and `context` are implemented (Issue #27 / M3a). Keyword/full-text search
+(`wearchive search`), SQLite FTS indexing, statistics/activity timelines beyond archive freshness,
+Collection-scoped query filters and MCP transport are not: `ArchiveQueryService` already exposes
+capture/ingest/canonical freshness, but no CLI status command is wired to it yet. Keyword search is
+M3b work and no FTS index exists.
+
+`--collection` is not accepted by `message list`; Collection-scoped query filtering is follow-up
+work layered on the same `ArchiveQueryService` and the same Collection catalog.
 
 `wearchive collection` has no `--account` option: stable conversation IDs are account-scoped by
 construction, and the capture account is auto-selected exactly as `capture` does. A member that

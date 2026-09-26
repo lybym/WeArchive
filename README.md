@@ -43,6 +43,8 @@ wearchive export --conversation <id-or-alias>
 wearchive capture [--account <id>]
 wearchive collection list
 wearchive collection show <name>
+wearchive message list --conversation <stable-id> [--since] [--until] [--participant] [--type] [--limit] [--cursor]
+wearchive context <message-id> [--before <n>] [--after <n>]
 ```
 
 Automation contract:
@@ -76,6 +78,9 @@ The difficult archive/source/export engine is already implemented:
 - conversation-scoped incremental ingest (`wearchive ingest`) and Collection-scoped sync
   (`wearchive collection list|show`, `wearchive sync --collection <name>`) over one authoritative
   application-level Collection configuration ([ADR 0009](docs/adr/0009-collection-configuration-ownership.md));
+- bounded canonical retrieval through `ArchiveQueryService` with `wearchive message list` and
+  `wearchive context` — cursor-paginated, canonical-filtered, read-only over the archive's existing
+  timeline index ([docs/CLI.md](docs/CLI.md));
 - deterministic machine export to monthly JSONL plus YAML/JSON catalogs;
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
@@ -92,6 +97,7 @@ Current anchors:
 - **Raw Vault capture = R1** — normal success publishes one complete generation; a Fatal failure or cancellation discards staged material and publishes nothing. No journal or commit marker is persisted.
 - **Canonical rebuild** — builds and validates a fresh migrated archive before replacing the selected database; process-crash and power-loss recovery are not guaranteed and no persistent recovery journal is used.
 - **Conversation Import = R2** — a Fatal source-coverage failure rolls back the entire conversation transaction.
+- **Query = R0** — read-only: no query failure mutates canonical data, Raw Vault evidence or a checkpoint; pagination cursors are API tokens, not persistent records.
 - **R3+** — persistent journals, commit markers, recovery ledgers or complex crash-recovery state machines require an explicit product requirement before implementation.
 
 See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
@@ -155,9 +161,11 @@ Not yet complete:
 - CLI product-surface migration itself;
 - incremental canonical (second-sync) synchronization;
 - canonical partition-coverage reporting;
-- full-text archive search;
+- full-text archive search (no FTS index exists);
 - Collection-scoped query/search and export selection (Collection resolution and
   `sync --collection` are shipped);
+- a CLI archive-status command and MCP transport (capture/ingest/canonical freshness is available
+  through `ArchiveQueryService`);
 - time-range selection.
 
 Out of current scope:

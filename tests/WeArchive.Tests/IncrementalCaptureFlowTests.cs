@@ -305,6 +305,9 @@ public sealed class IncrementalCaptureFlowTests
     {
         public string VaultRoot => inner.VaultRoot;
 
+        public Task<IReadOnlyList<string>> ListAccountIdsAsync(CancellationToken cancellationToken) =>
+            inner.ListAccountIdsAsync(cancellationToken);
+
         public async Task<IRawGenerationSession> BeginGenerationAsync(
             RawGenerationContext context,
             CancellationToken cancellationToken) =>

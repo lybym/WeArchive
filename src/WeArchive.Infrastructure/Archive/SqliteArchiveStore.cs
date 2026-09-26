@@ -22,6 +22,29 @@ public sealed class SqliteArchiveStore : IArchiveStore
 {
     private const string SchemaVersionKey = "user_version";
 
+    /// <summary>
+    /// Canonical message column order. Every message read uses this list so a new column cannot
+    /// silently shift the positions <see cref="ReadMessage"/> relies on.
+    /// </summary>
+    private const string MessageColumns = """
+        id, conversation_id, sender_id, occurred_at, type, semantic_text, payload_json,
+        reply_to_message_id, reply_snapshot_json, source_profile_id, source_conversation_id,
+        source_message_id, source_type, source_subtype, source_partition, source_order_key,
+        adapter_name, adapter_version, source_version, import_run_id, is_partial,
+        reply_source_message_id
+        """;
+
+    /// <summary>Canonical timeline order, served by <c>ix_messages_timeline</c>. docs/DATA_MODEL.md section 8.1.</summary>
+    private const string MessageOrderAscending = "ASC";
+
+    /// <summary>
+    /// The canonical timeline <c>ORDER BY</c> for one direction. The direction is applied to every
+    /// ordering column: SQL applies a trailing <c>DESC</c> to the last expression alone, which would
+    /// otherwise return the oldest rather than the newest records of a preceding window.
+    /// </summary>
+    private static string MessageOrderBy(string direction) =>
+        $"occurred_utc {direction}, COALESCE(source_order_key, '') {direction}, id {direction}";
+
     private readonly string _connectionString;
     private readonly IClock _clock;
 
@@ -712,14 +735,10 @@ public sealed class SqliteArchiveStore : IArchiveStore
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText =
-            """
-            SELECT id, conversation_id, sender_id, occurred_at, type, semantic_text, payload_json,
-                   reply_to_message_id, reply_snapshot_json, source_profile_id, source_conversation_id,
-                   source_message_id, source_type, source_subtype, source_partition, source_order_key,
-                   adapter_name, adapter_version, source_version, import_run_id, is_partial,
-                   reply_source_message_id
+            $"""
+            SELECT {MessageColumns}
             FROM messages WHERE conversation_id = $id
-            ORDER BY occurred_utc, COALESCE(source_order_key, ''), id;
+            ORDER BY {MessageOrderBy(MessageOrderAscending)};
             """;
         command.Parameters.AddWithValue("$id", conversationId);
 
@@ -732,6 +751,295 @@ public sealed class SqliteArchiveStore : IArchiveStore
         }
 
         return Task.FromResult<IReadOnlyList<CanonicalMessage>>(result);
+    }
+
+    /// <summary>
+    /// One bounded keyset page of a conversation's canonical timeline.
+    /// docs/DATA_MODEL.md section 23.
+    /// <para>
+    /// The cursor position is compared in the same order the query sorts by, and one extra row is
+    /// read so "there are more records" is a fact about the archive rather than an inference from
+    /// a full page. Equal timestamps are separated by <c>source_order_key</c> and then by the
+    /// stable message id, which is what makes a resume neither repeat nor skip a record.
+    /// </para>
+    /// </summary>
+    public Task<ArchiveMessagePage> QueryMessagesAsync(
+        ArchiveMessageQuery query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+
+        var sql = new StringBuilder();
+        sql.Append("SELECT ").Append(MessageColumns)
+           .Append(" FROM messages WHERE conversation_id = $conversation");
+        command.Parameters.AddWithValue("$conversation", query.ConversationId);
+
+        if (query.Since is not null)
+        {
+            sql.Append(" AND occurred_utc >= $since");
+            command.Parameters.AddWithValue("$since", query.Since.Value.ToUnixTimeSeconds());
+        }
+
+        if (query.Until is not null)
+        {
+            sql.Append(" AND occurred_utc <= $until");
+            command.Parameters.AddWithValue("$until", query.Until.Value.ToUnixTimeSeconds());
+        }
+
+        if (query.ParticipantId is not null)
+        {
+            sql.Append(" AND sender_id = $sender");
+            command.Parameters.AddWithValue("$sender", query.ParticipantId);
+        }
+
+        if (query.Type is not null)
+        {
+            sql.Append(" AND type = $type");
+            command.Parameters.AddWithValue("$type", query.Type.Value.ToWireName());
+        }
+
+        if (query.After is not null)
+        {
+            sql.Append(" AND (").Append(PositionPredicate(">", "$afterUtc", "$afterOrder", "$afterId")).Append(')');
+            command.Parameters.AddWithValue("$afterUtc", query.After.OccurredUtc);
+            command.Parameters.AddWithValue("$afterOrder", query.After.SourceOrderKey);
+            command.Parameters.AddWithValue("$afterId", query.After.MessageId);
+        }
+
+        sql.Append(" ORDER BY ").Append(MessageOrderBy(MessageOrderAscending)).Append(" LIMIT $limit;");
+        command.Parameters.AddWithValue("$limit", query.Limit + 1);
+        command.CommandText = sql.ToString();
+
+        using var reader = command.ExecuteReader();
+        var items = new List<CanonicalMessage>(Math.Min(query.Limit, 128));
+        var hasMore = false;
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (items.Count == query.Limit)
+            {
+                hasMore = true;
+                break;
+            }
+
+            items.Add(ReadMessage(reader));
+        }
+
+        return Task.FromResult(new ArchiveMessagePage { Items = items, HasMore = hasMore });
+    }
+
+    /// <summary>
+    /// The bounded canonical window around one stable message ID, or null when the archive holds
+    /// no such message. The target's own conversation scopes both sides, so a context window never
+    /// crosses into another conversation's timeline.
+    /// </summary>
+    public Task<ArchiveMessageContext?> ReadMessageContextAsync(
+        string messageId,
+        int before,
+        int after,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(messageId);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using var connection = Open();
+
+        CanonicalMessage? target;
+        using (var targetCommand = connection.CreateCommand())
+        {
+            targetCommand.CommandText = $"SELECT {MessageColumns} FROM messages WHERE id = $id;";
+            targetCommand.Parameters.AddWithValue("$id", messageId);
+            using var reader = targetCommand.ExecuteReader();
+            target = reader.Read() ? ReadMessage(reader) : null;
+        }
+
+        if (target is null)
+            return Task.FromResult<ArchiveMessageContext?>(null);
+
+        var position = new MessageOrderKey
+        {
+            OccurredUtc = target.OccurredAt.ToUnixTimeSeconds(),
+            SourceOrderKey = target.Source.SourceOrderKey ?? string.Empty,
+            MessageId = target.Id,
+        };
+
+        return Task.FromResult<ArchiveMessageContext?>(new ArchiveMessageContext
+        {
+            Target = target,
+            Before = ReadWindow(connection, target.ConversationId, position, before, forward: false, cancellationToken),
+            After = ReadWindow(connection, target.ConversationId, position, after, forward: true, cancellationToken),
+        });
+    }
+
+    /// <summary>
+    /// Reads up to <paramref name="count"/> records strictly before or after a timeline position.
+    /// A "before" window is read newest-first and reversed so both windows come back in timeline
+    /// order, and the caller never has to correct the archive's ordering.
+    /// </summary>
+    private static IReadOnlyList<CanonicalMessage> ReadWindow(
+        SqliteConnection connection,
+        string conversationId,
+        MessageOrderKey position,
+        int count,
+        bool forward,
+        CancellationToken cancellationToken)
+    {
+        if (count == 0)
+            return [];
+
+        using var command = connection.CreateCommand();
+        var direction = forward ? "ASC" : "DESC";
+        command.CommandText =
+            $"""
+            SELECT {MessageColumns} FROM messages
+            WHERE conversation_id = $conversation
+              AND ({PositionPredicate(forward ? ">" : "<", "$positionUtc", "$positionOrder", "$positionId")})
+            ORDER BY {MessageOrderBy(direction)}
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$conversation", conversationId);
+        command.Parameters.AddWithValue("$positionUtc", position.OccurredUtc);
+        command.Parameters.AddWithValue("$positionOrder", position.SourceOrderKey);
+        command.Parameters.AddWithValue("$positionId", position.MessageId);
+        command.Parameters.AddWithValue("$limit", count);
+
+        using var reader = command.ExecuteReader();
+        var items = new List<CanonicalMessage>(count);
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            items.Add(ReadMessage(reader));
+        }
+
+        if (!forward)
+            items.Reverse();
+
+        return items;
+    }
+
+    /// <summary>
+    /// The keyset predicate for "strictly after (or before) this timeline position", written
+    /// against the same <c>COALESCE(source_order_key, '')</c> expression the reads order by, so a
+    /// resume continues exactly where the previous page stopped.
+    /// </summary>
+    private static string PositionPredicate(
+        string comparison,
+        string utcParameter,
+        string orderParameter,
+        string idParameter) =>
+        $"""
+        occurred_utc {comparison} {utcParameter}
+             OR (occurred_utc = {utcParameter}
+                 AND (COALESCE(source_order_key, '') {comparison} {orderParameter}
+                      OR (COALESCE(source_order_key, '') = {orderParameter} AND id {comparison} {idParameter})))
+        """;
+
+    /// <summary>
+    /// Committed ingest progress per account, projected from the checkpoint table without exposing
+    /// its payload, encoding or scope vocabulary. docs/HARNESS.md section 10.
+    /// <para>
+    /// Conversation content progress and the account-wide generation scan are reported separately
+    /// because they advance independently: a scoped ingest never advances the account scan, and a
+    /// conversation whose newer evidence verified unchanged keeps its older content generation.
+    /// </para>
+    /// </summary>
+    public Task<IReadOnlyList<IngestFreshness>> ListIngestFreshnessAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT account_id, scope_kind, scope_id, checkpoint_json, updated_at FROM ingest_checkpoints;";
+
+        using var reader = command.ExecuteReader();
+        var byAccount = new Dictionary<string, IngestProgress>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var accountId = reader.GetString(0);
+            var scopeKind = reader.GetString(1);
+            var scopeId = reader.GetString(2);
+            var updatedAt = ParseTimestamp(reader.GetString(4));
+
+            if (!byAccount.TryGetValue(accountId, out var progress))
+            {
+                progress = new IngestProgress();
+                byAccount[accountId] = progress;
+            }
+
+            if (string.Equals(scopeKind, RawVaultIngestService.ConversationScopeKind, StringComparison.Ordinal))
+            {
+                // Ties are broken by the stable scope id so the reported "latest" ingest is
+                // deterministic even when two cursors share an update instant.
+                var isNewer = progress.LastIngestAt is null
+                    || updatedAt > progress.LastIngestAt
+                    || (updatedAt == progress.LastIngestAt
+                        && string.CompareOrdinal(scopeId, progress.LatestIngestedConversationId ?? string.Empty) > 0);
+                if (isNewer)
+                {
+                    progress.LastIngestAt = updatedAt;
+                    progress.LatestIngestedConversationId = scopeId;
+                    progress.LatestIngestedGenerationId = ReadCursorGenerationId(reader.GetString(3));
+                }
+            }
+            else if (string.Equals(scopeKind, RawVaultIngestService.AccountScopeKind, StringComparison.Ordinal)
+                && (progress.LastAccountScanAt is null || updatedAt > progress.LastAccountScanAt))
+            {
+                progress.LastAccountScanAt = updatedAt;
+            }
+        }
+
+        var rows = byAccount
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new IngestFreshness
+            {
+                AccountId = pair.Key,
+                LastIngestAt = pair.Value.LastIngestAt,
+                LatestIngestedGenerationId = pair.Value.LatestIngestedGenerationId,
+                LatestIngestedConversationId = pair.Value.LatestIngestedConversationId,
+                LastAccountScanAt = pair.Value.LastAccountScanAt,
+            })
+            .ToArray();
+
+        return Task.FromResult<IReadOnlyList<IngestFreshness>>(rows);
+    }
+
+    /// <summary>
+    /// Reads the generation an opaque ingest cursor records, when its versioned payload has one.
+    /// An unreadable or differently shaped payload contributes no generation rather than failing
+    /// the whole status read: the cursor is opaque here, not defective.
+    /// </summary>
+    private static string? ReadCursorGenerationId(string checkpointJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(checkpointJson);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("generation_id", out var value)
+                && value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private sealed class IngestProgress
+    {
+        public DateTimeOffset? LastIngestAt { get; set; }
+
+        public string? LatestIngestedGenerationId { get; set; }
+
+        public string? LatestIngestedConversationId { get; set; }
+
+        public DateTimeOffset? LastAccountScanAt { get; set; }
     }
 
     public Task<int> ResolveReplyTargetsAsync(string conversationId, CancellationToken cancellationToken)
@@ -825,7 +1133,8 @@ public sealed class SqliteArchiveStore : IArchiveStore
             SELECT (SELECT COUNT(*) FROM accounts),
                    (SELECT COUNT(*) FROM conversations),
                    (SELECT COUNT(*) FROM participants),
-                   (SELECT COUNT(*) FROM messages);
+                   (SELECT COUNT(*) FROM messages),
+                   (SELECT m.occurred_at FROM messages m ORDER BY m.occurred_utc DESC LIMIT 1);
             """;
         using var reader = command.ExecuteReader();
         var stats = new ArchiveStats { ArchivePath = ArchivePath };
@@ -837,6 +1146,7 @@ public sealed class SqliteArchiveStore : IArchiveStore
                 ConversationCount = reader.GetInt32(1),
                 ParticipantCount = reader.GetInt32(2),
                 MessageCount = reader.GetInt32(3),
+                LastMessageAt = reader.IsDBNull(4) ? null : ParseTimestamp(reader.GetString(4)),
             };
         }
 

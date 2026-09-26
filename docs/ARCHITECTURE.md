@@ -62,7 +62,9 @@ and has its own manifest, reliability contract and storage root. See
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
-`Search / Query` remains a target component: the current archive/export foundation exists, but archive FTS/query is M3 work.
+`Search / Query` is partially shipped: the M3a minimum retrieval slice — `ArchiveQueryService`,
+`message list` and `context` — reads the canonical archive through its existing timeline index
+(section 3.9). Keyword/full-text search remains M3b work and no FTS index exists yet.
 
 ## 3. Layering
 
@@ -108,6 +110,8 @@ wearchive capture [--account <id>]
 ```
 
 Search/statistics/query commands are added only when their underlying requirements are implemented.
+The query commands (`message list`, `context`) are implemented by Issue #27 and are thin adapters
+over `ArchiveQueryService` (section 3.9); keyword search is not implemented.
 The Collection scope commands (`collection list`, `collection show <name>`, `sync --collection <name>`)
 are implemented by Issue #26; Collection query/search/export selection remains M3/M4 follow-up work
 (see section 3.8).
@@ -167,6 +171,7 @@ Key services:
 SourceCatalogService   # describe source, list accounts/conversations, describe conversation
 ImportService          # adapter -> normalizer -> archive, with diagnostics
 ArchiveWorkflow        # sync/export coordination and archive statistics
+ArchiveQueryService    # bounded canonical retrieval, context windows and freshness (section 3.9)
 ```
 
 #### 3.2.1 Import publication
@@ -392,6 +397,34 @@ levels are unchanged: capture is still R1 and one conversation's import is still
 Authoritative Collection configuration ownership (an application-level user-maintained file rather
 than the derived export-package catalog or the rebuildable canonical database) is recorded in
 [ADR 0009](adr/0009-collection-configuration-ownership.md).
+
+### 3.9 Query access — `src/WeArchive.Core/Services/ArchiveQueryService.cs`
+
+`ArchiveQueryService` is the single source-independent application boundary for structured
+retrieval ([`PRD.md`](PRD.md) FR-16/FR-17, [`HARNESS.md`](HARNESS.md) sections 2–5, ADR 0008).
+CLI `--json` and a future MCP transport are thin adapters over it; `src/WeArchive.Cli/Commands`
+owns option parsing and rendering only, never query semantics.
+
+Responsibilities:
+
+- list bounded canonical messages by stable conversation, date range, participant and canonical
+  type, with opaque keyset cursor pagination;
+- return a bounded context window around a stable message id;
+- report capture, ingest and canonical freshness from independent sources.
+
+It reads **only** the canonical SQLite archive for retrieval, through `IArchiveStore` and the
+existing timeline index. It never opens live WeChat, never acquires or holds a key, never reads Raw
+Vault source-format artifacts and never uses exported JSONL as a runtime store. The preservation
+store is reached for one purpose only — capture freshness — through the Core `IRawVaultStore`
+contract, so no Raw Vault physical layout reaches a caller (`PRD.md` NFR-13).
+
+Query is read-only (**R0**): it adds no journal, checkpoint, transaction protocol or recovery state,
+and no failure path mutates canonical data, Raw Vault evidence or a checkpoint. Pagination cursors
+are opaque API tokens, not persistent archive records, so no migration is involved
+([`DATA_MODEL.md`](DATA_MODEL.md) section 23).
+
+Keyword/full-text search remains M3b target work; `ArchiveQueryService` does not implement it and
+no FTS index exists.
 
 ## 4. Data flow
 

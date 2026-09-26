@@ -53,6 +53,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();
         services.TryAddSingleton<ArchiveWorkflow>();
+        services.TryAddSingleton<ArchiveQueryService>();
         services.TryAddSingleton<CaptureService>();
         services.TryAddSingleton<ICollectionCatalogSource>(
             _ => new YamlCollectionCatalogSource(collectionConfigurationPath));

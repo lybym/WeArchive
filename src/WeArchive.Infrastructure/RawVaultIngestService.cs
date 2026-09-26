@@ -11,9 +11,20 @@ namespace WeArchive.Infrastructure;
 public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore archive, IClock clock)
     : IConversationIngestService
 {
-    private const string ScopeKind = "conversation";
-    private const string ConversationCoverageScopeKind = "conversation_coverage";
-    private const string AccountScopeKind = "account";
+    /// <summary>
+    /// Scope kind of a conversation's canonical content cursor. It advances only when that
+    /// conversation's evidence changed and was published (docs/DATA_MODEL.md section 14.1).
+    /// </summary>
+    public const string ConversationScopeKind = "conversation";
+
+    /// <summary>
+    /// Scope kind of a conversation's coverage cursor: newer generations were verified and found
+    /// unchanged, so no canonical publication happened.
+    /// </summary>
+    public const string ConversationCoverageScopeKind = "conversation_coverage";
+
+    /// <summary>Scope kind of the account-wide generation scan cursor.</summary>
+    public const string AccountScopeKind = "account";
     private readonly IRawVaultStore _rawVault = rawVault ?? throw new ArgumentNullException(nameof(rawVault));
     private readonly IArchiveStore _archive = archive ?? throw new ArgumentNullException(nameof(archive));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
@@ -84,7 +95,7 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         var knownSelectedConversation = selectedConversation is not null;
         var selectedCheckpoint = selectedConversation is null
             ? null
-            : await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, ScopeKind,
+            : await _archive.GetIngestCheckpointAsync(accountId, WeChatCaptureAdapter.Family, ConversationScopeKind,
                 selectedConversation.Id, cancellationToken).ConfigureAwait(false);
         var selectedState = ReadCheckpoint(selectedCheckpoint?.CheckpointJson);
         var selectedCoverageCheckpoint = selectedConversation is null
@@ -167,7 +178,7 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                 cancellationToken.ThrowIfCancellationRequested();
                 var conversationId = StableIds.Conversation(accountId, conversation.Kind, conversation.SourceConversationId, conversation.PeerSourceUserId);
                 var checkpoint = await _archive.GetIngestCheckpointAsync(accountId, generation.Manifest.Capture.CaptureAdapterFamily,
-                    ScopeKind, conversationId, cancellationToken).ConfigureAwait(false);
+                    ConversationScopeKind, conversationId, cancellationToken).ConfigureAwait(false);
                 var state = ReadCheckpoint(checkpoint?.CheckpointJson);
                 if (!replay && state.ReaderVersion == adapter.AdapterVersion
                     && IsAncestorOrSelf(generationsById, summary.GenerationId, state.GenerationId))
@@ -216,7 +227,7 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
                     Id = "ingest_" + Guid.NewGuid().ToString("N"),
                     AccountId = accountId,
                     AdapterFamily = generation.Manifest.Capture.CaptureAdapterFamily,
-                    ScopeKind = ScopeKind,
+                    ScopeKind = ConversationScopeKind,
                     ScopeId = conversationId,
                     CheckpointJson = JsonSerializer.Serialize(new
                     {

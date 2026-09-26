@@ -95,4 +95,11 @@ public sealed record ArchiveStats
     public int MessageCount { get; init; }
 
     public string ArchivePath { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Instant of the newest archived message, or null for an empty archive. It is the canonical
+    /// half of freshness reporting (docs/HARNESS.md section 10): the counts say how much is
+    /// queryable, this says how current it is.
+    /// </summary>
+    public DateTimeOffset? LastMessageAt { get; init; }
 }
