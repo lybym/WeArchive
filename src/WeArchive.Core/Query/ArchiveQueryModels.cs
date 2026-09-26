@@ -128,9 +128,13 @@ public sealed record CaptureFreshness
 
     /// <summary>
     /// Short engineering reason when this account's capture state could not be read, or null when it
-    /// was read — including when the account simply has no generation yet. It carries an exception
-    /// type and message only: never artifact contents, a partition fingerprint, a checksum or
-    /// message content.
+    /// was read — including when the account simply has no generation yet.
+    /// <para>
+    /// It is the failure's exception type and message, so a real defect stays diagnosable. It never
+    /// carries artifact contents, a partition fingerprint, a checksum or message content. Like any
+    /// local diagnostic it may mention a local filesystem path; it is a report about why a stage
+    /// could not be read, never an input a caller parses to locate data.
+    /// </para>
     /// </summary>
     public string? UnavailableReason { get; init; }
 }

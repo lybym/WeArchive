@@ -208,6 +208,40 @@ public sealed class ArchiveQueryStoreTests
     }
 
     [Fact]
+    public async Task IngestCheckpointEnumerationIsATotalOrderAcrossAdapterFamilies()
+    {
+        using var harness = await SeededAsync();
+
+        // The uniqueness key is (account_id, adapter_family, scope_kind, scope_id), so two rows can
+        // share every other column. The enumeration must still be a total order, or a caller that
+        // breaks ties by row position would be nondeterministic across adapter families.
+        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
+            "ingest_second_family",
+            "conversation",
+            ArchiveQueryHarness.GroupConversationId,
+            """{"version":1,"reader_version":"0.1.0","generation_id":"gen_b","evidence_fingerprint":"f"}""",
+            ArchiveQueryHarness.At(4, 1),
+            adapterFamily: "fixture"), CancellationToken.None);
+        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
+            "ingest_first_family",
+            "conversation",
+            ArchiveQueryHarness.GroupConversationId,
+            """{"version":1,"reader_version":"0.1.0","generation_id":"gen_a","evidence_fingerprint":"f"}""",
+            ArchiveQueryHarness.At(4, 1),
+            adapterFamily: "wechat-windows"), CancellationToken.None);
+
+        var rows = await harness.Store.ListIngestCheckpointsAsync(CancellationToken.None);
+
+        // Ordinal (BINARY) order puts 'fixture' before 'wechat-windows', and the repeat enumeration
+        // agrees, so the tie-break by row position is stable rather than incidental.
+        Assert.Equal(["fixture", "wechat-windows"], rows.Select(row => row.AdapterFamily));
+        Assert.Equal(
+            ["fixture", "wechat-windows"],
+            (await harness.Store.ListIngestCheckpointsAsync(CancellationToken.None))
+                .Select(row => row.AdapterFamily));
+    }
+
+    [Fact]
     public async Task EmptyArchiveHasNoIngestCheckpoints()
     {
         var harness = new ArchiveQueryHarness();
@@ -285,11 +319,12 @@ public sealed class ArchiveQueryStoreTests
         string scopeKind,
         string scopeId,
         string json,
-        DateTimeOffset updatedAt) => new()
+        DateTimeOffset updatedAt,
+        string adapterFamily = "wechat-windows") => new()
         {
             Id = id,
             AccountId = ArchiveQueryHarness.AccountId,
-            AdapterFamily = "wechat-windows",
+            AdapterFamily = adapterFamily,
             ScopeKind = scopeKind,
             ScopeId = scopeId,
             CheckpointJson = json,

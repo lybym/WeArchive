@@ -163,6 +163,39 @@ public sealed class IngestProgressFreshnessTests
     }
 
     [Fact]
+    public async Task ProjectionStaysDeterministicAcrossAdapterFamiliesSharingAScopeAndInstant()
+    {
+        using var harness = await SeededAsync();
+
+        // Same account, scope kind, scope id and update instant, different adapter family: the
+        // table's uniqueness key allows both rows, so the reported "latest" must still be stable.
+        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
+            "ingest_wechat",
+            "conversation",
+            ArchiveQueryHarness.GroupConversationId,
+            """{"version":1,"reader_version":"0.1.0","generation_id":"gen_wechat","evidence_fingerprint":"f"}""",
+            ArchiveQueryHarness.At(4, 1),
+            adapterFamily: "wechat-windows"), CancellationToken.None);
+        await harness.Store.SetIngestCheckpointAsync(Checkpoint(
+            "ingest_fixture",
+            "conversation",
+            ArchiveQueryHarness.GroupConversationId,
+            """{"version":1,"reader_version":"0.1.0","generation_id":"gen_fixture","evidence_fingerprint":"f"}""",
+            ArchiveQueryHarness.At(4, 1),
+            adapterFamily: "fixture"), CancellationToken.None);
+
+        var first = Assert.Single(await harness.IngestProgress.GetIngestFreshnessAsync(CancellationToken.None));
+        var repeat = Assert.Single(await harness.IngestProgress.GetIngestFreshnessAsync(CancellationToken.None));
+
+        // 'fixture' precedes 'wechat-windows' in the store's total order, so the full tie resolves
+        // to that row — and it resolves the same way every time rather than by row position.
+        Assert.Equal("gen_fixture", first.LatestIngestedGenerationId);
+        Assert.Equal(first.LatestIngestedGenerationId, repeat.LatestIngestedGenerationId);
+        Assert.Equal(first.LatestIngestedConversationId, repeat.LatestIngestedConversationId);
+        Assert.Equal(first.LastIngestAt, repeat.LastIngestAt);
+    }
+
+    [Fact]
     public async Task ProjectionHonoursCancellation()
     {
         using var harness = await SeededAsync();
@@ -178,11 +211,12 @@ public sealed class IngestProgressFreshnessTests
         string scopeKind,
         string scopeId,
         string json,
-        DateTimeOffset updatedAt) => new()
+        DateTimeOffset updatedAt,
+        string adapterFamily = "wechat-windows") => new()
         {
             Id = id,
             AccountId = ArchiveQueryHarness.AccountId,
-            AdapterFamily = "wechat-windows",
+            AdapterFamily = adapterFamily,
             ScopeKind = scopeKind,
             ScopeId = scopeId,
             CheckpointJson = json,

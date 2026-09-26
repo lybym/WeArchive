@@ -62,6 +62,10 @@ public static class CliErrorCode
     /// <summary>A pagination cursor is malformed, unsupported or belongs to a different query (exit 2).</summary>
     public const string CursorInvalid = "cursor_invalid";
 
-    /// <summary>The canonical archive exists but could not be opened or queried.</summary>
+    /// <summary>
+    /// The canonical archive could not be read. A missing archive file is not this failure: the
+    /// store creates and migrates it, so it reads as an empty archive, exactly as <c>doctor</c>
+    /// reports it.
+    /// </summary>
     public const string ArchiveUnavailable = "archive_unavailable";
 }

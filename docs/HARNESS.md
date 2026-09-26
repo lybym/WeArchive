@@ -252,7 +252,9 @@ yet, so a Harness currently reaches it through the application service rather th
 
 A stage that cannot be read degrades instead of failing the report: an unreadable preservation
 store yields a null generation plus an explicit reason, so the canonical status stays available and
-a real defect remains diagnosable rather than presenting as an unavailable archive.
+a real defect remains diagnosable rather than presenting as an unavailable archive. That reason is
+the failure's exception type and message — engineering diagnostics a caller reports, not an input it
+parses, and never artifact contents, a fingerprint, a checksum or message content.
 
 ## 11. Future MCP transport
 

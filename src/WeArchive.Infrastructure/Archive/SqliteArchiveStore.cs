@@ -948,6 +948,11 @@ public sealed class SqliteArchiveStore : IArchiveStore
     /// Ingest progress is projected by <c>RawVaultIngestService</c> through
     /// <see cref="IIngestProgressSource"/>.
     /// </para>
+    /// <para>
+    /// The order covers every column of the table's uniqueness key
+    /// (<c>account_id, adapter_family, scope_kind, scope_id</c>), so it is a total order and a
+    /// caller that breaks ties by row position still gets a deterministic answer.
+    /// </para>
     /// </summary>
     public Task<IReadOnlyList<IngestCheckpoint>> ListIngestCheckpointsAsync(
         CancellationToken cancellationToken)
@@ -959,7 +964,7 @@ public sealed class SqliteArchiveStore : IArchiveStore
             """
             SELECT id, account_id, adapter_family, scope_kind, scope_id, checkpoint_json, updated_at
             FROM ingest_checkpoints
-            ORDER BY account_id, scope_kind, scope_id;
+            ORDER BY account_id, adapter_family, scope_kind, scope_id;
             """;
 
         using var reader = command.ExecuteReader();
