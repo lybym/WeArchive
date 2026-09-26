@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
 using WeArchive.Core.Services;
 
 namespace WeArchive.Cli.CommandLine;
@@ -57,8 +58,9 @@ public sealed class CommandRouter
                 "List conversations or show one (list | show <id-or-alias>)."),
             ["sync"] = new(sp => new Commands.SyncCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
-                sp.GetRequiredService<ImportService>()),
-                "Import one conversation into the archive."),
+                sp.GetRequiredService<ImportService>(),
+                sp.GetRequiredService<CollectionSyncService>()),
+                "Import one conversation or a Collection into the archive."),
             ["export"] = new(sp => new Commands.ExportCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
@@ -74,6 +76,9 @@ public sealed class CommandRouter
             ["ingest"] = new(sp => new Commands.IngestCommand(
                 sp.GetRequiredService<WeArchive.Infrastructure.RawVaultIngestService>()),
                 "Ingest captured Raw Vault evidence into the canonical archive."),
+            ["collection"] = new(sp => new Commands.CollectionCommand(
+                sp.GetRequiredService<CollectionCatalogService>()),
+                "List Collections or show one (list | show <name>)."),
         };
     }
 

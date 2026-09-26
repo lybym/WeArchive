@@ -301,7 +301,8 @@ include:
 Selection by stable conversation ID is the shipped behaviour: the application exports the
 conversation the user selected. Batch selection, alias resolution and collection selection are
 still product requirements to be delivered on top of the same export engine; the export engine
-already accepts a list of conversation IDs.
+already accepts a list of conversation IDs. Issue #26 ships Collection *resolution* and
+Collection-scoped `sync`, not Collection-scoped export selection.
 
 ---
 
@@ -338,7 +339,15 @@ Primary uses:
 
 `collections.yaml` is user-maintained. An export writes the empty shape only when the file does
 not exist; an existing file is never overwritten, so a user-maintained collection set survives
-regeneration. Collection *selection* is not yet wired into the application.
+regeneration. Collection *selection* is not yet wired into the export application.
+
+**Ownership:** the `collections.yaml` inside a generated package is **derived output**, not the
+authoritative product configuration. The authoritative Collection definitions live in one
+user-maintained application-level file (`%LOCALAPPDATA%\WeArchive\collections.yaml`), which
+`collection list`/`show` and `sync --collection` resolve against
+([ADR 0009](adr/0009-collection-configuration-ownership.md)). An export package written to an
+arbitrary `--output` path therefore never defines what a Collection scope contains, and exporting an
+empty shape cannot silently disable a Collection set.
 
 ---
 

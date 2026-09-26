@@ -38,4 +38,17 @@ public static class CliErrorCode
 
     /// <summary>Describing a resolved conversation failed (e.g. the source became unavailable mid-operation).</summary>
     public const string ConversationDescribeFailed = "conversation_describe_failed";
+
+    // ---- Collection scope (Issue #26 / M4 foundation) ----
+    // `collection_config_invalid` is a configuration validation failure (exit 2), matching the
+    // documented exit-code family; the other two are runtime/operation failures (exit 1).
+
+    /// <summary>A requested Collection name is not defined by the authoritative configuration.</summary>
+    public const string CollectionNotFound = "collection_not_found";
+
+    /// <summary>The user-maintained Collection configuration exists but is invalid (exit 2).</summary>
+    public const string CollectionConfigInvalid = "collection_config_invalid";
+
+    /// <summary>Capturing live-source evidence for a Collection did not publish a usable generation.</summary>
+    public const string CaptureFailed = "capture_failed";
 }

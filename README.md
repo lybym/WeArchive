@@ -38,8 +38,11 @@ wearchive account list
 wearchive conversation list
 wearchive conversation show <id-or-alias>
 wearchive sync --conversation <id-or-alias>
+wearchive sync --collection <name>
 wearchive export --conversation <id-or-alias>
 wearchive capture [--account <id>]
+wearchive collection list
+wearchive collection show <name>
 ```
 
 Automation contract:
@@ -70,6 +73,9 @@ The difficult archive/source/export engine is already implemented:
 - SQLite archive with migrations and idempotent import behavior;
 - Raw Vault capture — source-faithful, immutable generations with SHA-256 checksums, readable without the WeChat key, with safe incremental capture and explicit partition coverage ([RAW_VAULT.md](docs/RAW_VAULT.md));
 - Raw-Vault-only canonical rebuild with a WeChat 4.x captured-source reader and validated archive replacement;
+- conversation-scoped incremental ingest (`wearchive ingest`) and Collection-scoped sync
+  (`wearchive collection list|show`, `wearchive sync --collection <name>`) over one authoritative
+  application-level Collection configuration ([ADR 0009](docs/adr/0009-collection-configuration-ownership.md));
 - deterministic machine export to monthly JSONL plus YAML/JSON catalogs;
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
@@ -150,7 +156,9 @@ Not yet complete:
 - incremental canonical (second-sync) synchronization;
 - canonical partition-coverage reporting;
 - full-text archive search;
-- collection/time-range CLI workflows.
+- Collection-scoped query/search and export selection (Collection resolution and
+  `sync --collection` are shipped);
+- time-range selection.
 
 Out of current scope:
 
@@ -185,6 +193,7 @@ Read before coding:
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | M0.5 CLI migration and later milestones |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Development/reliability/CLI governance |
 | [`docs/CLI.md`](docs/CLI.md) | CLI command/JSON/exit contract |
+| [`docs/adr/`](docs/adr/) | Accepted architecture decisions, including Collection configuration ownership |
 | [`AGENTS.md`](AGENTS.md) | Mandatory agent rules and hard-stop conditions |
 
 Development flow:

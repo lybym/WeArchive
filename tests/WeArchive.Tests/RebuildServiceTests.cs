@@ -673,6 +673,63 @@ public sealed class RebuildServiceTests
         Assert.Equal("prior complete data", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
     }
 
+    /// <summary>
+    /// A scoped ingest accepts the stable conversation id as well as the upstream source
+    /// conversation id, so a Collection (whose membership keys are stable conversation ids) can
+    /// reuse this ingest path instead of introducing a second enumerator
+    /// (docs/DATA_MODEL.md section 16, docs/PRD.md FR-23).
+    /// </summary>
+    [Fact]
+    public async Task RawVaultScopedIngestAcceptsTheStableConversationIdOrTheSourceConversationId()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "stable id evidence", "reader-1", CapturedAt,
+            conversationId: "wxid_bob");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        var stableId = StableIds.Conversation(accountId, ConversationKind.Direct, "wxid_bob", "wxid_bob");
+
+        Assert.Equal(1, await ingester.IngestConversationAsync(accountId, stableId, null, CancellationToken.None));
+
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal(stableId, conversation.Id);
+        Assert.Equal("stable id evidence", Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Text);
+
+        // The upstream source conversation id keeps selecting the same conversation and is a
+        // no-change repeat rather than a duplicate publication.
+        Assert.Equal(0, await ingester.IngestConversationAsync(accountId, "wxid_bob", null, CancellationToken.None));
+        Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A selector that matches no preserved conversation is a typed, distinguishable outcome: a
+    /// multi-scope caller must report an unresolved Collection member differently from a failure
+    /// that was attempted and rolled back (docs/PRD.md FR-23).
+    /// </summary>
+    [Fact]
+    public async Task RawVaultScopedIngestReportsAnUnresolvedConversationWithATypedFailure()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "present", "reader-1", CapturedAt,
+            conversationId: "wxid_bob");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        var absent = StableIds.Conversation(accountId, ConversationKind.Direct, "wxid_absent", "wxid_absent");
+
+        var error = await Assert.ThrowsAsync<ConversationNotInRawVaultException>(
+            () => ingester.IngestConversationAsync(accountId, absent, null, CancellationToken.None));
+
+        Assert.Equal(absent, error.ConversationSelector);
+        Assert.Equal(accountId, error.AccountId);
+        Assert.Empty(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,

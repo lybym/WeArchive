@@ -107,7 +107,10 @@ wearchive export --conversation <id-or-alias>
 wearchive capture [--account <id>]
 ```
 
-Search/statistics/collection commands are added only when their underlying requirements are implemented.
+Search/statistics/query commands are added only when their underlying requirements are implemented.
+The Collection scope commands (`collection list`, `collection show <name>`, `sync --collection <name>`)
+are implemented by Issue #26; Collection query/search/export selection remains M3/M4 follow-up work
+(see section 3.8).
 
 ### 3.1.1 CLI process contract
 
@@ -136,6 +139,14 @@ do not reach a command:
 Human diagnostics — including help text printed because a command was missing or unknown —
 stay on stderr, and `--quiet` never suppresses a failure. The process exit code remains the
 authoritative outcome class.
+
+A **multi-scope** operation (currently `sync --collection <name>`) is the one documented refinement:
+because one run legitimately publishes some conversations and fails others, stdout carries the
+structured per-scope result document on every path — including a partial failure — so a machine
+caller can still see which members succeeded. That document is the failure report (`succeeded:
+false` with a per-item `error`), the exit code stays the authoritative outcome class (non-zero when
+any requested conversation failed), and `--json` still emits exactly one JSON document. A
+single-scope failure keeps the error-document shape above.
 
 CLI JSON DTOs are presentation contracts. They may wrap Core domain results but must not expose unstable implementation internals such as raw WeChat table names or parser-specific types.
 
@@ -345,6 +356,42 @@ chats/groups/<stable-id>/<year>/<year>-<MM>.jsonl
 ```
 
 Export reliability is deliberately bounded: caught in-process cancellation/I/O failures attempt restoration of previous output where documented, but process crash, OS/filesystem crash and power loss are **not** guaranteed recovery classes in Phase 1. See `DEVELOPMENT.md` Reliability Levels and `EXPORT_PRD.md` section 3.2.
+
+### 3.8 Collection scope — `src/WeArchive.Core/Collections`, `src/WeArchive.Core/Services`
+
+`Collection` is the one reusable scope abstraction above capture/ingest orchestration
+(`docs/PRD.md` FR-23, `docs/HARNESS.md` section 8). It is deliberately not a `sync-group`,
+`watch-list` or `harness-dataset`.
+
+```text
+Collection -> stable conversation IDs -> capture live evidence (CaptureService)
+                                      -> per-conversation Raw Vault ingest
+```
+
+Responsibilities:
+
+- `CollectionCatalogService` (Core) reads the one authoritative application-level Collection
+  configuration through `ICollectionCatalogSource`, validates the documented schema/version and
+  resolves a name to stable conversation membership. It performs no file I/O itself and depends on
+  no YAML library; `WeArchive.Infrastructure/Collections/YamlCollectionCatalogSource` owns reading
+  and deserializing the file.
+- `CollectionSyncService` (Core) orchestrates one named Collection: resolve membership, capture
+  required live-source evidence once through the shared `CaptureService`, then ingest each
+  conversation through `IConversationIngestService`. It introduces no second source parser and no
+  JSONL scanning.
+- The Raw Vault ingest implementation (`RawVaultIngestService`, Infrastructure) selects a
+  conversation by stable conversation ID or upstream source conversation ID, so the Collection's
+  membership keys address the same conversations the discovery surface reports.
+
+Collection execution is **multi-scope, not one transaction**: each conversation's canonical writes
+and ingest checkpoint commit in that conversation's own SQLite transaction. A conversation failure
+therefore never rolls back another conversation's committed progress, and a run reports structured
+per-conversation success/no-change/failed/unresolved state instead of a single pass/fail. Reliability
+levels are unchanged: capture is still R1 and one conversation's import is still R2.
+
+Authoritative Collection configuration ownership (an application-level user-maintained file rather
+than the derived export-package catalog or the rebuildable canonical database) is recorded in
+[ADR 0009](adr/0009-collection-configuration-ownership.md).
 
 ## 4. Data flow
 

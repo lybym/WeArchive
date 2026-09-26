@@ -976,7 +976,10 @@ public sealed class SyncExportCliTests
             new DoctorCommand(sp.GetRequiredService<ISourceAdapter>(), sp.GetRequiredService<IArchiveStore>()),
             new AccountCommand(sp.GetRequiredService<SourceCatalogService>()),
             new ConversationCommand(sp.GetRequiredService<SourceCatalogService>()),
-            new SyncCommand(sp.GetRequiredService<SourceCatalogService>(), sp.GetRequiredService<ImportService>()),
+            new SyncCommand(
+                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<ImportService>(),
+                sp.GetRequiredService<CollectionSyncService>()),
             new ExportCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
