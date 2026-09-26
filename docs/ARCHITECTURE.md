@@ -107,7 +107,7 @@ wearchive export --conversation <id-or-alias>
 wearchive capture [--account <id>]
 ```
 
-Search/statistics/collection commands are added only when their underlying requirements are implemented.
+Search/statistics/collection commands are added only when their underlying requirements are implemented. Issue #26 adds a source-independent Collection model/catalog and a sync orchestrator above CaptureService and per-conversation Raw Vault ingest. The authoritative YAML catalog lives in the per-user application data directory; export package catalogs remain interchange data.
 
 ### 3.1.1 CLI process contract
 

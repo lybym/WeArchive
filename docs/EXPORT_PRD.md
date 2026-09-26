@@ -337,8 +337,10 @@ Primary uses:
 - repeatedly exporting the same set of conversations.
 
 `collections.yaml` is user-maintained. An export writes the empty shape only when the file does
-not exist; an existing file is never overwritten, so a user-maintained collection set survives
-regeneration. Collection *selection* is not yet wired into the application.
+not exist; an existing file is never overwritten. For product sync, the authoritative catalog is
+`%LOCALAPPDATA%/WeArchive/collections.yaml` (schema version `1.0`); the package file is an
+interchange copy and is not read as sync configuration. Collection export selection remains a
+follow-up; Issue #26 ships list/show and collection-scoped capture/ingest only.
 
 ---
 

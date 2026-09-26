@@ -686,3 +686,17 @@ an older canonical database. Stable account, participant, conversation and messa
 continue to use section 16 derivation. Existing `user_display_name` overrides are carried into
 the rebuilt database when a matching canonical participant remains present. The Raw Vault
 format version is tracked in each manifest, not in `schema_migrations`.
+
+## 22. Collection configuration (Issue #26)
+
+Collection definitions are user-maintained application configuration, not canonical SQLite data.
+The authoritative file is `%LOCALAPPDATA%/WeArchive/collections.yaml`, schema version `1.0`,
+with the `collections: <name>: conversations: [<stable-id>]` shape from `EXPORT_PRD.md` section
+8. A membership key is a stable canonical `g_<16-hex>` or `u_<16-hex>` conversation ID.
+
+The catalog is independent of export packages and survives canonical archive rebuild because it
+is outside the rebuildable database. The export package's `collections.yaml` remains user-owned
+interchange data and is not consulted by product sync. Missing application configuration means
+there are no configured collections. Invalid YAML/schema, malformed IDs, and duplicate membership
+are diagnosed without silently rewriting the user's file. This configuration adds no SQLite
+migration or checkpoint type; each member uses the existing per-conversation ingest checkpoint.

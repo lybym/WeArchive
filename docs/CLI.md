@@ -256,6 +256,33 @@ JSON shape (exit 0):
 state only (a rolled-back Fatal run produces an error document, not this result). A repeated
 sync is idempotent by stable id (`unchanged` grows on the second run).
 
+### Collections and `wearchive sync --collection <name>`
+
+`wearchive collection list` returns available names; `wearchive collection show <name>` returns
+the stable conversation IDs in that Collection. Both support human and `--json` output. The
+authoritative user-maintained configuration is
+`%LOCALAPPDATA%/WeArchive/collections.yaml`, schema version `1.0`, using the documented
+`collections: <name>: conversations: [...]` shape. Missing configuration means an empty
+catalog. Invalid YAML, schema versions, duplicate memberships and malformed stable IDs are
+reported deterministically and never rewritten. Export-package `collections.yaml` is not read
+for product sync.
+
+`sync --collection <name>` captures live-source evidence with `CaptureService`, then ingests each
+resolved member from Raw Vault in its own existing conversation transaction/checkpoint. It
+returns a result with `collection`, `succeeded`, and one `conversations[]` item per requested
+stable ID (`succeeded`, `no_change`, `failed`, `unresolved_member`, `cancelled`, or
+`not_attempted`). A failed member does not
+undo any other member's committed checkpoint. Partial results are emitted as one JSON document
+and exit 1; fully successful/no-change runs exit 0. Unknown Collection names are usage errors.
+`--conversation` remains supported, and exactly one of `--conversation` or `--collection` is
+required. Collection query/search/export selection is not implemented by this Issue.
+
+```text
+wearchive collection list [--json]
+wearchive collection show <name> [--json]
+wearchive sync --collection <name> [--json] [--no-input] [--quiet]
+```
+
 ### `wearchive export --conversation <id-or-alias> [--output <dir>]`
 
 Publishes one conversation's JSONL dataset (FR-12, [EXPORT_PRD.md](EXPORT_PRD.md)). Resolution

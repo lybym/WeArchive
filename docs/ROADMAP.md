@@ -212,6 +212,10 @@ Acceptance criteria:
 
 **Goal:** make repeated LLM/Harness analysis easy without introducing a separate derived-data layer.
 
+Issue #26 ships the Collection sync foundation in this milestone: application-level catalog
+ownership, list/show, and independently checkpointed collection sync. Collection query/search/
+export selection remains P1/follow-up work.
+
 Deliverables:
 
 - named collections for recurring analysis scopes;

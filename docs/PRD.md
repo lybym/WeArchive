@@ -321,6 +321,13 @@ export
 
 Do not introduce overlapping `sync-group`, `watch-list` or `harness-dataset` concepts unless they represent materially different semantics.
 
+Issue #26 delivers the M4 Collection sync foundation: `collection list`, `collection show <name>`,
+and `sync --collection <name>` use an application-level user-maintained catalog at
+`%LOCALAPPDATA%/WeArchive/collections.yaml`. Export-package `collections.yaml` remains an
+interchange copy and is never the authority for product sync configuration. Collection sync
+captures through `CaptureService`, then ingests members independently from Raw Vault; partial
+success is reported per conversation and exits non-zero.
+
 ### FR-24 Canonical message envelope
 
 Every canonical/exported timeline event follows [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md):

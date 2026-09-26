@@ -4,6 +4,7 @@ using WeArchive.Core.Abstractions;
 using WeArchive.Core.Services;
 using WeArchive.Infrastructure.Archive;
 using WeArchive.Infrastructure.Export;
+using WeArchive.Infrastructure.Collections;
 using WeArchive.Infrastructure.Fixtures;
 using WeArchive.Infrastructure.RawVault;
 using WeArchive.Infrastructure.WeChat;
@@ -42,6 +43,20 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ArchiveWorkflow>();
         services.TryAddSingleton<CaptureService>();
 
+        return services;
+    }
+
+    public static IServiceCollection AddCollectionCatalog(this IServiceCollection services, string collectionsPath)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(collectionsPath);
+        services.TryAddSingleton<ICollectionCatalogStore>(_ => new YamlCollectionCatalogStore(collectionsPath));
+        services.TryAddSingleton<CollectionCatalogService>();
+        services.TryAddSingleton(sp => new CollectionSyncService(
+            sp.GetRequiredService<CollectionCatalogService>(),
+            sp.GetRequiredService<SourceCatalogService>(),
+            sp.GetRequiredService<CaptureService>(),
+            sp.GetRequiredService<RawVaultIngestService>()));
         return services;
     }
 

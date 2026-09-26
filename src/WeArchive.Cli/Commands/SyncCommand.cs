@@ -4,6 +4,8 @@ using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.Services;
+using WeArchive.Infrastructure.Collections;
+using WeArchive.Core.RawVault;
 
 namespace WeArchive.Cli.Commands;
 
@@ -24,17 +26,19 @@ public sealed class SyncCommand : ICliCommand
     private readonly SourceCatalogService _catalog;
     private readonly ImportService _importer;
     private readonly SourceConversationResolver _resolver;
+    private readonly CollectionSyncService? _collectionSync;
 
-    public SyncCommand(SourceCatalogService catalog, ImportService importer)
+    public SyncCommand(SourceCatalogService catalog, ImportService importer, CollectionSyncService? collectionSync = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _importer = importer ?? throw new ArgumentNullException(nameof(importer));
+        _collectionSync = collectionSync;
         _resolver = new SourceConversationResolver(catalog);
     }
 
     public string Name => "sync";
 
-    public string Description => "Import one conversation into the archive.";
+    public string Description => "Capture and ingest one conversation or a named collection.";
 
     public async Task<int> ExecuteAsync(
         CliContext context,
@@ -44,7 +48,49 @@ public sealed class SyncCommand : ICliCommand
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(args);
 
-        var conversation = ParseArgs(args);
+        var selection = ParseArgs(args);
+        if (selection.Collection is not null)
+        {
+            if (_collectionSync is null)
+                throw new CliUsageException("sync --collection is unavailable because no Collection catalog was configured.");
+            CollectionSyncResult collectionResult;
+            try
+            {
+                collectionResult = await _collectionSync.SyncAsync(selection.Collection,
+                    new CliProgress<CaptureProgress>(context, item => item.Stage), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (KeyNotFoundException ex)
+            {
+                context.WriteError(CliErrorCode.UsageError, ex.Message);
+                return ExitCode.UsageError;
+            }
+            catch (Exception ex)
+            {
+                context.WriteError(CliErrorCode.Failure, ex.Message);
+                return ExitCode.Failure;
+            }
+            var dto = new
+            {
+                collection = collectionResult.CollectionName,
+                succeeded = collectionResult.Succeeded,
+                conversations = collectionResult.Conversations.Select(item => new
+                {
+                    conversation_id = item.ConversationId,
+                    status = item.Status,
+                    error = item.Error,
+                }).ToArray(),
+            };
+            if (context.Options.Json) context.Stdout.WriteLine(CliJson.Serialize(dto));
+            else
+            {
+                foreach (var item in collectionResult.Conversations)
+                    context.Stdout.WriteLine($"{item.ConversationId}: {item.Status}{(item.Error is null ? string.Empty : $" — {item.Error}")}");
+            }
+            return collectionResult.Cancelled ? ExitCode.Cancelled
+                : collectionResult.Succeeded ? ExitCode.Success : ExitCode.Failure;
+        }
+        var conversation = selection.Conversation!;
 
         CliReporting.Progress(context, $"Resolving conversation '{conversation}'…");
         var resolved = await _resolver.ResolveAsync(context, conversation, cancellationToken)
@@ -128,29 +174,32 @@ public sealed class SyncCommand : ICliCommand
         return ExitCode.Success;
     }
 
-    private static string ParseArgs(IReadOnlyList<string> args)
+    private static (string? Conversation, string? Collection) ParseArgs(IReadOnlyList<string> args)
     {
         string? conversation = null;
+        string? collection = null;
         for (var i = 0; i < args.Count; i++)
         {
             switch (args[i])
             {
                 case "--conversation":
+                case "--collection":
                     if (i + 1 >= args.Count)
-                        throw new CliUsageException("--conversation requires a value.");
-                    conversation = args[++i];
+                        throw new CliUsageException($"{args[i]} requires a value.");
+                    if (args[i] == "--conversation") conversation = args[++i];
+                    else collection = args[++i];
                     break;
                 default:
                     throw new CliUsageException($"unknown option '{args[i]}' for sync.");
             }
         }
 
-        if (string.IsNullOrWhiteSpace(conversation))
-            throw new CliUsageException("sync requires --conversation <id-or-alias>.");
+        if (string.IsNullOrWhiteSpace(conversation) == string.IsNullOrWhiteSpace(collection))
+            throw new CliUsageException("sync requires exactly one of --conversation <id-or-alias> or --collection <name>.");
 
         // --no-input never prompts: the command auto-selects the current source account, so it
         // has no prompt path. Missing required input is a deterministic usage error (exit 2).
-        return conversation;
+        return (conversation, collection);
     }
 
     private static void WriteResult(CliContext context, SyncResultDto result, string accountId)

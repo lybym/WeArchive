@@ -27,6 +27,9 @@ internal static class Program
     /// <summary>Root directory for the Raw Vault generations store.</summary>
     internal static string RawVaultRoot { get; } = Path.Combine(DataDirectory, "rawvault");
 
+    /// <summary>Authoritative user-maintained Collection configuration.</summary>
+    internal static string CollectionsPath { get; } = Path.Combine(DataDirectory, "collections.yaml");
+
     private static async Task<int> Main(string[] args)
     {
         // Build the production service provider: archive, exporter, application services
@@ -34,6 +37,7 @@ internal static class Program
         // model — it reuses the same Infrastructure extensions as the transitional WPF host.
         var services = new ServiceCollection();
         services.AddWeArchiveCore(ArchivePath, RawVaultRoot);
+        services.AddCollectionCatalog(CollectionsPath);
         services.AddWeChatWindowsSource();
         services.AddSingleton(new CliExportDefaults { DefaultOutputDirectory = DefaultExportDirectory });
         await using var provider = services.BuildServiceProvider();

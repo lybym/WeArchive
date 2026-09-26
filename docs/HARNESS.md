@@ -175,6 +175,13 @@ wearchive export --collection ai-toy
 
 Do not introduce separate concepts such as `watch-list`, `sync-group` or `harness-dataset` when Collection already expresses the required conversation scope.
 
+The current sync foundation reads the authoritative user-maintained catalog from
+`%LOCALAPPDATA%/WeArchive/collections.yaml` (schema version `1.0`). Each membership value is a
+stable `g_<16-hex>` or `u_<16-hex>` conversation ID. `wearchive collection list` and
+`wearchive collection show <name>` inspect it; `wearchive sync --collection <name>` captures
+through `CaptureService` and ingests each member independently. Export-package catalogs are not
+consulted for product sync. Query/search/export selection remains future work.
+
 ## 9. Incremental synchronization for Harness workflows
 
 Recurring Harness workflows should not require full source rescans.

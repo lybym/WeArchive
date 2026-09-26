@@ -38,6 +38,9 @@ wearchive account list
 wearchive conversation list
 wearchive conversation show <id-or-alias>
 wearchive sync --conversation <id-or-alias>
+wearchive collection list
+wearchive collection show <name>
+wearchive sync --collection <name>
 wearchive export --conversation <id-or-alias>
 wearchive capture [--account <id>]
 ```

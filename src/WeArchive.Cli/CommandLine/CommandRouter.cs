@@ -55,10 +55,14 @@ public sealed class CommandRouter
             ["conversation"] = new(sp => new Commands.ConversationCommand(
                 sp.GetRequiredService<SourceCatalogService>()),
                 "List conversations or show one (list | show <id-or-alias>)."),
+            ["collection"] = new(sp => new Commands.CollectionCommand(
+                sp.GetRequiredService<CollectionCatalogService>()),
+                "List collections or show stable conversation membership."),
             ["sync"] = new(sp => new Commands.SyncCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
-                sp.GetRequiredService<ImportService>()),
-                "Import one conversation into the archive."),
+                sp.GetRequiredService<ImportService>(),
+                sp.GetService<WeArchive.Infrastructure.Collections.CollectionSyncService>()),
+                "Capture and ingest one conversation or a named collection."),
             ["export"] = new(sp => new Commands.ExportCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),

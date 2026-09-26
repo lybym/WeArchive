@@ -52,6 +52,7 @@ public sealed class SyncExportCliTests
         services.AddSingleton<IClock>(clock);
         services.AddSingleton<ISourceAdapter>(adapter ?? fixture);
         services.AddSingleton<ISourceCaptureAdapter, FixtureCaptureAdapter>();
+        services.AddCollectionCatalog(temp.Combine("collections.yaml"));
         if (exporterFactory is not null)
         {
             services.AddSingleton<IDatasetExporter>(sp => exporterFactory(sp.GetRequiredService<IArchiveStore>()));
@@ -977,6 +978,7 @@ public sealed class SyncExportCliTests
             new AccountCommand(sp.GetRequiredService<SourceCatalogService>()),
             new ConversationCommand(sp.GetRequiredService<SourceCatalogService>()),
             new SyncCommand(sp.GetRequiredService<SourceCatalogService>(), sp.GetRequiredService<ImportService>()),
+            new CollectionCommand(sp.GetRequiredService<CollectionCatalogService>()),
             new ExportCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
