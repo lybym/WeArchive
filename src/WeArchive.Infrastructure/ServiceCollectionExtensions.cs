@@ -1,8 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
 using WeArchive.Core.Services;
 using WeArchive.Infrastructure.Archive;
+using WeArchive.Infrastructure.Collections;
 using WeArchive.Infrastructure.Export;
 using WeArchive.Infrastructure.Fixtures;
 using WeArchive.Infrastructure.RawVault;
@@ -18,10 +20,19 @@ public static class ServiceCollectionExtensions
     /// The source adapter and capture adapter are registered separately so the host decides
     /// whether it talks to a real client or to the fixture source.
     /// </summary>
+    /// <param name="services">The service collection to configure.</param>
+    /// <param name="archivePath">Absolute path of the canonical SQLite archive.</param>
+    /// <param name="rawVaultRoot">Absolute path of the Raw Vault generation root.</param>
+    /// <param name="collectionConfigurationPath">
+    /// Absolute path of the authoritative Collection configuration file. When omitted, no
+    /// Collection configuration is configured and the catalog resolves as empty
+    /// (docs/adr/0009-collection-configuration-ownership.md).
+    /// </param>
     public static IServiceCollection AddWeArchiveCore(
         this IServiceCollection services,
         string archivePath,
-        string rawVaultRoot)
+        string rawVaultRoot,
+        string? collectionConfigurationPath = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
@@ -36,11 +47,17 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IRawVaultStore>(), archivePath, sp.GetRequiredService<IClock>()));
         services.TryAddSingleton(sp => new RawVaultIngestService(
             sp.GetRequiredService<IRawVaultStore>(), sp.GetRequiredService<IArchiveStore>(), sp.GetRequiredService<IClock>()));
+        services.TryAddSingleton<IConversationIngestService>(sp =>
+            sp.GetRequiredService<RawVaultIngestService>());
         services.TryAddSingleton<IDatasetExporter, JsonlDatasetExporter>();
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();
         services.TryAddSingleton<ArchiveWorkflow>();
         services.TryAddSingleton<CaptureService>();
+        services.TryAddSingleton<ICollectionCatalogSource>(
+            _ => new YamlCollectionCatalogSource(collectionConfigurationPath));
+        services.TryAddSingleton<CollectionCatalogService>();
+        services.TryAddSingleton<CollectionSyncService>();
 
         return services;
     }

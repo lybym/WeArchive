@@ -175,6 +175,17 @@ wearchive export --collection ai-toy
 
 Do not introduce separate concepts such as `watch-list`, `sync-group` or `harness-dataset` when Collection already expresses the required conversation scope.
 
+**Authoritative configuration.** The one authoritative Collection configuration is the
+user-maintained application-level file `%LOCALAPPDATA%\WeArchive\collections.yaml`, using the shape
+above. The `collections.yaml` inside an export package is derived output and is never authoritative
+for scope resolution. Membership values are stable conversation IDs; invalid or duplicated entries
+are reported deterministically and configuration is diagnosed rather than silently rewritten. See
+[ADR 0009](adr/0009-collection-configuration-ownership.md).
+
+**Shipped status.** `collection list`, `collection show <name>` and `sync --collection <name>` are
+delivered by Issue #26. Collection-scoped `search`/`export` remain target behavior and are not yet
+implemented.
+
 ## 9. Incremental synchronization for Harness workflows
 
 Recurring Harness workflows should not require full source rescans.
@@ -189,6 +200,12 @@ Collection ai-toy
 ```
 
 Each conversation advances independently after its own successful canonical publication. One failed conversation must not cause unrelated conversations to lose their successful progress.
+
+`sync --collection <name>` implements this today: it resolves the Collection's stable conversation
+IDs, captures required live-source evidence once through the shared capture service, then ingests
+each conversation from the Raw Vault, returning structured per-conversation
+success/no-change/failed/unresolved state. A partially successful run is never reported as total
+success, and the process exit status is non-zero when any requested conversation failed.
 
 Capture progress from live WeChat is separately tracked from ingest progress from the Raw Vault; see `RAW_VAULT.md`.
 

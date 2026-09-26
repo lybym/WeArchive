@@ -221,6 +221,22 @@ Deliverables:
 - optional redaction/selective-field controls;
 - helper CLI commands for resolving conversations/partitions.
 
+Delivered by Issue #26 (M4 foundation, P0 — Collection catalog and collection-scoped sync):
+
+- one authoritative application-level Collection configuration
+  (`%LOCALAPPDATA%\WeArchive\collections.yaml`) reusing the documented `collections.yaml` shape,
+  owned per [ADR 0009](adr/0009-collection-configuration-ownership.md);
+- `collection list` and `collection show <name>` with stable-conversation-ID membership and
+  deterministic reporting of unknown names, invalid configuration and invalid/duplicate entries;
+- `sync --collection <name>` resolving a Collection as a scope over the shared `CaptureService` and
+  Raw Vault ingest path, with per-conversation independent checkpoints, structured
+  success/no-change/failed/unresolved results and a non-zero exit status for a partially successful
+  run;
+- no `sync-group`/`watch-list`/`harness-dataset` concept and no canonical SQLite migration.
+
+Still open in M4: Collection-scoped export and time-range selection, richer query/Harness automation
+and status/freshness tooling.
+
 Acceptance criteria:
 
 - a Harness can determine what data to load from CLI JSON and/or manifest/catalog files;
@@ -281,6 +297,9 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 1. **M1.5 Raw Vault capture** (Issues #22/#25): versioned immutable generations with safe incremental capture and explicit partition coverage.
 2. Finish the remaining M1 incremental synchronization (canonical second-sync path).
 3. Continue M2 semantic depth.
-4. Build M3 retrieval and M4 Harness workflows on the CLI contract.
+4. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.
+
+Issue #26 delivered the M4 Collection sync foundation (Collection catalog, `collection list`/`show`,
+`sync --collection`); Collection-scoped query/search and export selection remain follow-up work.
 
 The migration must preserve the foundation already delivered: generic adapter contract, canonical message schema, normalized models, SQLite system of record, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic export.

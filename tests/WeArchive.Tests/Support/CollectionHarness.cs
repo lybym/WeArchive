@@ -1,0 +1,155 @@
+using System.Text;
+using Microsoft.Extensions.DependencyInjection;
+using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
+using WeArchive.Core.Domain;
+using WeArchive.Core.Services;
+using WeArchive.Infrastructure;
+using WeArchive.Infrastructure.Archive;
+using WeArchive.Infrastructure.WeChat;
+
+namespace WeArchive.Tests.Support;
+
+/// <summary>
+/// A Collection-scope test environment: the real composition root plus a synthetic WeChat capture
+/// source, so a Collection sync runs the production path end to end — authoritative configuration
+/// file, catalog resolution, <see cref="CaptureService"/>, Raw Vault publication and the real
+/// Raw Vault ingest — without a live client or a database key (docs/PRD.md NFR-06).
+/// <para>
+/// The provider is built through <c>AddWeArchiveCore</c>, so these tests also cover the shipped
+/// dependency wiring rather than a hand-assembled object graph.
+/// </para>
+/// </summary>
+internal sealed class CollectionHarness : IDisposable
+{
+    private CollectionHarness(
+        ServiceProvider provider,
+        SyntheticWeChatSourceAdapter source,
+        SyntheticWeChatCaptureAdapter capture,
+        FixedClock clock,
+        string archivePath,
+        string configurationPath,
+        string accountId)
+    {
+        Provider = provider;
+        Source = source;
+        Capture = capture;
+        Clock = clock;
+        ArchivePath = archivePath;
+        ConfigurationPath = configurationPath;
+        AccountId = accountId;
+        Catalog = provider.GetRequiredService<CollectionCatalogService>();
+        Sync = provider.GetRequiredService<CollectionSyncService>();
+        Archive = (SqliteArchiveStore)provider.GetRequiredService<IArchiveStore>();
+        Vault = provider.GetRequiredService<IRawVaultStore>();
+    }
+
+    public ServiceProvider Provider { get; }
+
+    public SyntheticWeChatSourceAdapter Source { get; }
+
+    public SyntheticWeChatCaptureAdapter Capture { get; }
+
+    /// <summary>The deterministic clock. Advance it between captures of one test.</summary>
+    public FixedClock Clock { get; }
+
+    public CollectionCatalogService Catalog { get; }
+
+    public CollectionSyncService Sync { get; }
+
+    public SqliteArchiveStore Archive { get; }
+
+    public IRawVaultStore Vault { get; }
+
+    public string ArchivePath { get; }
+
+    /// <summary>Absolute path of the authoritative Collection configuration file.</summary>
+    public string ConfigurationPath { get; }
+
+    public string AccountId { get; }
+
+    public static string ProfileId => SyntheticWeChatSourceAdapter.ProfileId;
+
+    public static CollectionHarness Create(
+        TempDirectory temp,
+        params SyntheticCaptureConversation[] conversations)
+    {
+        var source = new SyntheticWeChatSourceAdapter();
+        var capture = new SyntheticWeChatCaptureAdapter(conversations);
+        var archivePath = temp.Combine("archive", "wearchive.db");
+        var configurationPath = temp.Combine("collections.yaml");
+        var clock = new FixedClock();
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, SyntheticWeChatSourceAdapter.ProfileId);
+
+        var services = new ServiceCollection();
+        services.AddWeArchiveCore(archivePath, temp.Combine("rawvault"), configurationPath);
+        // AddWeArchiveCore uses TryAddSingleton; later explicit registrations win on resolution,
+        // so the deterministic clock and the synthetic source replace the production defaults.
+        services.AddSingleton<IClock>(clock);
+        services.AddSingleton<ISourceAdapter>(source);
+        services.AddSingleton<ISourceCaptureAdapter>(capture);
+
+        var provider = services.BuildServiceProvider();
+        return new CollectionHarness(provider, source, capture, clock, archivePath, configurationPath, accountId);
+    }
+
+    /// <summary>
+    /// Moves the deterministic clock forward so a second capture in the same test publishes a new
+    /// generation. Generation identity includes the capture instant, so two captures of one account
+    /// at the same instant would collide by design (docs/DATA_MODEL.md section 21.1).
+    /// </summary>
+    public void AdvanceClock() => Clock.UtcNow = Clock.UtcNow.AddHours(1);
+
+    /// <summary>The stable conversation id the source surface reports for an upstream id.</summary>
+    public string StableId(string sourceConversationId) =>
+        SyntheticWeChatNaming.StableConversationId(AccountId, sourceConversationId);
+
+    public static string DirectId(string suffix) => SyntheticWeChatNaming.DirectId(suffix);
+
+    public static string GroupId(string suffix) => SyntheticWeChatNaming.GroupId(suffix);
+
+    public void WriteConfiguration(string yaml) => File.WriteAllText(ConfigurationPath, yaml);
+
+    /// <summary>
+    /// Writes the documented <c>collections.yaml</c> shape with one Collection. Membership entries
+    /// are written verbatim, so a test can declare duplicates and invalid entries.
+    /// </summary>
+    public void WriteCollection(string name, params string[] conversationIds)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("schema_version: 1.0");
+        builder.AppendLine("collections:");
+        builder.AppendLine($"  {name}:");
+        if (conversationIds.Length == 0)
+        {
+            builder.AppendLine("    conversations: []");
+        }
+        else
+        {
+            builder.AppendLine("    conversations:");
+            foreach (var conversationId in conversationIds)
+            {
+                builder.AppendLine($"      - {conversationId}");
+            }
+        }
+
+        WriteConfiguration(builder.ToString());
+    }
+
+    public Task<IReadOnlyList<ArchiveConversation>> ConversationsAsync() =>
+        Archive.ListConversationsAsync(AccountId, CancellationToken.None);
+
+    public async Task<ArchiveConversation?> FindConversationAsync(string sourceConversationId) =>
+        (await ConversationsAsync().ConfigureAwait(false))
+            .FirstOrDefault(conversation =>
+                string.Equals(conversation.SourceConversationId, sourceConversationId, StringComparison.Ordinal));
+
+    public Task<IngestCheckpoint?> ConversationCheckpointAsync(string stableConversationId) =>
+        Archive.GetIngestCheckpointAsync(
+            AccountId, WeChatCaptureAdapter.Family, "conversation", stableConversationId, CancellationToken.None);
+
+    public Task<IReadOnlyList<CanonicalMessage>> MessagesAsync(string stableConversationId) =>
+        Archive.ReadMessagesAsync(stableConversationId, CancellationToken.None);
+
+    public void Dispose() => Provider.Dispose();
+}

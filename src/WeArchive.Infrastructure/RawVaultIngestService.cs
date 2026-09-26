@@ -9,6 +9,7 @@ namespace WeArchive.Infrastructure;
 
 /// <summary>Incrementally publishes verified Raw Vault evidence into the canonical archive.</summary>
 public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore archive, IClock clock)
+    : IConversationIngestService
 {
     private const string ScopeKind = "conversation";
     private const string ConversationCoverageScopeKind = "conversation_coverage";
@@ -17,6 +18,34 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
     private readonly IArchiveStore _archive = archive ?? throw new ArgumentNullException(nameof(archive));
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
+    /// <summary>
+    /// Ingests one conversation selected by its stable conversation id or its upstream source
+    /// conversation id. docs/ARCHITECTURE.md section 3.6.1.
+    /// <para>
+    /// Both selector forms are accepted so a multi-scope caller can consume the same stable
+    /// identifier the discovery surface reports (docs/DATA_MODEL.md section 16), exactly as
+    /// <c>conversation show</c> and <c>sync --conversation</c> already resolve it.
+    /// </para>
+    /// </summary>
+    public Task<int> IngestConversationAsync(string accountId, string conversationSelector,
+        IProgress<string>? progress, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(accountId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationSelector);
+        return IngestAsync(accountId, conversationSelector, progress, cancellationToken);
+    }
+
+    /// <summary>
+    /// Ingests Raw Vault evidence for one account.
+    /// </summary>
+    /// <param name="accountId">The stable account id whose vault is read.</param>
+    /// <param name="sourceConversationId">
+    /// <c>null</c> for an account-wide scan, otherwise one conversation selected by its stable
+    /// conversation id (<c>g_…</c>/<c>u_…</c>) or its upstream source conversation id.
+    /// </param>
+    /// <param name="progress">Optional human progress.</param>
+    /// <param name="cancellationToken">Cooperative cancellation; the in-flight conversation rolls back.</param>
+    /// <param name="replay">Re-process preserved generations for parser repair instead of skipping covered ones.</param>
     public async Task<int> IngestAsync(string accountId, string? sourceConversationId,
         IProgress<string>? progress, CancellationToken cancellationToken, bool replay = false)
     {
@@ -49,7 +78,9 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         var selectedConversation = sourceConversationId is null
             ? null
             : (await _archive.ListConversationsAsync(accountId, cancellationToken).ConfigureAwait(false))
-                .FirstOrDefault(conversation => string.Equals(conversation.SourceConversationId, sourceConversationId, StringComparison.Ordinal));
+                .FirstOrDefault(conversation =>
+                    string.Equals(conversation.SourceConversationId, sourceConversationId, StringComparison.Ordinal)
+                    || string.Equals(conversation.Id, sourceConversationId, StringComparison.Ordinal));
         var knownSelectedConversation = selectedConversation is not null;
         var selectedCheckpoint = selectedConversation is null
             ? null
@@ -126,7 +157,7 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
             var importer = new ImportService(adapter, _archive, _clock);
             var conversations = sourceConversations;
             if (sourceConversationId is not null)
-                conversations = conversations.Where(c => string.Equals(c.SourceConversationId, sourceConversationId, StringComparison.Ordinal)).ToArray();
+                conversations = conversations.Where(c => MatchesConversationSelector(accountId, c, sourceConversationId)).ToArray();
 
             var selectedFoundInGeneration = false;
             foreach (var conversation in conversations)
@@ -247,9 +278,21 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         }
 
         if (sourceConversationId is not null && !foundSelectedConversation)
-            throw new InvalidOperationException($"Conversation '{sourceConversationId}' was not found in Raw Vault account '{accountId}'.");
+            throw new ConversationNotInRawVaultException(sourceConversationId, accountId);
         return processed;
     }
+
+    /// <summary>
+    /// Matches a conversation against a caller's selector. Both the stable conversation id and the
+    /// upstream source conversation id resolve the same conversation, mirroring
+    /// <c>conversation show</c>/<c>sync --conversation</c> (docs/DATA_MODEL.md section 16).
+    /// </summary>
+    private static bool MatchesConversationSelector(string accountId, SourceConversation conversation, string selector) =>
+        string.Equals(conversation.SourceConversationId, selector, StringComparison.Ordinal)
+        || string.Equals(
+            StableIds.Conversation(accountId, conversation.Kind, conversation.SourceConversationId, conversation.PeerSourceUserId),
+            selector,
+            StringComparison.Ordinal);
 
     private static bool IsAncestorOrSelf(IReadOnlyDictionary<string, Core.RawVault.RawGenerationSummary> generations,
         string candidateGenerationId, string? descendantGenerationId)

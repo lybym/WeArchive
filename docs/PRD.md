@@ -27,12 +27,16 @@ The 0.2.x implementation already provides:
 
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
-- incremental Raw Vault capture and explicit capture/ingest checkpoints;
-- explicit capture checkpoints (conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24);
-- conversation/collection-scoped incremental synchronization;
+- the incremental canonical (second-sync) path over the live adapter, and canonical
+  partition-coverage rollup;
 - `ArchiveQueryService` retrieval API;
 - FTS/search/context CLI commands;
+- Collection-scoped query/search and export selection;
 - MCP transport.
+
+Delivered since the 0.2.x list was written: incremental Raw Vault capture with explicit partition
+coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), and the
+application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26).
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 
@@ -321,6 +325,23 @@ export
 
 Do not introduce overlapping `sync-group`, `watch-list` or `harness-dataset` concepts unless they represent materially different semantics.
 
+Shipped by Issue #26 (P0 Collection sync foundation): one authoritative application-level
+`collections.yaml`, `collection list` / `collection show <name>` resolution, and
+`sync --collection <name>` as a scope over the shared capture + Raw Vault ingest path. Membership
+keys are stable conversation IDs; unknown names, invalid configuration and invalid/duplicate
+membership entries are deterministic outcomes. Shipped status per intended use:
+
+```text
+sync                 -> shipped in this Issue
+query/search         -> follow-up (uses the same Collection catalog)
+Harness analysis     -> follow-up (CLI JSON resolution is shipped)
+export               -> follow-up (Collection-scoped export selection not yet wired)
+```
+
+Ownership and rebuild-survival semantics are recorded in
+[ADR 0009](adr/0009-collection-configuration-ownership.md). This does not authorize Collection
+keyword/query filtering, an interactive Collection editor, or MCP/scheduler synchronization.
+
 ### FR-24 Canonical message envelope
 
 Every canonical/exported timeline event follows [MESSAGE_SCHEMA.md](MESSAGE_SCHEMA.md):
@@ -366,6 +387,11 @@ wearchive rebuild
 ```
 
 `rebuild` must never implicitly fall back to live WeChat.
+
+Shipped status: `capture`, `ingest`, `rebuild` and `sync --collection <name>` are implemented;
+`sync --collection` scopes capture + Raw Vault ingest over the application-level Collection catalog
+(Issue #26) and reuses `sync --conversation`'s resolution semantics rather than adding a second
+scope abstraction.
 
 ### FR-30 Target query commands
 
@@ -506,6 +532,10 @@ Improve parser depth/unknown handling and use rebuildability to reprocess preser
 ### M4 — MCP and advanced Harness workflows
 
 Optional MCP over QueryService, richer collection/query/export automation and status/freshness tooling.
+
+Issue #26 delivers the M4 Collection *sync* foundation (authoritative Collection catalog,
+`collection list`/`show`, `sync --collection`); Collection-scoped query/search and export selection
+remain M3/M4 follow-up scope.
 
 ## 13. Product governance
 

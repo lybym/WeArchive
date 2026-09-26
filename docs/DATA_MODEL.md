@@ -686,3 +686,42 @@ an older canonical database. Stable account, participant, conversation and messa
 continue to use section 16 derivation. Existing `user_display_name` overrides are carried into
 the rebuilt database when a matching canonical participant remains present. The Raw Vault
 format version is tracked in each manifest, not in `schema_migrations`.
+
+## 22. Collection configuration (not canonical SQLite)
+
+`Collection` is the shared reusable scope for a named set of conversations (`docs/PRD.md` FR-23).
+Its membership keys are stable conversation IDs (section 16): `g_<16 hex>` for group conversations
+and `u_<16 hex>` for every other kind, which is exactly the derivation
+`StableIds.Conversation` performs.
+
+Collection definitions are **user-maintained durable configuration, not canonical archive data**.
+They are therefore deliberately absent from the SQLite schema above and require no migration:
+
+```text
+%LOCALAPPDATA%\WeArchive\collections.yaml
+  schema_version: "1.0"
+  collections:
+    <name>:
+      conversations: [ <stable conversation id>, ... ]
+```
+
+Ownership, rebuild-survival semantics and stable-ID membership rules are recorded in
+[ADR 0009](adr/0009-collection-configuration-ownership.md). Summary of the data-model consequences:
+
+- the file reuses the documented `collections.yaml` semantic shape and is versioned by its own
+  top-level `schema_version`, independent of the SQLite schema version (section 18), the message
+  schema version and the export schema version;
+- canonical SQLite is rebuildable from the Raw Vault, so it is intentionally **not** the only copy of
+  a user-maintained Collection definition; rebuild needs no Collection-preservation rule and does not
+  carry Collections into a rebuilt archive;
+- the `collections.yaml` inside a generated export package remains derived output under
+  `EXPORT_PRD.md` section 8 and is never authoritative for sync/query/export scope resolution;
+- an absent file is an empty catalog; invalid configuration is diagnosed rather than silently
+  rewritten; invalid or duplicated membership entries are reported per Collection and the resolved
+  membership is the valid, first-seen, de-duplicated set;
+- no `sync-group`, `watch-list` or `harness-dataset` table, file or model is introduced, because a
+  second concept for the same conversation scope would duplicate this one.
+
+Moving Collection definitions into canonical SQLite would be a persistent schema change and would
+require a documented migration, a migration test, and an explicit rebuild-preservation rule that does
+not exist today (section 18, `docs/PRD.md` FR-11).

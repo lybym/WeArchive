@@ -1,8 +1,9 @@
 # WeArchive CLI contract
 
 This document records the additive command, JSON and exit-code contract for the M0.5 CLI
-product-surface migration. It covers the read-only discovery commands (Issue #7) and the
-`sync`/`export` commands (Issue #8). It refines the high-level CLI contract in
+product-surface migration. It covers the read-only discovery commands (Issue #7), the
+`sync`/`export` commands (Issue #8), the Raw Vault capture/ingest/rebuild family (Issues #22–#25)
+and the Collection scope (Issue #26). It refines the high-level CLI contract in
 [`PRD.md`](PRD.md) (FR-22), [`ARCHITECTURE.md`](ARCHITECTURE.md) section 3.1.1 and
 [ADR 0006](adr/0006-cli-first-product-surface.md). The CLI is the primary product surface;
 this file is normative for the command shapes and machine-readable output described here.
@@ -208,6 +209,9 @@ Options:
 ```text
 --conversation <id-or-alias>   Required. Stable archive id (g_/u_) or upstream source id.
 ```
+
+The same command also accepts `--collection <name>`, which synchronizes every conversation a named
+Collection scopes; the two selectors are mutually exclusive (see “Collection scope” below).
 
 Reliability — **R2** (Import): a normal success commits under the existing conversation
 transaction. A Fatal source-coverage failure rolls back the entire conversation transaction,
@@ -426,6 +430,134 @@ still re-fingerprints each expected partition (database file plus committed WAL 
 after the snapshot, and re-verifies the predecessor generation's artifacts before reusing any of
 them. Plan for a cost proportional to source size even when nothing changed.
 
+## Commands (Collection scope — Issue #26 / M4 foundation)
+
+`Collection` is the one reusable named-conversation scope (docs/PRD.md FR-23, docs/HARNESS.md
+section 8). Its authoritative configuration is a single user-maintained file at
+`%LOCALAPPDATA%\WeArchive\collections.yaml`, reusing the documented `collections.yaml` shape and
+versioned by its own top-level `schema_version`:
+
+```yaml
+schema_version: 1.0
+collections:
+  ai-toy:
+    conversations:
+      - g_0123456789abcdef
+      - u_1123456789abcdef
+```
+
+Membership values are **stable conversation IDs** (`g_<16 hex>` for groups, `u_<16 hex>` otherwise)
+— never display names or upstream source ids. Ownership, rebuild-survival semantics and membership
+rules are recorded in [ADR 0009](adr/0009-collection-configuration-ownership.md). The
+`collections.yaml` inside an export package is derived output and is never authoritative here.
+
+Absent configuration is an empty catalog. Configuration that cannot be read or parsed, an
+unsupported `schema_version`, a missing `collections` mapping or an empty Collection name is a
+deterministic configuration failure (`collection_config_invalid`, exit `2`); the file is diagnosed
+and never rewritten. Invalid or duplicated membership entries are reported per Collection, and
+resolved membership is the valid, first-seen, de-duplicated set.
+
+### `wearchive collection list`
+
+Lists the available Collections. Exit `0` with an empty array when no configuration exists.
+
+JSON shape: a JSON array of:
+
+```json
+{
+  "name": "ai-toy",
+  "conversation_count": 2,
+  "invalid_member_count": 0,
+  "duplicate_member_count": 0
+}
+```
+
+### `wearchive collection show <name>`
+
+Returns one Collection's stable conversation membership.
+
+JSON shape (exit 0):
+
+```json
+{
+  "name": "ai-toy",
+  "conversation_ids": ["g_0123456789abcdef", "u_1123456789abcdef"],
+  "invalid_conversation_ids": [],
+  "duplicate_conversation_ids": []
+}
+```
+
+Exits `1` with `collection_not_found` when the name is not defined; `2` when no `<name>` is supplied
+or the configuration is invalid.
+
+### `wearchive sync --collection <name>`
+
+Synchronizes a Collection: resolves its stable conversation IDs, captures required live-source
+evidence once through the shared `CaptureService`, then ingests each conversation from the Raw Vault.
+It reuses `sync --conversation`'s resolution semantics and the Raw Vault ingest path — no second
+scope abstraction, no JSONL scanning and no separate source parser.
+
+Options:
+
+```text
+--collection <name>            Required (unless --conversation is given). Collection name.
+```
+
+Account resolution matches `capture`: the current source account is auto-selected (no prompt, safe
+under `--no-input`). Capture is mandatory and account-scoped, so a capture that publishes nothing is
+an operation failure (`capture_failed`, exit `1`) rather than a fabricated per-conversation failure.
+
+Reliability — unchanged by this command. Capture is **R1** and each conversation's import is **R2**;
+the run is **multi-scope, not one transaction**, so each conversation's canonical writes and ingest
+checkpoint commit in that conversation's own SQLite transaction. A conversation failure never rolls
+back another conversation's committed progress. No journal, commit marker or new transaction protocol
+is introduced.
+
+Per-conversation `status` is a stable wire name:
+
+```text
+succeeded    evidence changed and this conversation's canonical publication committed
+no_change    the conversation was verified and nothing changed; its checkpoint kept its value
+failed       a capture/ingest failure rolled this conversation back (its `error` explains it)
+unresolved   the declared member matched no conversation in the captured evidence
+```
+
+JSON shape (one document on every path, including a partially successful run):
+
+```json
+{
+  "collection": "ai-toy",
+  "succeeded": false,
+  "account_id": "a_<16-hex>",
+  "source_profile_id": "wxid_...",
+  "generation_id": "gen_<16-hex>",
+  "capture_mode": "incremental",
+  "conversations": [
+    { "conversation_id": "g_<16-hex>", "status": "succeeded", "conversations_ingested": 1, "error": null },
+    { "conversation_id": "u_<16-hex>", "status": "no_change", "conversations_ingested": 0, "error": null },
+    { "conversation_id": "u_<16-hex>", "status": "failed", "conversations_ingested": 0, "error": "..." },
+    { "conversation_id": "wxid_typo", "status": "unresolved", "conversations_ingested": 0, "error": "..." }
+  ],
+  "summary": { "requested": 4, "succeeded": 1, "no_change": 1, "failed": 2 },
+  "invalid_conversation_ids": ["wxid_typo"],
+  "duplicate_conversation_ids": []
+}
+```
+
+`succeeded` is true only when every requested member succeeded or was verified unchanged, so a
+partially successful run is never described as total success. This is the documented multi-scope
+refinement of the CLI process contract (docs/ARCHITECTURE.md section 3.1.1): stdout carries the
+structured per-scope result on every path, and the **exit status remains authoritative**:
+
+```text
+0    every requested conversation succeeded or was unchanged
+1    at least one requested conversation failed or was unresolved, or capture failed
+2    usage error, or invalid Collection configuration
+130  cancellation; completed conversations keep their progress
+```
+
+`--json` still emits exactly one JSON document on every one of those paths.
+
 ## Failure document (`--json`)
 
 In `--json` mode a non-zero exit still writes exactly one JSON document to stdout so callers can
@@ -448,6 +580,9 @@ Stable `error.code` values:
 | `conversation_list_failed` | 1 | Enumerating conversations for a profile failed |
 | `conversation_not_found` | 1 | The conversation identifier resolved to nothing |
 | `conversation_describe_failed` | 1 | Describing a resolved conversation failed |
+| `collection_not_found` | 1 | The Collection name is not defined by the authoritative configuration |
+| `collection_config_invalid` | 2 | The user-maintained Collection configuration exists but is invalid |
+| `capture_failed` | 1 | `sync --collection` could not capture usable live-source evidence |
 
 ## `wearchive rebuild`
 
@@ -478,8 +613,9 @@ classes. No persistent journal or rollback protocol is used.
 
 Ingests verified Raw Vault generations into the existing canonical archive. It reads preserved
 evidence only and does not contact live WeChat. By default it processes all conversations for the
-selected Raw Vault account; `--conversation` limits the operation to one upstream conversation
-ID. Each conversation's canonical writes and generation checkpoint commit in one SQLite
+selected Raw Vault account; `--conversation` limits the operation to one conversation, selected by
+its stable conversation id (`g_…`/`u_…`) or its upstream source conversation id. Each conversation's
+canonical writes and generation checkpoint commit in one SQLite
 transaction. Repeated scoped runs use that conversation's committed generation lineage to skip
 covered generations before opening their artifacts; account-wide runs also use a complete-scan
 cursor to skip generations already examined for every conversation. Changed/new generations and
@@ -490,7 +626,7 @@ reprocesses preserved generations for parser repair without recapturing live sou
 reader-version change also invalidates existing ingest cursors.
 
 ```text
-wearchive ingest --account <raw-vault-account-id> [--conversation <source-conversation-id>] [--replay] [--json] [--no-input] [--quiet]
+wearchive ingest --account <raw-vault-account-id> [--conversation <stable-or-source-conversation-id>] [--replay] [--json] [--no-input] [--quiet]
 ```
 
 JSON success emits one object with `succeeded` and `conversations_ingested`. Failures use the
@@ -500,6 +636,14 @@ standard JSON error envelope; cancellation exits `130`.
 
 The `--conversation <id-or-alias>` selector resolves by the canonical stable archive id
 (`g_…`/`u_…`) or the upstream `source_id`; resolution by the export-catalog `alias` and
-collection/time-range selection is a forward refinement layered on the same export engine
+time-range selection is a forward refinement layered on the same export engine
 ([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5. See
 [ROADMAP.md](ROADMAP.md) M0.5/M1.
+
+Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26). Collection-scoped
+query/search, Collection-scoped export selection, time-range selection and an interactive Collection
+editor are not.
+
+`wearchive collection` has no `--account` option: stable conversation IDs are account-scoped by
+construction, and the capture account is auto-selected exactly as `capture` does. A member that
+belongs to a different account is reported as `unresolved`, never silently remapped.
