@@ -12,6 +12,9 @@ namespace WeArchive.Core.Query;
 /// while a value without one is interpreted in the machine's local offset — the same offset the
 /// archive renders canonical timestamps with. A transport that parsed dates itself would encode a
 /// second, silently different rule.
+/// <para>
+/// Accepted forms are documented in docs/CLI.md: an ISO-8601 date, or a date-time with a <c>T</c>
+/// or space separator, with or without an explicit offset or <c>Z</c>.
 /// </para>
 /// <para>
 /// Parsing is deliberately explicit rather than <c>DateTimeOffset.TryParse</c>: that API assumes

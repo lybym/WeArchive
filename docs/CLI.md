@@ -593,11 +593,15 @@ Options:
 ```
 
 **Time values.** `--since` and `--until` accept an ISO-8601 date (`2026-09-01`) or date-time
-(`2026-09-01T09:30:00`, `2026-09-01T09:30:00+08:00`, `2026-09-01T01:30:00Z`). Both bounds are
-**inclusive instants**; a date-only or offset-less value denotes that instant in the machine's
-local offset, which is the same offset the archive renders canonical timestamps with. A date-only
-`--until 2026-09-01` therefore means `2026-09-01T00:00:00`, not "all of 1 September". An
+(`2026-09-01T09:30:00`, `2026-09-01T09:30:00+08:00`, `2026-09-01T01:30:00Z`); the space-separated
+form (`2026-09-01 09:30:00`) is accepted as the same value. Both bounds are **inclusive instants**;
+a date-only or offset-less value denotes that instant in the machine's local offset, which is the
+same offset the archive renders canonical timestamps with (a `Z` or explicit offset always wins). A
+date-only `--until 2026-09-01` therefore means `2026-09-01T00:00:00`, not "all of 1 September". An
 unparseable value is a usage failure, never a silently widened query.
+
+An unknown option, a repeated option or an option without a value is a usage failure. A bare `--`
+ends option parsing, so an identifier that begins with `-` stays addressable.
 
 **Ordering and paging.** Order is `occurred_utc`, then `source_order_key` (empty when the source
 supplied none), then the stable message id, so messages that share an instant are neither repeated
