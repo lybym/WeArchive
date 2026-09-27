@@ -14,13 +14,12 @@ contract.
 
 ## Entry point
 
-During the CLI migration the entry-point project is `src/WeArchive.Cli` (assembly
-`WeArchive.Cli`). The historical WPF project (`src/WeArchive.App`, assembly `WeArchive`) still
-exists, so the CLI is built as a distinct assembly to avoid a name collision while both surfaces
-coexist. Once the WPF presentation layer is retired, this project becomes the shipped
-`wearchive` / `WeArchive.exe` (see ADR 0006 transition rule). The composition root
-(`Program.cs`) reuses `AddWeArchiveCore` + `AddWeChatWindowsSource` — there is no second
-composition model.
+The entry-point project is `src/WeArchive.Cli` and its assembly is named `WeArchive`, so the
+shipped executable is `WeArchive.exe` — the product surface named `wearchive` throughout this
+document. Earlier M0.5 work used the assembly name `WeArchive.Cli` only to avoid a name
+collision with the historical WPF project's `WeArchive` assembly; Issue #9 removed that
+project and the collision along with it. The composition root (`Program.cs`) reuses
+`AddWeArchiveCore` + `AddWeChatWindowsSource` — there is no second composition model.
 
 ## Global options
 
@@ -372,7 +371,7 @@ generation with a validated manifest and checksums. A Fatal source/coverage fail
 cancellation discards the staged material and publishes nothing — no incomplete generation is
 ever published as complete. No journal, commit marker or rollback ledger is persisted. See
 [DEVELOPMENT.md](DEVELOPMENT.md) Reliability Levels and
-[ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
+[ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
 
 Exits `1` with `failure` (capture did not complete), `source_unavailable`, `no_accounts` or
 `account_not_found` on the corresponding failure; `2` on a usage error; `130` on cancellation.

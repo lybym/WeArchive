@@ -80,7 +80,7 @@ wearchive export --conversation <id-or-alias>
 - stdout/stderr and exit semantics are tested;
 - `--no-input` is automation-safe;
 - sync/export retain existing archive/export semantics;
-- the WPF presentation layer is removed once required CLI parity is reached;
+- the WPF presentation layer is removed;
 - the repository does not maintain two first-class presentation layers;
 - self-contained `win-x64` portable release artifact is produced and smoke-tested from GitHub Actions/Release;
 - docs/README/AGENTS reflect the CLI product.

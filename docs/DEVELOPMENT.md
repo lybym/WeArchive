@@ -81,7 +81,7 @@ C# 14 / .NET 10 LTS
   xUnit v2 on the VSTest platform for tests
 ```
 
-During the CLI migration the historical `WeArchive.App` WPF project may still be present, but it is transitional and must not be treated as a second first-class presentation layer.
+The historical `WeArchive.App` WPF project was removed by Issue #9. There is one first-class presentation layer: `src/WeArchive.Cli`, whose assembly is named `WeArchive` and which produces the shipped `WeArchive.exe`.
 
 The SDK is pinned by `global.json`. Language level, nullable, analyzer level, warnings-as-errors and deterministic builds are centralized in `Directory.Build.props`; package versions are centrally pinned.
 
@@ -301,7 +301,7 @@ one complete generation with a validated manifest and checksums; a Fatal source/
 or caught cancellation/I/O failure discards the staged material best-effort and publishes
 nothing — no incomplete generation is ever published as complete. Process crash and OS/power
 loss are not guaranteed recovery classes. No journal, commit marker or rollback ledger is
-persisted. See [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md) and
+persisted. See [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md) and
 [RAW_VAULT.md](RAW_VAULT.md).
 
 Incremental capture (Issue #25) retains R1. Its versioned checkpoint is embedded in the

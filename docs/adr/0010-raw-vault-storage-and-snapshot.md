@@ -1,4 +1,4 @@
-# ADR 0008 — Raw Vault storage and consistent snapshot
+# ADR 0010 — Raw Vault storage and consistent snapshot
 
 Status: proposed
 

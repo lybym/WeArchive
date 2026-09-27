@@ -58,7 +58,7 @@ The CLI is a thin transport/presentation boundary. It must not contain WeChat sc
 The **Raw Vault** is a preservation layer that captures a source-faithful snapshot *before*
 normalization. It exists alongside the canonical SQLite archive but is independently versioned
 and has its own manifest, reliability contract and storage root. See
-[RAW_VAULT.md](RAW_VAULT.md) and [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
+[RAW_VAULT.md](RAW_VAULT.md) and [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
@@ -80,7 +80,7 @@ WeArchive.Core
 
 `tests/WeArchive.Tests` may reference all three for contract and integration testing.
 
-The historical `WeArchive.App` WPF project may exist temporarily during migration, but it is not a second supported product surface and must be removed when the CLI migration acceptance criteria are met.
+The historical `WeArchive.App` WPF project was removed by Issue #9 once CLI parity was reached. The repository maintains exactly one first-class product surface: the CLI.
 
 ### 3.1 Presentation — `src/WeArchive.Cli`
 
@@ -343,7 +343,7 @@ The upstream WeChat database key is never persisted: it exists only in memory fo
 of a capture and is deleted when the scratch cache is disposed. Captured artifacts are decrypted
 content, readable without the key.
 
-See [RAW_VAULT.md](RAW_VAULT.md) and [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
+See [RAW_VAULT.md](RAW_VAULT.md) and [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
 
 ### 3.7 Query and export — `src/WeArchive.Infrastructure/Export`
 
@@ -475,7 +475,7 @@ tests/
 └─ WeArchive.Tests/                net10.0-windows; xUnit v2 on VSTest
 ```
 
-During migration, `src/WeArchive.App` may still exist. It is transitional and should not receive new product behavior except work strictly required to keep the branch buildable until removal.
+There is one product project. `src/WeArchive.App` no longer exists, and no second presentation layer is expected to be added without a new product decision.
 
 ## 6. Adapter contract rules
 

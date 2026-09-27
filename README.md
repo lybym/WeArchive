@@ -26,7 +26,7 @@ Query / export
 CLI + JSONL/YAML/JSON machine interfaces
 ```
 
-The primary product surface is being migrated from the historical WPF MVP to a `gh`-style CLI. See [`docs/adr/0006-cli-first-product-surface.md`](docs/adr/0006-cli-first-product-surface.md).
+The primary product surface is the `gh`-style CLI described by [`docs/adr/0006-cli-first-product-surface.md`](docs/adr/0006-cli-first-product-surface.md), distributed as a self-contained portable ZIP per [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md). The historical WPF MVP has been retired.
 
 ## Target CLI
 
@@ -85,7 +85,7 @@ The difficult archive/source/export engine is already implemented:
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
 
-The repository still contains the historical WPF application while **M0.5 CLI product-surface migration** is in progress. WPF is transitional and must not be expanded as a second first-class product surface.
+The historical `src/WeArchive.App` WPF application has been removed (Issue #9); the CLI is the only first-class product surface, and no second presentation layer may be added without a new product decision. Remaining CLI-migration work is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Reliability model
 
@@ -144,7 +144,7 @@ Target projects:
 | `src/WeArchive.Cli` | Command parsing, human/JSON rendering, stdout/stderr/exit-code contract |
 | `tests/WeArchive.Tests` | Unit, integration, CLI contract and compatibility tests |
 
-During migration, `src/WeArchive.App` may remain temporarily. It is not the target architecture.
+These are the only projects; the historical `src/WeArchive.App` WPF project has been removed.
 
 ## Current scope and limitations
 
@@ -185,7 +185,7 @@ dotnet build WeArchive.sln -c Release
 dotnet test WeArchive.sln
 ```
 
-The released product remains self-contained `win-x64`. M0.5 will simplify packaging around the CLI; the historical WPF/Velopack release path is not automatically preserved.
+The released product is a self-contained `win-x64` portable CLI. Packaging is deliberately minimal: no installer and no updater — see [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md).
 
 ## Documentation first
 

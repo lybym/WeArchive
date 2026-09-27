@@ -4,7 +4,7 @@ The Raw Vault is a preservation layer that captures a source-faithful snapshot o
 WeChat account *before* normalization. It is separate from the canonical SQLite archive
 (`archive/wearchive.db`) and has its own format version, manifest and reliability contract.
 
-Normative decisions are in [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
+Normative decisions are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
 
 ## 1. Purpose
 
