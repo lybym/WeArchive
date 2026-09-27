@@ -30,6 +30,11 @@ internal sealed record DecryptionOutcome(
 /// Plaintext copies are written to a per-run scratch directory under the user's local app
 /// data and are deleted when the cache is disposed. WeChat's own files are never modified.
 /// </para>
+/// <para>
+/// A path that is already plaintext — a preserved Raw Vault artifact, or an unencrypted source
+/// file — is used in place and is never deleted by this cache, even when it is materialized again
+/// after its fingerprint changed.
+/// </para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class SqlCipherDatabaseCache : IDisposable
@@ -70,8 +75,14 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         }
 
         var outcome = Materialize(full);
-        if (existing is not null)
+        if (existing is not null && !existing.Outcome.WasPlaintext)
         {
+            // Only an image this cache materialized itself may be deleted. A plaintext image is
+            // the caller's own file — a Raw Vault artifact on the captured path, or an
+            // already-plain source file on the capture path — so the cache must never delete it.
+            // SQLite opening such an image in place creates -wal/-shm sidecars, which changes the
+            // fingerprint and used to make this line destroy preserved evidence (and could destroy
+            // a source file), which is exactly what Issue #37's real-environment rebuild exposed.
             TryDelete(existing.Outcome.PlaintextPath);
         }
 

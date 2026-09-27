@@ -274,6 +274,76 @@ public sealed class SqlCipherTests
     }
 
     [Fact]
+    public void MaterializingAPlaintextImageAgainNeverDeletesIt()
+    {
+        using var temp = new TempDirectory();
+        var artifact = temp.Combine("biz_message_0.db");
+        CreatePlaintextDatabase(artifact, rows: 5);
+
+        var keys = new WeChatKeySet([]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+
+        var first = cache.GetPlaintext(artifact);
+        Assert.True(first.WasPlaintext);
+        Assert.Equal(artifact, first.PlaintextPath);
+
+        // SQLite opening a preserved WAL-mode image in place creates -wal/-shm sidecars next to it,
+        // which changes the cache fingerprint and forces a re-materialization. The caller's own
+        // file must never be treated as scratch: doing so deleted a published Raw Vault artifact
+        // during a real rebuild, which is the immutability violation Issue #37 exposed.
+        File.WriteAllBytes(artifact + "-wal", [0, 0, 0, 0]);
+
+        var second = cache.GetPlaintext(artifact);
+
+        Assert.True(File.Exists(artifact));
+        Assert.Equal(artifact, second.PlaintextPath);
+        Assert.True(second.WasPlaintext);
+        Assert.Equal(5, SqliteConnectionPooledRowCount(artifact));
+    }
+
+    [Fact]
+    public void MaterializingAnEncryptedDatabaseAgainReplacesOnlyItsScratchImage()
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"));
+        var encryptedPath = temp.Combine("message_0.db");
+        File.WriteAllBytes(encryptedPath, EncryptDatabase(plaintext, Key, Salt));
+
+        var keys = new WeChatKeySet([new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key)]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+
+        var first = cache.GetPlaintext(encryptedPath);
+        Assert.False(first.WasPlaintext);
+        Assert.True(File.Exists(first.PlaintextPath));
+
+        // The fingerprint includes the source write time, so touching the source re-materializes
+        // and the cache's own previous scratch image is still cleaned up.
+        File.SetLastWriteTimeUtc(encryptedPath, DateTime.UtcNow.AddMinutes(1));
+        var second = cache.GetPlaintext(encryptedPath);
+
+        Assert.NotEqual(first.PlaintextPath, second.PlaintextPath);
+        Assert.False(File.Exists(first.PlaintextPath));
+        Assert.True(File.Exists(second.PlaintextPath));
+        Assert.True(File.Exists(encryptedPath));
+    }
+
+    private static long SqliteConnectionPooledRowCount(string path)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM messages;";
+        var count = (long)command.ExecuteScalar()!;
+        SqliteConnection.ClearAllPools();
+        return count;
+    }
+
+    [Fact]
     public void ReaderFailsClosedWhenNoKeyMatches()
     {
         using var temp = new TempDirectory();
