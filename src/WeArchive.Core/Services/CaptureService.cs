@@ -26,6 +26,15 @@ namespace WeArchive.Core.Services;
 /// canonical ingest progress (docs/DATA_MODEL.md section 21).
 /// </para>
 /// <para>
+/// Source-partition policy (Issue #37): the checkpoint covers exactly the coverage entries this
+/// generation recorded as <c>captured</c>/<c>reused</c>, i.e. the adapter's Required and Supported
+/// auxiliary evidence. A <c>complete</c> generation may also carry <c>unsupported</c> entries for
+/// discovered-but-unsupported partitions; those remain visible in coverage and are excluded from
+/// the checkpoint. Independently of the adapter, a run that carries an <c>unavailable</c> coverage
+/// entry or a partial-severity diagnostic is downgraded to <c>partial</c> and publishes no
+/// checkpoint, so a coverage failure can never be reported as complete (docs/PRD.md FR-20).
+/// </para>
+/// <para>
 /// Reliability — R1 (in-process publication): a normal success publishes exactly one complete
 /// or partial generation. A Fatal diagnostic or caught cancellation/I/O failure discards the
 /// staged material best-effort and publishes nothing, so an incomplete snapshot is never
@@ -35,6 +44,9 @@ namespace WeArchive.Core.Services;
 /// </summary>
 public sealed class CaptureService
 {
+    /// <summary>The manifest diagnostic severity that marks a partial-coverage finding.</summary>
+    private const string PartialSeverity = "partial";
+
     private readonly ISourceAdapter _sourceAdapter;
     private readonly ISourceCaptureAdapter _captureAdapter;
     private readonly IRawVaultStore _vault;
@@ -177,10 +189,40 @@ public sealed class CaptureService
         }
 
         var diagnostics = fallbackDiagnostics.Concat(captureResult.Diagnostics).ToArray();
-        var checkpointValue = captureResult.Completeness == RawGenerationCompleteness.Complete &&
-            captureResult.Coverage.Count > 0 &&
-            captureResult.Coverage.All(c =>
-                (c.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused) &&
+        var completeness = captureResult.Completeness;
+
+        // Defensive alignment with docs/PRD.md FR-20: a run whose coverage contains an
+        // `unavailable` partition, or whose diagnostics contain a partial-severity finding, is
+        // never published as `complete` even if the capture adapter claimed it was. The downgrade
+        // is recorded, not silent, so the published verdict stays auditable.
+        if (completeness == RawGenerationCompleteness.Complete &&
+            (captureResult.Coverage.Any(c => c.Status == RawPartitionStatus.Unavailable) ||
+                diagnostics.Any(d =>
+                    string.Equals(d.Severity, PartialSeverity, StringComparison.OrdinalIgnoreCase))))
+        {
+            diagnostics =
+            [
+                .. diagnostics,
+                RawManifestDiagnostic.Partial(
+                    DiagnosticCodes.CaptureCompletenessDowngraded,
+                    "The capture adapter reported complete coverage, but this run carries an " +
+                    "unavailable partition or a partial diagnostic; the generation was recorded " +
+                    "as partial."),
+            ];
+            completeness = RawGenerationCompleteness.Partial;
+        }
+
+        // The checkpoint covers exactly the captured/reused evidence of this generation. A
+        // complete generation may legitimately also carry `unsupported` coverage entries
+        // (docs/RAW_VAULT.md "Source-partition support policy", Issue #37); those are accounted
+        // for in coverage but are not checkpoint evidence and are never reusable.
+        var checkpointCoverage = captureResult.Coverage
+            .Where(c => c.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused)
+            .ToArray();
+
+        var checkpointValue = completeness == RawGenerationCompleteness.Complete &&
+            checkpointCoverage.Length > 0 &&
+            checkpointCoverage.All(c =>
                 !string.IsNullOrWhiteSpace(c.SourceFingerprint) &&
                 !string.IsNullOrWhiteSpace(c.ArtifactSha256) &&
                 captureResult.Artifacts.Any(a => a.Sha256 == c.ArtifactSha256))
@@ -189,7 +231,7 @@ public sealed class CaptureService
                 GenerationId = session.GenerationId,
                 CaptureAdapterFamily = _captureAdapter.CaptureAdapterFamily,
                 CaptureAdapterVersion = _captureAdapter.CaptureAdapterVersion,
-                PartitionFingerprints = captureResult.Coverage.ToDictionary(
+                PartitionFingerprints = checkpointCoverage.ToDictionary(
                     c => c.PartitionId, c => c.SourceFingerprint!, StringComparer.Ordinal),
             }
             : null;
@@ -212,7 +254,7 @@ public sealed class CaptureService
                 CaptureAdapterFamily = _captureAdapter.CaptureAdapterFamily,
                 CaptureAdapterVersion = _captureAdapter.CaptureAdapterVersion,
                 Mode = captureResult.Mode,
-                Completeness = captureResult.Completeness,
+                Completeness = completeness,
                 ArtifactCount = captureResult.Artifacts.Count,
             },
             Artifacts = captureResult.Artifacts,
@@ -249,7 +291,7 @@ public sealed class CaptureService
             AccountId = accountId,
             SourceProfileId = account.SourceProfileId,
             CaptureTime = captureTime,
-            Completeness = captureResult.Completeness,
+            Completeness = completeness,
             ArtifactCount = captureResult.Artifacts.Count,
             Diagnostics = diagnostics,
             Coverage = captureResult.Coverage,
