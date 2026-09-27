@@ -156,6 +156,67 @@ public sealed class CaptureCliTests
     }
 
     [Fact]
+    public async Task CaptureJsonReportsUnsupportedCoverageOnACompleteRun()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new SyntheticCaptureAdapter();
+        adapter.Partitions["session/session.db"] = "s1";
+        adapter.Partitions["contact/contact.db"] = "c1";
+        adapter.Partitions["migrate/unspportmsg.db"] = "u1";
+        adapter.Unsupported.Add("migrate/unspportmsg.db");
+        using var provider = BuildProvider(temp, adapter, new FixedClock());
+
+        var (exit, stdout, _) = await RunAsync(provider, ["capture", "--json", "--no-input"]);
+
+        // A generated-but-unsupported partition is visible in the rollup without downgrading the
+        // verdict, which is the Issue #37 contract the CLI must expose honestly.
+        Assert.Equal(ExitCode.Success, exit);
+        using var doc = JsonDocument.Parse(stdout.TrimEnd());
+        Assert.Equal("complete", doc.RootElement.GetProperty("completeness").GetString());
+        Assert.Equal(3, doc.RootElement.GetProperty("coverage").GetArrayLength());
+
+        var summary = doc.RootElement.GetProperty("coverage_summary");
+        Assert.Equal(3, summary.GetProperty("expected").GetInt32());
+        Assert.Equal(2, summary.GetProperty("captured").GetInt32());
+        Assert.Equal(0, summary.GetProperty("reused").GetInt32());
+        Assert.Equal(0, summary.GetProperty("unavailable").GetInt32());
+        Assert.Equal(1, summary.GetProperty("unsupported").GetInt32());
+
+        var unsupported = doc.RootElement.GetProperty("coverage").EnumerateArray()
+            .Single(e => e.GetProperty("partition_id").GetString() == "migrate/unspportmsg.db");
+        Assert.Equal("unsupported", unsupported.GetProperty("status").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(unsupported.GetProperty("diagnostic").GetString()));
+    }
+
+    [Fact]
+    public async Task CaptureJsonReportsUnclassifiedCoverageAsPartialAndUnsupported()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new SyntheticCaptureAdapter();
+        adapter.Partitions["session/session.db"] = "s1";
+        adapter.Partitions["newpart/new.db"] = "n1";
+        adapter.Unclassified.Add("newpart/new.db");
+        using var provider = BuildProvider(temp, adapter, new FixedClock());
+
+        var (exit, stdout, _) = await RunAsync(provider, ["capture", "--json", "--no-input"]);
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var doc = JsonDocument.Parse(stdout.TrimEnd());
+        Assert.Equal("partial", doc.RootElement.GetProperty("completeness").GetString());
+
+        var summary = doc.RootElement.GetProperty("coverage_summary");
+        Assert.Equal(2, summary.GetProperty("expected").GetInt32());
+        Assert.Equal(1, summary.GetProperty("captured").GetInt32());
+        Assert.Equal(0, summary.GetProperty("unavailable").GetInt32());
+        Assert.Equal(1, summary.GetProperty("unsupported").GetInt32());
+
+        var codes = doc.RootElement.GetProperty("diagnostics").EnumerateArray()
+            .Select(d => d.GetProperty("code").GetString())
+            .ToArray();
+        Assert.Contains(DiagnosticCodes.PartitionUnclassified, codes);
+    }
+
+    [Fact]
     public async Task CaptureHumanModeWritesProgressToStderr()
     {
         using var temp = new TempDirectory();

@@ -310,6 +310,19 @@ generation. A partial generation records coverage without advancing the checkpoi
 failure and cancellation do not publish a new checkpoint. No separate recovery protocol is
 introduced.
 
+Issue #37 defines the source-partition policy used to decide that completeness verdict. Source
+filesystem discovery and the adapter's supported evidence set are not equivalent. For WeChat 4.x,
+Required and Supported auxiliary partitions are part of the supported capture contract; a Known
+unsupported partition is recorded explicitly as `unsupported` but does not by itself downgrade
+`Complete`; an Unknown/unclassified discovered partition must be diagnosed and cannot yield
+`Complete` until classified. A complete capture checkpoint therefore fingerprints only the
+captured/reused supported partitions. Known-unsupported evidence is accounted for in coverage but
+is not reusable checkpoint evidence. Independently of the adapter's verdict, `CaptureService`
+records a run as `partial` when its coverage carries an `unavailable` partition or its diagnostics
+carry a partial-severity finding, and the manifest read side rejects a `complete` generation that
+carries `unavailable` coverage, so a coverage failure can never be published as complete
+(docs/PRD.md FR-20). No reliability level changes: still R1.
+
 Per section 7's fixture strategy, the WeChat capture adapter reaches the live source through an
 injectable environment seam (discovery, client-running probe, materialization), so the shipped
 fingerprint/prior-map/reuse/recheck decision is covered by fixture tests without a live client or
@@ -337,6 +350,16 @@ conversation under the normal R2 transaction, and runs SQLite integrity validati
 replacement. If a caught failure occurs before replacement, the old archive remains selected.
 Replacement does not provide a process-crash, OS-crash or power-loss recovery guarantee; rebuild
 does not add persistent journals or commit markers.
+
+Which conditions count as a source-coverage failure is decided by the adapter's declared Required
+evidence, not by an individual record's absence. A conversation whose message table is absent from
+every successfully indexed shard is published as an explicitly empty conversation (with a
+`no_new_records` info diagnostic) only when the generation proves its Required message evidence is
+complete; a Required message partition that is missing, unavailable, unsupported or unreadable, or a
+generation that is not complete, still fails that conversation under the hard rule above. Rebuild
+also reports and skips an account directory that has no published generation instead of failing
+every other account. Neither rule changes the R2 anchor: the per-conversation transaction boundary,
+the rollback-on-Fatal behaviour and the absence of a recovery journal are unchanged.
 
 Checkpoint advancement must occur only after the corresponding import publication boundary required by the checkpoint design.
 

@@ -13,9 +13,10 @@ namespace WeArchive.Tests.Support;
 /// One conversation the synthetic capture source exposes, and how its preserved evidence looks.
 /// <para>
 /// Defaults model a healthy conversation. <see cref="MessageTablePresent"/> = false models a
-/// conversation whose message shard is missing while the session row still exists: exactly the
-/// Fatal source-coverage condition that must roll that conversation back without disturbing the
-/// others (docs/PRD.md FR-14, docs/ARCHITECTURE.md section 11).
+/// conversation whose message shard is missing while the session row still exists: under the
+/// Issue #37 rule that is a Fatal source-coverage condition only when the generation cannot prove
+/// its Required message evidence is complete, which is what
+/// <see cref="MessageShardUnreadable"/> additionally models.
 /// </para>
 /// </summary>
 internal sealed class SyntheticCaptureConversation
@@ -29,6 +30,15 @@ internal sealed class SyntheticCaptureConversation
 
     /// <summary>When false, the conversation's message shard has no message table.</summary>
     public bool MessageTablePresent { get; set; } = true;
+
+    /// <summary>
+    /// When true, this conversation's table is written into a message shard that cannot be read as
+    /// SQLite. That keeps the Fatal source-coverage condition available to tests now that a
+    /// conversation provably absent from every successfully indexed shard is legitimately empty
+    /// (Issue #37): a conversation must never be published as complete while required evidence
+    /// could actually be missing.
+    /// </summary>
+    public bool MessageShardUnreadable { get; set; }
 }
 
 /// <summary>
@@ -108,6 +118,9 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
 {
     private const string SourceDatabaseRole = "source-database";
 
+    /// <summary>Sentinel SQL text marking an artifact that is deliberately not a database.</summary>
+    private const string NotADatabaseMarker = "\0not-a-database\0";
+
     private readonly string _scratchRoot;
     private bool _disposed;
 
@@ -146,21 +159,39 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
         cancellationToken.ThrowIfCancellationRequested();
         progress?.Report(new CaptureProgress { Stage = CaptureStages.Snapshotting, Total = 3 });
 
-        var databases = new (string Name, string RelativePath, string Sql)[]
+        var readableShardSql = BuildMessageSql(Conversations.Where(c => !c.MessageShardUnreadable).ToList());
+        var databases = new List<(string Name, string RelativePath, string Sql)>
         {
             ("session.db", "session/session.db", BuildSessionSql()),
             ("contact.db", "contact/contact.db", BuildContactSql()),
-            ("message_0.db", "message/message_0.db", BuildMessageSql()),
+            ("message_0.db", "message/message_0.db", readableShardSql),
         };
+
+        // A conversation whose shard cannot be read is preserved as an artifact that is not a
+        // readable SQLite database, so the reader reports it as an unreadable shard instead of
+        // silently treating the conversation as empty (see SyntheticCaptureConversation).
+        var hasUnreadableShard = Conversations.Any(c => c.MessageShardUnreadable);
+        if (hasUnreadableShard)
+        {
+            databases.Add(("message_1.db", "message/message_1.db", NotADatabaseMarker));
+        }
 
         var artifacts = new List<RawArtifactDescriptor>();
         var coverage = new List<RawPartitionCoverage>();
-        for (var i = 0; i < databases.Length; i++)
+        for (var i = 0; i < databases.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (name, relativePath, sql) = databases[i];
             var path = Path.Combine(_scratchRoot, name);
-            BuildDatabase(path, sql);
+            if (sql == NotADatabaseMarker)
+            {
+                await File.WriteAllBytesAsync(path, "this is not a sqlite database"u8.ToArray(), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                BuildDatabase(path, sql);
+            }
 
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
             var descriptor = await session
@@ -191,7 +222,7 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
             {
                 Stage = CaptureStages.Snapshotting,
                 Processed = i + 1,
-                Total = databases.Length,
+                Total = databases.Count,
             });
         }
 
@@ -237,24 +268,24 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
             """;
     }
 
-    private string BuildMessageSql()
+    private string BuildMessageSql(IReadOnlyList<SyntheticCaptureConversation> shardConversations)
     {
         var builder = new StringBuilder();
         builder.AppendLine($"CREATE TABLE {WeChat4Schema.Name2IdTable} (rowid INTEGER PRIMARY KEY, user_name TEXT);");
 
-        for (var i = 0; i < Conversations.Count; i++)
+        for (var i = 0; i < shardConversations.Count; i++)
         {
-            var conversation = Conversations[i];
+            var conversation = shardConversations[i];
             builder.AppendLine(
                 $"INSERT INTO {WeChat4Schema.Name2IdTable} VALUES ({i + 1}, '{conversation.SourceConversationId}');");
         }
 
-        foreach (var conversation in Conversations)
+        foreach (var conversation in shardConversations)
         {
             if (!conversation.MessageTablePresent)
             {
-                // The session row exists but the conversation's message shard does not: a Fatal
-                // source-coverage condition for that conversation only.
+                // The session row exists but this shard does not hold the conversation's table: a
+                // Fatal source-coverage condition unless the generation proves otherwise.
                 continue;
             }
 

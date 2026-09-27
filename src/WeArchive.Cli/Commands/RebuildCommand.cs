@@ -17,10 +17,10 @@ public sealed class RebuildCommand(RebuildService rebuild) : ICliCommand
             throw new CliUsageException($"unknown option '{args[0]}' for rebuild.");
 
         var progress = new Progress<string>(context.ReportProgress);
-        ArchiveStats stats;
+        RebuildResult result;
         try
         {
-            stats = await rebuild.RebuildAsync(progress, cancellationToken).ConfigureAwait(false);
+            result = await rebuild.RebuildAsync(progress, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -33,7 +33,8 @@ public sealed class RebuildCommand(RebuildService rebuild) : ICliCommand
             return ExitCode.Failure;
         }
 
-        var result = new
+        var stats = result.Stats;
+        var payload = new
         {
             succeeded = true,
             archive_path = stats.ArchivePath,
@@ -41,11 +42,27 @@ public sealed class RebuildCommand(RebuildService rebuild) : ICliCommand
             participant_count = stats.ParticipantCount,
             conversation_count = stats.ConversationCount,
             message_count = stats.MessageCount,
+            skipped_accounts = result.SkippedAccounts
+                .Select(s => new { account_id = s.AccountId, reason = s.Reason })
+                .ToArray(),
         };
         if (context.Options.Json)
-            context.Stdout.WriteLine(CliJson.Serialize(result));
-        else
-            context.Stdout.WriteLine($"Rebuilt archive: {stats.AccountCount} account(s), {stats.ConversationCount} conversation(s), {stats.MessageCount} message(s).");
+        {
+            context.Stdout.WriteLine(CliJson.Serialize(payload));
+            return ExitCode.Success;
+        }
+
+        context.Stdout.WriteLine($"Rebuilt archive: {stats.AccountCount} account(s), {stats.ConversationCount} conversation(s), {stats.MessageCount} message(s).");
+        if (result.SkippedAccounts.Count > 0)
+        {
+            context.Stdout.WriteLine(
+                $"Skipped {result.SkippedAccounts.Count} Raw Vault account(s) without a published generation:");
+            foreach (var account in result.SkippedAccounts)
+            {
+                context.Stdout.WriteLine($"  {account.AccountId}: {account.Reason}");
+            }
+        }
+
         return ExitCode.Success;
     }
 }

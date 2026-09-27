@@ -416,6 +416,14 @@ number of partitions this run accounted for; `captured + reused + unavailable + 
 equals `expected`. `previous_generation_id` links to the immediately preceding published
 generation for the same account, forming an append-only chain.
 
+`completeness = complete` means the adapter's required supported evidence was captured/reused and
+verified; it does **not** mean every physical `*.db` in the source tree was decryptable. A complete
+run may therefore report `coverage_summary.unsupported > 0` for partitions the adapter explicitly
+classifies as known-unsupported, each with a `partition_unsupported` info diagnostic. A discovered
+partition the adapter cannot classify is reported as `unsupported` coverage with a
+`partition_unclassified` partial diagnostic and forces `partial`, so it can never be silently
+presented as covered ([RAW_VAULT.md](RAW_VAULT.md) "Source-partition support policy").
+
 `coverage` reports each partition's `captured`/`reused`/`unavailable`/`unsupported` status, and
 `diagnostic` gives the engineering reason for a partition that was not captured, so a consumer
 can attribute a coverage gap without parsing `diagnostics[].message`. Both deliberately omit the
@@ -744,13 +752,34 @@ user-maintained participant display-name overrides, validates the completed SQLi
 selects it as the active archive. Any failure before replacement leaves the selected archive
 untouched. Raw Vault generations and exports are not modified.
 
+An account directory left behind by a failed or cancelled capture has no published generation and
+therefore no evidence to rebuild. It is reported per account in `skipped_accounts` and skipped,
+instead of aborting the rebuild for every other account. An account whose generation exists but
+cannot be read, validated or normalized is still a hard failure, and if no account has a published
+generation at all the command fails rather than publishing an empty archive.
+
 ```text
 wearchive rebuild [--json] [--no-input] [--quiet]
 ```
 
 JSON success emits one object with `succeeded`, `archive_path`, `account_count`,
-`participant_count`, `conversation_count` and `message_count`. Failures use the standard JSON
-error envelope; cancellation exits `130`.
+`participant_count`, `conversation_count`, `message_count` and `skipped_accounts` (an array of
+`{ "account_id", "reason" }`, empty when every Raw Vault account contributed). Failures use the
+standard JSON error envelope; cancellation exits `130`.
+
+```json
+{
+  "succeeded": true,
+  "archive_path": "C:\\Users\\<user>\\AppData\\Local\\WeArchive\\archive\\wearchive.db",
+  "account_count": 1,
+  "participant_count": 12,
+  "conversation_count": 40,
+  "message_count": 900,
+  "skipped_accounts": [
+    { "account_id": "a_<16-hex>", "reason": "The Raw Vault account has no published generation." }
+  ]
+}
+```
 
 The rebuild publication guarantee is limited to normal completion and caught in-process errors.
 Process crash, OS/filesystem crash and power loss during replacement are not guaranteed recovery

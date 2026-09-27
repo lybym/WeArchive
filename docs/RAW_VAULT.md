@@ -27,6 +27,17 @@ checks SQLite integrity, and only then replaces the selected canonical file. A f
 normalization or validation leaves the selected archive untouched. Rebuild never writes into
 Raw Vault generations; exports remain separate derived outputs.
 
+Conversation-level coverage follows the same supported-evidence contract. WeChat creates a
+conversation's message table only once it has records, so a conversation listed by `session.db` may
+have no table in any message shard. When the generation used for the rebuild proves its Required
+message evidence is complete — every Required message-bearing partition is `captured`/`reused` and
+every message shard indexed successfully — such a conversation is **legitimately empty** and is
+published with the framework's `no_new_records` info diagnostic instead of being reported as a
+source-coverage failure. In every other case the Fatal semantics are unchanged: a Required message
+partition that is missing, unavailable, unsupported or unreadable, or a generation that is not
+`complete`, still fails that conversation rather than publishing an empty one. A conversation is
+therefore never reported as complete while required evidence could actually be missing.
+
 `wearchive ingest` incrementally imports verified Raw Vault generations into an existing
 canonical archive. It publishes one conversation at a time through the normal SQLite import
 transaction and commits that conversation's ingest checkpoint in the same transaction. An
@@ -182,7 +193,69 @@ source-partition id (never a chat content value):
 | `captured` | The partition was read now and materialized into an artifact of this generation |
 | `reused` | The partition fingerprint matched the previous complete generation, so its verified artifact was carried into this generation |
 | `unavailable` | The partition was expected (or previously captured) but could not be read, or is absent from the live source |
-| `unsupported` | The partition exists but this adapter version cannot represent it |
+| `unsupported` | The partition exists but is outside this adapter version's supported evidence contract (Known unsupported), or has no approved classification yet (Unknown/unclassified) |
+
+#### Source-partition support policy
+
+Filesystem discovery and product support are deliberately separate concepts. An adapter may discover
+physical source files that are not part of the evidence contract it currently supports. A source
+partition is classified by the source adapter for the observed source/version; the presence of a
+`*.db` file alone never makes that partition required.
+
+For the WeChat 4.x adapter, use these semantic classes:
+
+- **Required** — evidence required by the currently supported canonical/rebuild contract. A missing or
+  unreadable Required partition prevents the generation from being `complete`.
+- **Supported auxiliary** — evidence the adapter supports preserving in addition to the required
+  canonical minimum. If such evidence is present but cannot be captured, the generation is
+  `partial`; absence is not invented as evidence.
+- **Known unsupported** — a discovered partition outside the adapter's current support contract. It
+  remains visible as `coverage.status = unsupported` with an explicit diagnostic, but does not by
+  itself downgrade an otherwise complete generation and is not part of the capture checkpoint.
+- **Unknown/unclassified** — newly discovered evidence for which the adapter has no approved support
+  decision. It must be diagnosed explicitly and the generation must not be reported `complete`
+  until the partition is classified; unknown evidence is never silently treated as Known
+  unsupported.
+
+Accordingly, `complete` means the adapter captured/reused and verified all evidence in its current
+supported contract that is required for a complete snapshot; it does **not** mean every physical
+`*.db` below the source data directory was decryptable. The capture-required evidence set and the
+evidence required by the current Raw-Vault-only rebuild reader must remain consistent.
+
+Classification is an explicit allowlist inside the WeChat infrastructure boundary
+(`WeChatSourcePartitionPolicy`), never "everything that is not required is auxiliary". For the
+current WeChat 4.x release line the concrete classification is:
+
+| Class | WeChat 4.x partitions |
+|---|---|
+| Required | `session/session.db`, `contact/contact.db`, `message/message_<n>.db`, `message/biz_message_<n>.db` |
+| Supported auxiliary | `bizchat/bizchat.db`, `chatbot/chatbot_message.db`, `contact/contact_fts.db`, `emoticon/emoticon.db`, `favorite/favorite.db`, `favorite/favorite_fts.db`, `general/general.db`, `hardlink/hardlink.db`, `head_image/head_image.db`, `message/media_<n>.db`, `message/message_fts.db`, `message/message_resource.db`, `message/weclaw.db`, `sns/sns.db`, `solitaire/solitaire.db`, `third_app_icon/third_app_icon.db` |
+| Known unsupported | `migrate/unspportmsg.db` |
+| Unknown | every other discovered partition, including any other `migrate/` database |
+
+Matching ignores case and accepts `\` and `/` as the same separator. A database's `-wal`/`-shm`
+siblings are fingerprint inputs, not partitions, and are never classified or recorded in coverage.
+
+WeChat 4.x splits conversation tables across both the `message_<n>.db` family and the
+`biz_message_<n>.db` family, which is where official-account (`gh_`) conversations live. The
+canonical rebuild reader cannot read those conversations without the `biz_message_<n>.db`
+partition, so it is Required evidence rather than auxiliary, and the live locator and the
+captured-source reader share one definition of "message shard" so the capture-required set and the
+rebuild-required set cannot drift apart again. `media_<n>.db` holds no conversation tables and
+stays auxiliary.
+
+For the current WeChat 4.x release line, `migrate/unspportmsg.db` is **Known unsupported**. The current
+canonical reader/rebuild contract does not consume it, so capture must account for its presence as
+unsupported rather than require a database key/materialized artifact. Reclassifying it or adding
+canonical semantics for it requires a later approved product change.
+
+A Known-unsupported partition is accounted for by a `coverage` entry with `status = unsupported` and
+an informational `partition_unsupported` diagnostic, and is never materialized, never fingerprinted
+and never part of the capture checkpoint. An Unknown/unclassified partition is also recorded as
+`unsupported` coverage, but with a partial-severity `partition_unclassified` diagnostic naming that
+partition, and it forces the generation to `partial` — so it can never be reported `complete` and
+never publishes a checkpoint until its support semantics are classified. Unknown evidence is never
+silently aggregated away or treated as Known unsupported.
 
 `expected` in the CLI rollup is the number of coverage entries, i.e. every partition this run
 accounted for — not a claim that every theoretical source partition was observed.
@@ -195,9 +268,10 @@ the CLI (see [CLI.md](CLI.md)) and audited later without weakening the no-secret
 
 - it is written only inside a manifest that is being published, so publish-last publication is
   the only way it can advance;
-- it is only written for a generation whose completeness is `complete` and whose every coverage
-  entry is `captured` or `reused` with a recorded fingerprint and a checksum that names an
-  artifact of that same generation;
+- it is only written for a generation whose completeness is `complete`; every Required/Supported
+  partition in that complete generation is `captured` or `reused` with a recorded fingerprint and
+  a checksum that names an artifact of that same generation. Known-unsupported coverage entries may
+  remain `unsupported` and are excluded from checkpoint fingerprints/reuse;
 - a `partial` generation records coverage but leaves `capture_checkpoint` absent, so the next run
   widens to a full snapshot instead of resuming from weaker evidence;
 - a Fatal failure, caught cancellation or I/O error discards the staged generation, so the
@@ -271,6 +345,18 @@ Published generations are **immutable**: the store refuses to overwrite an exist
 directory. Later captures create new generations linked by `previous_generation_id`, forming an
 append-only chain. Later source deletion does not delete or rewrite earlier generations.
 
+Reading preserved evidence never modifies or deletes it, and never leaves anything behind:
+
+- the plaintext materialization cache only ever deletes an image it created itself in its own
+  scratch directory — never a preserved artifact, and never an unencrypted source file;
+- a preserved image is opened with SQLite's `immutable=1` semantics. A preserved image is a
+  self-contained, checkpointed image whose committed state is entirely in the main file, so it can
+  be read without locking it and without SQLite creating `-wal`/`-shm` sidecars inside the
+  generation directory. A live source database is deliberately **not** opened this way, because its
+  current state can live only in its write-ahead log.
+
+Reading a generation therefore leaves its directory byte-for-byte as published.
+
 ## 7. Completeness and failure modes
 
 | Verdict | Meaning |
@@ -282,6 +368,21 @@ append-only chain. Later source deletion does not delete or rewrite earlier gene
 Fatal examples: required partition unavailable, inconsistent snapshot/WAL state, checksum
 mismatch, source identity unavailable, key unavailable before capture, artifact publication
 failure, a partition that changes while it is being fingerprinted or read.
+
+Issue #37 adds exactly three diagnostics to that model:
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `partition_unsupported` | `info` | A discovered partition is a known, explicitly classified partition outside the adapter's supported evidence contract. It is recorded as `unsupported` coverage and does not by itself downgrade `complete`. |
+| `partition_unclassified` | `partial` | A discovered partition has no approved support classification for this adapter version. It is recorded as `unsupported` coverage, is named in the message, and forces `partial` so the generation cannot be reported `complete` and publishes no checkpoint. |
+| `capture_completeness_downgraded` | `partial` | Defensive Core guard: a capture adapter reported complete coverage while the run carried an `unavailable` coverage entry or a partial-severity diagnostic, so the generation was recorded as `partial` instead. |
+
+The `complete` verdict and the checkpoint are also enforced on the read side: a manifest that claims
+`complete` while carrying `unavailable` coverage, or a checkpoint that omits a captured/reused entry,
+addresses an `unsupported`/`unavailable` entry, or disagrees on a fingerprint or artifact, is rejected
+rather than trusted ([DATA_MODEL.md](DATA_MODEL.md) section 21.6). `manifest_version` stays `2`: the
+persisted structure is unchanged and only which coverage entries the checkpoint addresses is
+clarified, so version-2 manifests written before this change remain readable.
 
 Incremental capture adds exactly one diagnostic: `capture_full_fallback` (severity `info`). It
 means incremental safety could not be proven and the run read the whole source instead. It is
@@ -312,6 +413,13 @@ No journal, commit marker or rollback ledger is persisted.
 - `OpenGenerationAsync(accountId, generationId)` — opens a generation for read-only inspection,
   verifying every artifact's SHA-256. A tampered or corrupted generation is rejected (returns
   null) rather than trusted.
+
+An account directory can exist without any published generation: a capture that failed or was
+cancelled leaves the account/generations scaffold behind. Such an account has no evidence, so
+`wearchive rebuild` reports it explicitly and skips it rather than aborting the rebuild for every
+other account. A generation that does exist but cannot be read, validated or normalized is still a
+hard failure; and if no account has a published generation at all, rebuild refuses to publish an
+empty archive rather than replacing a usable one.
 
 ## 10. Key non-persistence
 
