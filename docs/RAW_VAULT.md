@@ -184,6 +184,38 @@ source-partition id (never a chat content value):
 | `unavailable` | The partition was expected (or previously captured) but could not be read, or is absent from the live source |
 | `unsupported` | The partition exists but this adapter version cannot represent it |
 
+#### Source-partition support policy
+
+Filesystem discovery and product support are deliberately separate concepts. An adapter may discover
+physical source files that are not part of the evidence contract it currently supports. A source
+partition is classified by the source adapter for the observed source/version; the presence of a
+`*.db` file alone never makes that partition required.
+
+For the WeChat 4.x adapter, use these semantic classes:
+
+- **Required** — evidence required by the currently supported canonical/rebuild contract. A missing or
+  unreadable Required partition prevents the generation from being `complete`.
+- **Supported auxiliary** — evidence the adapter supports preserving in addition to the required
+  canonical minimum. If such evidence is present but cannot be captured, the generation is
+  `partial`; absence is not invented as evidence.
+- **Known unsupported** — a discovered partition outside the adapter's current support contract. It
+  remains visible as `coverage.status = unsupported` with an explicit diagnostic, but does not by
+  itself downgrade an otherwise complete generation and is not part of the capture checkpoint.
+- **Unknown/unclassified** — newly discovered evidence for which the adapter has no approved support
+  decision. It must be diagnosed explicitly and the generation must not be reported `complete`
+  until the partition is classified; unknown evidence is never silently treated as Known
+  unsupported.
+
+Accordingly, `complete` means the adapter captured/reused and verified all evidence in its current
+supported contract that is required for a complete snapshot; it does **not** mean every physical
+`*.db` below the source data directory was decryptable. The capture-required evidence set and the
+evidence required by the current Raw-Vault-only rebuild reader must remain consistent.
+
+For the current WeChat 4.x release line, `migrate/unspportmsg.db` is **Known unsupported**. The current
+canonical reader/rebuild contract does not consume it, so capture must account for its presence as
+unsupported rather than require a database key/materialized artifact. Reclassifying it or adding
+canonical semantics for it requires a later approved product change.
+
 `expected` in the CLI rollup is the number of coverage entries, i.e. every partition this run
 accounted for — not a claim that every theoretical source partition was observed.
 
@@ -195,9 +227,10 @@ the CLI (see [CLI.md](CLI.md)) and audited later without weakening the no-secret
 
 - it is written only inside a manifest that is being published, so publish-last publication is
   the only way it can advance;
-- it is only written for a generation whose completeness is `complete` and whose every coverage
-  entry is `captured` or `reused` with a recorded fingerprint and a checksum that names an
-  artifact of that same generation;
+- it is only written for a generation whose completeness is `complete`; every Required/Supported
+  partition in that complete generation is `captured` or `reused` with a recorded fingerprint and
+  a checksum that names an artifact of that same generation. Known-unsupported coverage entries may
+  remain `unsupported` and are excluded from checkpoint fingerprints/reuse;
 - a `partial` generation records coverage but leaves `capture_checkpoint` absent, so the next run
   widens to a full snapshot instead of resuming from weaker evidence;
 - a Fatal failure, caught cancellation or I/O error discards the staged generation, so the
