@@ -302,9 +302,9 @@ These items are intentionally not committed:
 
 ## Packaging and release
 
-Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets.
+Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets. That line is retired.
 
-For M0.5 the product requirement is simpler: a **self-contained `win-x64` CLI artifact** suitable for direct invocation by humans and agents. The implementation issue must decide the minimal release packaging needed for the CLI and update/supersede ADR 0004 where necessary. Do not preserve Velopack merely because the WPF line used it.
+M0.5 delivers a simpler product requirement: a **self-contained `win-x64` CLI artifact** suitable for direct invocation by humans and agents, shipped as a portable ZIP with no installer and no auto-updater ([ADR 0007](adr/0007-cli-self-contained-distribution.md) supersedes the Velopack distribution decision of [ADR 0004](adr/0004-distribution-velopack.md)).
 
 GitHub Actions/Release remains the source of test artifacts and release artifacts. Code signing remains separate work unless explicitly scheduled.
 
