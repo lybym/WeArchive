@@ -68,6 +68,7 @@ public sealed class CollectionSyncTests
                 SourceConversationId = CollectionHarness.GroupId("100200300"),
                 Text = "C unreadable",
                 MessageTablePresent = false,
+                MessageShardUnreadable = true,
             });
 
         var idA = harness.StableId(CollectionHarness.DirectId("a"));
@@ -156,6 +157,7 @@ public sealed class CollectionSyncTests
                 SourceConversationId = CollectionHarness.GroupId("100200300"),
                 Text = "C unreadable",
                 MessageTablePresent = false,
+                MessageShardUnreadable = true,
             });
 
         var idA = harness.StableId(CollectionHarness.DirectId("a"));

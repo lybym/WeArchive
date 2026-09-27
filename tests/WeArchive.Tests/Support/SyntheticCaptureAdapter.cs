@@ -1,5 +1,6 @@
 using System.Text;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 
 namespace WeArchive.Tests.Support;
@@ -26,14 +27,29 @@ internal sealed class SyntheticCaptureAdapter : IIncrementalSourceCaptureAdapter
     /// <summary>Live source partitions: opaque partition id -> current source fingerprint.</summary>
     public Dictionary<string, string> Partitions { get; } = new(StringComparer.Ordinal);
 
-    /// <summary>Expected partitions this adapter version cannot represent at all.</summary>
+    /// <summary>
+    /// Known-unsupported partitions: recorded as <c>unsupported</c> coverage without downgrading
+    /// completeness, mirroring the documented source-partition policy (Issue #37).
+    /// </summary>
     public HashSet<string> Unsupported { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Unclassified partitions: recorded as <c>unsupported</c> coverage with a partial diagnostic
+    /// and a <c>partial</c> verdict, mirroring the documented Unknown class (Issue #37).
+    /// </summary>
+    public HashSet<string> Unclassified { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Expected partitions the adapter could not read.</summary>
     public HashSet<string> Unreadable { get; } = new(StringComparer.Ordinal);
 
     /// <summary>When set, the adapter fails instead of capturing (I/O or cancellation).</summary>
     public Exception? Failure { get; set; }
+
+    /// <summary>
+    /// When set, the adapter reports <c>complete</c> even though its own coverage/diagnostics
+    /// contradict it, so the Core completeness guard can be exercised (docs/PRD.md FR-20).
+    /// </summary>
+    public bool ReportCompleteDespiteCoverageGaps { get; set; }
 
     public Task<SourceCaptureResult> CaptureAsync(
         string sourceProfileId,
@@ -68,6 +84,7 @@ internal sealed class SyntheticCaptureAdapter : IIncrementalSourceCaptureAdapter
 
         var artifacts = new List<RawArtifactDescriptor>();
         var coverage = new List<RawPartitionCoverage>();
+        var diagnostics = new List<RawManifestDiagnostic>();
         var complete = true;
 
         foreach (var partitionId in Partitions.Keys.OrderBy(id => id, StringComparer.Ordinal))
@@ -76,11 +93,27 @@ internal sealed class SyntheticCaptureAdapter : IIncrementalSourceCaptureAdapter
 
             if (Unsupported.Contains(partitionId))
             {
+                // Known unsupported: visible in coverage, excluded from the checkpoint, and not by
+                // itself a reason to downgrade the generation.
                 coverage.Add(new RawPartitionCoverage
                 {
                     PartitionId = partitionId,
                     Status = RawPartitionStatus.Unsupported,
-                    Diagnostic = $"Partition '{partitionId}' is not supported by adapter version {CaptureAdapterVersion}.",
+                    Diagnostic = $"Partition '{partitionId}' is known-unsupported by adapter version {CaptureAdapterVersion}.",
+                });
+                continue;
+            }
+
+            if (Unclassified.Contains(partitionId))
+            {
+                var message =
+                    $"Partition '{partitionId}' is unclassified by adapter version {CaptureAdapterVersion}.";
+                diagnostics.Add(RawManifestDiagnostic.Partial(DiagnosticCodes.PartitionUnclassified, message));
+                coverage.Add(new RawPartitionCoverage
+                {
+                    PartitionId = partitionId,
+                    Status = RawPartitionStatus.Unsupported,
+                    Diagnostic = message,
                 });
                 complete = false;
                 continue;
@@ -158,9 +191,15 @@ internal sealed class SyntheticCaptureAdapter : IIncrementalSourceCaptureAdapter
             ? RawGenerationCompleteness.Incomplete
             : complete ? RawGenerationCompleteness.Complete : RawGenerationCompleteness.Partial;
 
+        if (ReportCompleteDespiteCoverageGaps && artifacts.Count > 0)
+        {
+            completeness = RawGenerationCompleteness.Complete;
+        }
+
         return new SourceCaptureResult
         {
             Artifacts = artifacts,
+            Diagnostics = diagnostics,
             Coverage = coverage,
             Mode = previous is null ? RawCaptureMode.Baseline : RawCaptureMode.Incremental,
             Completeness = completeness,

@@ -29,14 +29,17 @@ The following are accepted target requirements but are not yet shipped in 0.2.x:
 
 - the incremental canonical (second-sync) path over the live adapter, and canonical
   partition-coverage rollup;
-- `ArchiveQueryService` retrieval API;
-- FTS/search/context CLI commands;
+- FTS/keyword search and a CLI archive-status command (`message list` and `context` ship as the
+  M3a structured-retrieval slice; the FTS index and full-text search remain open);
 - Collection-scoped query/search and export selection;
 - MCP transport.
 
 Delivered since the 0.2.x list was written: incremental Raw Vault capture with explicit partition
 coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), and the
-application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26).
+application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26), and the
+M3a minimum structured retrieval slice: `ArchiveQueryService` with the `message list` / `context`
+CLI contract (Issue #27), and the WeChat source-partition completeness policy with its
+real-environment verification (Issue #37).
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 
@@ -221,6 +224,14 @@ incremental coverage falls back to a full consistent snapshot. Each generation r
 partition coverage; capture progress advances only with successful publication and remains
 independent of canonical ingest progress.
 
+Each source adapter defines an explicit partition-support policy for the observed source/version;
+filesystem discovery alone does not define product support. The policy distinguishes Required,
+Supported auxiliary, Known unsupported and Unknown/unclassified source partitions. Known
+unsupported evidence stays visible in coverage but does not by itself prevent `Complete`; an
+unknown/unclassified discovered partition cannot be silently ignored or reported as fully covered.
+A `Complete` generation means the adapter's required supported evidence is captured/reused and
+verified under that policy, not that every physical database file in the source tree was decryptable.
+
 ### FR-05 Immutable preservation
 
 Published Raw Vault generations are logically immutable. Source deletion/absence MUST NOT automatically delete preserved history.
@@ -312,7 +323,7 @@ Canonical messages retain source account/conversation/message identity, type/sub
 
 ### FR-20 Integrity and publication
 
-Fatal source/capture/coverage failures must not be silently converted into complete results. Unknown semantics are retained explicitly rather than dropped.
+Fatal source/capture/coverage failures must not be silently converted into complete results. Unknown semantics are retained explicitly rather than dropped. Source discovery follows the same rule: known-unsupported partitions remain explicit diagnostics/coverage, while newly discovered unclassified partitions prevent a false `Complete` verdict until their support semantics are decided.
 
 Reliability guarantees are operation-specific and documented before implementation.
 
@@ -429,7 +440,7 @@ Source capture/access must not intentionally mutate WeChat data.
 
 ### NFR-03 Preservation fidelity
 
-Capture minimizes semantic transformation before preservation and does not discard source fields merely because current parsers do not understand them.
+Capture minimizes semantic transformation before preservation and does not discard source fields merely because current parsers do not understand them. This fidelity rule applies within the adapter's documented supported evidence contract; it does not imply that every physical database file discovered in a source tree is automatically a supported partition.
 
 ### NFR-04 Determinism
 
@@ -530,8 +541,18 @@ Delivered by Issue #25: incremental capture checkpoints, explicit expected/captu
 unavailable/unsupported partition coverage, and an automatic full-snapshot fallback whenever
 incremental safety cannot be proven.
 
-Still outstanding: physical cross-generation storage dedup, Raw Vault encryption-at-rest, and
-real-environment verification on a supported Windows/WeChat 4.x installation.
+Delivered by Issue #37: the explicit WeChat source-partition support policy (Required / Supported
+auxiliary / Known unsupported / Unknown), `message/biz_message_<n>.db` recognised as Required message
+evidence, manifest/checkpoint validation over exactly the captured/reused evidence, non-mutating reads
+of preserved evidence, conversations that are provably absent from every successfully indexed shard
+published as explicitly empty, and `rebuild --json` reporting account directories without a published
+generation through `skipped_accounts`. Real-environment verification on a supported Windows/WeChat 4.x
+installation was performed under Issue #37 and passed (complete baseline with one Known-unsupported
+partition, incremental reuse without a full fallback, and a successful isolated Raw-Vault-only rebuild).
+
+Still outstanding: physical cross-generation storage dedup and Raw Vault encryption-at-rest.
+
+M1.5 remains incomplete.
 
 ### M2 — Semantic completeness
 

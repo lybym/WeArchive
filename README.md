@@ -26,7 +26,7 @@ Query / export
 CLI + JSONL/YAML/JSON machine interfaces
 ```
 
-The primary product surface is being migrated from the historical WPF MVP to a `gh`-style CLI. See [`docs/adr/0006-cli-first-product-surface.md`](docs/adr/0006-cli-first-product-surface.md).
+The primary product surface is the `gh`-style CLI described by [`docs/adr/0006-cli-first-product-surface.md`](docs/adr/0006-cli-first-product-surface.md), distributed as a self-contained portable ZIP per [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md). The historical WPF MVP has been retired.
 
 ## Target CLI
 
@@ -85,7 +85,7 @@ The difficult archive/source/export engine is already implemented:
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
 
-The repository still contains the historical WPF application while **M0.5 CLI product-surface migration** is in progress. WPF is transitional and must not be expanded as a second first-class product surface.
+The **M0.5 CLI product-surface migration** is complete: the CLI is the only product surface and the historical WPF application has been removed (Issue #9). No second presentation layer may be added without a new product decision; later milestones are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Reliability model
 
@@ -144,7 +144,7 @@ Target projects:
 | `src/WeArchive.Cli` | Command parsing, human/JSON rendering, stdout/stderr/exit-code contract |
 | `tests/WeArchive.Tests` | Unit, integration, CLI contract and compatibility tests |
 
-During migration, `src/WeArchive.App` may remain temporarily. It is not the target architecture.
+These are the only projects; the historical `src/WeArchive.App` WPF project has been removed.
 
 ## Current scope and limitations
 
@@ -158,7 +158,6 @@ In scope:
 
 Not yet complete:
 
-- CLI product-surface migration itself;
 - incremental canonical (second-sync) synchronization;
 - canonical partition-coverage reporting;
 - full-text archive search (no FTS index exists);
@@ -166,7 +165,7 @@ Not yet complete:
   `sync --collection` are shipped);
 - a CLI archive-status command and MCP transport (capture/ingest/canonical freshness is available
   through `ArchiveQueryService`);
-- time-range selection.
+- scope-level time-range selection (message-level `--since`/`--until` bounds ship on `message list`).
 
 Out of current scope:
 
@@ -185,7 +184,7 @@ dotnet build WeArchive.sln -c Release
 dotnet test WeArchive.sln
 ```
 
-The released product remains self-contained `win-x64`. M0.5 will simplify packaging around the CLI; the historical WPF/Velopack release path is not automatically preserved.
+The released product is a self-contained `win-x64` portable CLI. Packaging is deliberately minimal: no installer and no updater — see [`docs/adr/0007-cli-self-contained-distribution.md`](docs/adr/0007-cli-self-contained-distribution.md).
 
 ## Documentation first
 
@@ -198,7 +197,7 @@ Read before coding:
 | [`docs/MESSAGE_SCHEMA.md`](docs/MESSAGE_SCHEMA.md) | Canonical message semantics |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical boundaries and CLI target architecture |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Archive model and schema evolution |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | M0.5 CLI migration and later milestones |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones and current priority |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Development/reliability/CLI governance |
 | [`docs/CLI.md`](docs/CLI.md) | CLI command/JSON/exit contract |
 | [`docs/adr/`](docs/adr/) | Accepted architecture decisions, including Collection configuration ownership |

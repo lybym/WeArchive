@@ -333,6 +333,319 @@ public sealed class WeChatCaptureAdapterTests
     }
 
     [Fact]
+    public async Task KnownUnsupportedPartitionIsAccountedForWithoutBeingRequiredOrCheckpointed()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreateSourceFile(source, "session/session.db", "session-1");
+        var contact = CreateSourceFile(source, "contact/contact.db", "contact-1");
+        var message = CreateSourceFile(source, "message/message_0.db", "message-1");
+        var unsupported = CreateSourceFile(source, "migrate/unspportmsg.db", "unspportmsg-1");
+        var environment = CreateEnvironment(source, session, contact, message, unsupported);
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, _) = CreateService(vaultDirectory, adapter);
+
+        var result = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        // The real-shaped failure mode: a discovered-but-unsupported partition no longer forces
+        // the whole generation to partial.
+        Assert.True(result.Succeeded);
+        Assert.Equal(RawCaptureMode.Baseline, result.Mode);
+        Assert.Equal(RawGenerationCompleteness.Complete, result.Completeness);
+        Assert.Equal(4, result.Coverage.Count);
+        Assert.Equal(3, result.Coverage.Count(c => c.Status == RawPartitionStatus.Captured));
+        Assert.DoesNotContain(result.Coverage, c => c.Status == RawPartitionStatus.Unavailable);
+
+        var entry = result.Coverage.Single(c => c.PartitionId == "migrate/unspportmsg.db");
+        Assert.Equal(RawPartitionStatus.Unsupported, entry.Status);
+        Assert.False(string.IsNullOrWhiteSpace(entry.Diagnostic));
+
+        // Only an info-severity `partition_unsupported` diagnostic, never the partial
+        // `partition_unclassified` one.
+        var diagnostic = Assert.Single(result.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnsupported);
+        Assert.Equal("info", diagnostic.Severity);
+        Assert.Contains("migrate/unspportmsg.db", diagnostic.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(result.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnclassified);
+
+        // It was neither materialized nor handed to the key acquirer.
+        Assert.Equal(3, environment.GetPlaintextCalls);
+        Assert.Equal(1, keys.AcquireCount);
+        Assert.Equal(3, keys.LastDatabasePaths.Count);
+        Assert.DoesNotContain(unsupported, keys.LastDatabasePaths, StringComparer.OrdinalIgnoreCase);
+
+        // No artifact preserves it, and the checkpoint covers exactly the supported evidence.
+        var generation = await vault.OpenGenerationAsync(result.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        var manifest = generation!.Manifest;
+        Assert.Equal(3, manifest.Artifacts.Count);
+        Assert.DoesNotContain(manifest.Artifacts, a => a.Name == "unspportmsg.db");
+        var checkpoint = manifest.CaptureCheckpoint;
+        Assert.NotNull(checkpoint);
+        Assert.Equal(3, checkpoint!.PartitionFingerprints.Count);
+        Assert.DoesNotContain("migrate/unspportmsg.db", checkpoint.PartitionFingerprints.Keys);
+        Assert.Equal(4, manifest.Coverage.Count);
+    }
+
+    [Fact]
+    public async Task UnclassifiedPartitionForcesPartialDiagnosticAndNoCheckpoint()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreateSourceFile(source, "session/session.db", "session-1");
+        var unclassified = CreateSourceFile(source, "migrate/other_message.db", "unknown-1");
+        var environment = CreateEnvironment(source, session, unclassified);
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, clock) = CreateService(vaultDirectory, adapter);
+
+        var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(first.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Partial, first.Completeness);
+        var entry = first.Coverage.Single(c => c.PartitionId == "migrate/other_message.db");
+        Assert.Equal(RawPartitionStatus.Unsupported, entry.Status);
+        Assert.False(string.IsNullOrWhiteSpace(entry.Diagnostic));
+
+        var diagnostic = Assert.Single(first.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnclassified);
+        Assert.Equal("partial", diagnostic.Severity);
+        Assert.Contains("migrate/other_message.db", diagnostic.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(first.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnsupported);
+
+        // The unclassified partition stays visible, is never materialized, and cannot advance a
+        // checkpoint.
+        Assert.Single(first.Coverage, c => c.PartitionId == "session/session.db" && c.Status == RawPartitionStatus.Captured);
+        Assert.Equal(1, environment.GetPlaintextCalls);
+        Assert.DoesNotContain(unclassified, keys.LastDatabasePaths, StringComparer.OrdinalIgnoreCase);
+        var generation = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.Null(generation!.Manifest.CaptureCheckpoint);
+
+        // With no checkpoint the following run widens to a full baseline instead of resuming.
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var second = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(second.Succeeded);
+        Assert.Equal(RawCaptureMode.Baseline, second.Mode);
+        Assert.Contains(second.Diagnostics, d => d.Code == DiagnosticCodes.CaptureFullFallback);
+    }
+
+    [Fact]
+    public async Task UnchangedEvidenceIsReusedWhileKnownUnsupportedStaysUnsupported()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreateSourceFile(source, "session/session.db", "session-1");
+        var contact = CreateSourceFile(source, "contact/contact.db", "contact-1");
+        var message = CreateSourceFile(source, "message/message_0.db", "message-1");
+        var unsupported = CreateSourceFile(source, "migrate/unspportmsg.db", "unspportmsg-1");
+        var environment = CreateEnvironment(source, session, contact, message, unsupported);
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, clock) = CreateService(vaultDirectory, adapter);
+
+        var baseline = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(baseline.Succeeded);
+        Assert.Equal(1, keys.AcquireCount);
+        Assert.Equal(3, environment.GetPlaintextCalls);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var incremental = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(incremental.Succeeded);
+        Assert.Equal(RawCaptureMode.Incremental, incremental.Mode);
+        Assert.Equal(RawGenerationCompleteness.Complete, incremental.Completeness);
+        Assert.Equal(3, incremental.Coverage.Count(c => c.Status == RawPartitionStatus.Reused));
+        Assert.Equal(
+            RawPartitionStatus.Unsupported,
+            incremental.Coverage.Single(c => c.PartitionId == "migrate/unspportmsg.db").Status);
+        Assert.DoesNotContain(incremental.Diagnostics, d => d.Code == DiagnosticCodes.CaptureFullFallback);
+        Assert.DoesNotContain(incremental.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnclassified);
+
+        // Reuse is proven from the source: nothing was decrypted again and no key was acquired.
+        Assert.Equal(1, keys.AcquireCount);
+        Assert.Equal(3, environment.GetPlaintextCalls);
+
+        var generation2 = await vault.OpenGenerationAsync(baseline.AccountId, incremental.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation2);
+        var checkpoint = generation2!.Manifest.CaptureCheckpoint;
+        Assert.NotNull(checkpoint);
+        Assert.Equal(incremental.GenerationId, checkpoint!.GenerationId);
+        Assert.Equal(3, checkpoint.PartitionFingerprints.Count);
+        Assert.DoesNotContain("migrate/unspportmsg.db", checkpoint.PartitionFingerprints.Keys);
+
+        // The earlier generation, its checkpoint and its evidence are untouched.
+        var generation1 = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation1);
+        Assert.Equal(baseline.GenerationId, generation1!.Manifest.CaptureCheckpoint!.GenerationId);
+        Assert.Equal(3, generation1.Manifest.CaptureCheckpoint.PartitionFingerprints.Count);
+        Assert.Equal(3, generation1.Manifest.Artifacts.Count);
+    }
+
+    [Fact]
+    public async Task RequiredEvidenceThatCannotBeMaterializedStillForcesPartialAndNoCheckpoint()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreateSourceFile(source, "session/session.db", "session-1");
+        var message = CreateSourceFile(source, "message/message_0.db", "message-1");
+        var unsupported = CreateSourceFile(source, "migrate/unspportmsg.db", "unspportmsg-1");
+        var environment = CreateEnvironment(source, session, message, unsupported);
+        environment.UnreadableDatabases.Add(message);
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, _) = CreateService(vaultDirectory, adapter);
+
+        var result = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        // A known-unsupported partition never masks a genuine required-evidence failure.
+        Assert.True(result.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Partial, result.Completeness);
+        Assert.Equal(
+            RawPartitionStatus.Captured,
+            result.Coverage.Single(c => c.PartitionId == "session/session.db").Status);
+        var unavailable = result.Coverage.Single(c => c.PartitionId == "message/message_0.db");
+        Assert.Equal(RawPartitionStatus.Unavailable, unavailable.Status);
+        Assert.False(string.IsNullOrWhiteSpace(unavailable.Diagnostic));
+        Assert.Equal(
+            RawPartitionStatus.Unsupported,
+            result.Coverage.Single(c => c.PartitionId == "migrate/unspportmsg.db").Status);
+        Assert.Contains(
+            result.Diagnostics,
+            d => d.Code == DiagnosticCodes.PartitionUnreadable && d.Severity == "partial");
+
+        var generation = await vault.OpenGenerationAsync(result.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.Null(generation!.Manifest.CaptureCheckpoint);
+    }
+
+    [Fact]
+    public void PriorMapMapsExactlyTheCheckpointEvidenceOfAnUnsupportedContainingPredecessor()
+    {
+        // A complete predecessor that also accounted for a known-unsupported partition: the map is
+        // exactly its captured/reused evidence.
+        var unsupportedCoverage = new RawPartitionCoverage
+        {
+            PartitionId = "q",
+            Status = RawPartitionStatus.Unsupported,
+        };
+        var prior = WeChatCaptureAdapter.BuildPriorMap(Predecessor(
+            artifacts: [Artifact("p1", "sha1")],
+            coverage: [Covered("p1", "fp1", "sha1"), unsupportedCoverage],
+            fingerprints: new Dictionary<string, string> { ["p1"] = "fp1" }));
+        Assert.NotNull(prior);
+        Assert.Single(prior!);
+        Assert.Contains("p1", prior!.Keys);
+
+        // A non-evidence coverage entry must never be addressable by the checkpoint.
+        Assert.Null(WeChatCaptureAdapter.BuildPriorMap(Predecessor(
+            artifacts: [Artifact("p1", "sha1")],
+            coverage: [Covered("p1", "fp1", "sha1"), unsupportedCoverage with { SourceFingerprint = "fp-q" }],
+            fingerprints: new Dictionary<string, string> { ["p1"] = "fp1", ["q"] = "fp-q" })));
+
+        // An unavailable entry in the checkpoint is equally ambiguous.
+        Assert.Null(WeChatCaptureAdapter.BuildPriorMap(Predecessor(
+            artifacts: [Artifact("p1", "sha1")],
+            coverage:
+            [
+                Covered("p1", "fp1", "sha1"),
+                new RawPartitionCoverage { PartitionId = "q", Status = RawPartitionStatus.Unavailable },
+            ],
+            fingerprints: new Dictionary<string, string> { ["p1"] = "fp1", ["q"] = "fp-q" })));
+
+        // A checkpoint that omits a captured partition proves nothing about that partition.
+        Assert.Null(WeChatCaptureAdapter.BuildPriorMap(Predecessor(
+            artifacts: [Artifact("p1", "sha1"), Artifact("p2", "sha2")],
+            coverage: [Covered("p1", "fp1", "sha1"), Covered("p2", "fp2", "sha2")],
+            fingerprints: new Dictionary<string, string> { ["p1"] = "fp1" })));
+
+        // The pre-#37 shape stays readable: every coverage entry captured and in the checkpoint.
+        var preChangePrior = WeChatCaptureAdapter.BuildPriorMap(Predecessor(
+            artifacts: [Artifact("p1", "sha1"), Artifact("p2", "sha2")],
+            coverage: [Covered("p1", "fp1", "sha1"), Covered("p2", "fp2", "sha2")],
+            fingerprints: new Dictionary<string, string> { ["p1"] = "fp1", ["p2"] = "fp2" }));
+        Assert.NotNull(preChangePrior);
+        Assert.Equal(2, preChangePrior!.Count);
+    }
+
+    [Fact]
+    public async Task RealShapedAccountReachesCompleteWithOneKnownUnsupportedPartition()
+    {
+        // The exact failure mode the real account exposed: discovery finds 25 partitions, the
+        // adapter's supported evidence contract covers 24 of them, and the 25th is explicitly
+        // classified Known unsupported instead of forcing the whole generation to partial.
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var paths = RealWeChatAccountLayout.Partitions
+            .Select(partitionId => CreateSourceFile(source, partitionId, partitionId))
+            .ToArray();
+        var environment = CreateEnvironment(source, paths);
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, _) = CreateService(vaultDirectory, adapter);
+
+        var result = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(RawCaptureMode.Baseline, result.Mode);
+        Assert.Equal(RawGenerationCompleteness.Complete, result.Completeness);
+        Assert.Equal(25, result.Coverage.Count);
+        Assert.Equal(24, result.Coverage.Count(c => c.Status == RawPartitionStatus.Captured));
+        Assert.Equal(0, result.Coverage.Count(c => c.Status == RawPartitionStatus.Unavailable));
+        Assert.Equal(1, result.Coverage.Count(c => c.Status == RawPartitionStatus.Unsupported));
+        Assert.Equal(
+            "migrate/unspportmsg.db",
+            result.Coverage.Single(c => c.Status == RawPartitionStatus.Unsupported).PartitionId);
+
+        // Exactly one materialization per supported partition; the unsupported partition is never
+        // read and never handed to the key acquirer.
+        Assert.Equal(24, environment.GetPlaintextCalls);
+        Assert.Equal(24, keys.LastDatabasePaths.Count);
+        Assert.Equal(1, environment.CreateMaterializerCalls);
+
+        var generation = await vault.OpenGenerationAsync(result.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        var manifest = generation!.Manifest;
+        Assert.Equal(24, manifest.Artifacts.Count);
+        Assert.Equal(25, manifest.Coverage.Count);
+        Assert.Equal(24, manifest.Capture.ArtifactCount);
+
+        var checkpoint = manifest.CaptureCheckpoint;
+        Assert.NotNull(checkpoint);
+        Assert.Equal(24, checkpoint!.PartitionFingerprints.Count);
+        Assert.DoesNotContain("migrate/unspportmsg.db", checkpoint.PartitionFingerprints.Keys);
+    }
+
+    [Fact]
+    public async Task KnownUnsupportedPartitionIsNeverFingerprintedOrTouched()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreateSourceFile(source, "session/session.db", "session-1");
+
+        // The path is deliberately absent on disk: a Known-unsupported partition is never
+        // fingerprinted or materialized, so it cannot affect the verdict even when it cannot be
+        // opened. Its presence in coverage/diagnostics is what keeps the accounting honest.
+        var absentUnsupported = source.Combine("migrate", "unspportmsg.db");
+        var environment = CreateEnvironment(source, session, absentUnsupported);
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, _) = CreateService(vaultDirectory, adapter);
+
+        var result = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, result.Completeness);
+        Assert.Equal(
+            RawPartitionStatus.Unsupported,
+            result.Coverage.Single(c => c.PartitionId == "migrate/unspportmsg.db").Status);
+        Assert.Equal(1, environment.GetPlaintextCalls);
+
+        var generation = await vault.OpenGenerationAsync(result.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.Single(generation!.Manifest.CaptureCheckpoint!.PartitionFingerprints);
+    }
+
+    [Fact]
     public void PriorMapRejectsEveryUnsafePredecessorShape()
     {
         var valid = Predecessor();
@@ -527,9 +840,13 @@ public sealed class WeChatCaptureAdapterTests
 
         public string? FailureMessage { get; set; }
 
+        /// <summary>The exact partition list the adapter asked to verify a key against.</summary>
+        public IReadOnlyList<string> LastDatabasePaths { get; private set; } = [];
+
         public WeChatDatabaseKeyAcquisitionResult Acquire(IReadOnlyList<string> databasePaths)
         {
             AcquireCount++;
+            LastDatabasePaths = databasePaths;
             return FailureMessage is null
                 ? WeChatDatabaseKeyAcquisitionResult.Success(new WeChatKeySet([]), "synthetic key set")
                 : WeChatDatabaseKeyAcquisitionResult.Failure(FailureMessage);
@@ -539,6 +856,9 @@ public sealed class WeChatCaptureAdapterTests
     private sealed class FixtureWeChatEnvironment : IWeChatCaptureEnvironment
     {
         public List<string> Databases { get; } = [];
+
+        /// <summary>Database paths whose key cannot be resolved, so materialization fails.</summary>
+        public HashSet<string> UnreadableDatabases { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public string AccountDirectory { get; init; } = string.Empty;
 
@@ -584,6 +904,12 @@ public sealed class WeChatCaptureAdapterTests
             public DecryptionOutcome GetPlaintext(string databasePath)
             {
                 owner.GetPlaintextCalls++;
+
+                if (owner.UnreadableDatabases.Contains(databasePath))
+                {
+                    throw new WeChatKeyUnavailableException(
+                        $"No database key could be resolved for '{Path.GetFileName(databasePath)}'.");
+                }
 
                 // The fixture source is already readable plaintext, so the "materialized" image is
                 // the source file itself; only the WAL evidence is synthetic.

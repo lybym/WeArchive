@@ -20,7 +20,7 @@ The target product is a Windows command-line application for humans, scripts and
 
 - **C# 14** on **.NET 10 LTS** (`net10.0` for `WeArchive.Core`; `net10.0-windows` for Windows infrastructure, CLI and tests), `win-x64`, self-contained.
 - **`gh`-style command CLI** is the primary product surface. Do not build a full-screen TUI, conversational shell, embedded LLM or second GUI surface unless docs/ADR explicitly authorize it.
-- The historical WPF project may exist only during migration; it is not a second first-class product surface.
+- The historical WPF project (`src/WeArchive.App`) was removed by Issue #9; the CLI is the only product surface, and no second presentation surface may be added without a new product decision.
 - **xUnit v2 on VSTest** is the test runner.
 - Dependencies are centrally pinned; `WeArchive.Core` must remain free of presentation and source-specific implementation concerns.
 
@@ -121,7 +121,7 @@ If an agent discovers that a non-trivial PR has already been opened without a pr
 
 ## Current priority
 
-Current priority is **M0.5 — CLI product-surface migration**.
+**M0.5 — CLI product-surface migration** is complete. The CLI is the only product surface, and the historical WPF application has been removed.
 
 Required initial command family:
 

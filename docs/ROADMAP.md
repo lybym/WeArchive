@@ -41,7 +41,7 @@ Acceptance criteria — met:
 
 The historical WPF shell was an implementation vehicle and is not part of the enduring M0 product contract.
 
-## M0.5 — CLI product-surface migration (current priority)
+## M0.5 — CLI product-surface migration (delivered)
 
 **Goal:** replace the WPF-first product surface with a small `gh`-style command CLI while preserving the existing archive/source/export engine.
 
@@ -72,15 +72,15 @@ wearchive export --conversation <id-or-alias>
 - Conversation import remains `R2`: Fatal source-coverage failure rolls back the entire conversation transaction.
 - CLI migration must not introduce R3+ crash-recovery machinery unless a separate requirement explicitly authorizes it.
 
-### Acceptance criteria
+### Acceptance criteria — met
 
-- `WeArchive.Cli` or equivalent console entry point is the primary executable;
+- `WeArchive.Cli` is the primary executable (assembly `WeArchive`, producing `WeArchive.exe`);
 - all required commands call existing application services rather than duplicating business logic;
 - human and JSON output paths are tested;
 - stdout/stderr and exit semantics are tested;
 - `--no-input` is automation-safe;
 - sync/export retain existing archive/export semantics;
-- the WPF presentation layer is removed once required CLI parity is reached;
+- the WPF presentation layer is removed;
 - the repository does not maintain two first-class presentation layers;
 - self-contained `win-x64` portable release artifact is produced and smoke-tested from GitHub Actions/Release;
 - docs/README/AGENTS reflect the CLI product.
@@ -143,8 +143,20 @@ Delivered:
 Still missing (non-goals of the rebuild slice):
 
 - physical cross-generation storage-dedup optimization;
-- Raw Vault encryption-at-rest;
-- real-environment verification on a supported Windows/WeChat 4.x installation.
+- Raw Vault encryption-at-rest.
+
+Real-environment verification on a supported Windows/WeChat 4.x installation was performed under
+Issue #37 and passed. On the real account the baseline capture reached `complete` with expected 25 /
+captured 24 / unsupported 1 (`migrate/unspportmsg.db` recorded as `unsupported` with a
+`partition_unsupported` info diagnostic and excluded from the 24-fingerprint checkpoint), two
+incremental captures reused 18-24 unchanged partitions with no full fallback, and the isolated
+Raw-Vault-only rebuild succeeded with 1 account, 1382 conversations and 216662 messages while
+reporting the account directory with no published generation through `skipped_accounts`. All 9
+generations x 24 artifacts re-hashed with 0 missing and 0 changed, and the pre-existing canonical
+archive was restored byte-identical. The first `v0.3.0-rc.1` real-account run exposed Issue #37
+(recursive `*.db` discovery treated `migrate/unspportmsg.db` as required even though the canonical
+rebuild reader does not consume it); the source-partition support policy is now documented and
+implemented, so `v0.3.0` Stable is no longer blocked by it.
 
 Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and `wearchive rebuild`.
 Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints. Issue #25 adds incremental
@@ -302,9 +314,9 @@ These items are intentionally not committed:
 
 ## Packaging and release
 
-Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets.
+Historical WPF MVP releases used self-contained `win-x64` publishing plus portable ZIP and Velopack installer/update assets. That line is retired.
 
-For M0.5 the product requirement is simpler: a **self-contained `win-x64` CLI artifact** suitable for direct invocation by humans and agents. The implementation issue must decide the minimal release packaging needed for the CLI and update/supersede ADR 0004 where necessary. Do not preserve Velopack merely because the WPF line used it.
+M0.5 delivers a simpler product requirement: a **self-contained `win-x64` CLI artifact** suitable for direct invocation by humans and agents, shipped as a portable ZIP with no installer and no auto-updater ([ADR 0007](adr/0007-cli-self-contained-distribution.md) supersedes the Velopack distribution decision of [ADR 0004](adr/0004-distribution-velopack.md)).
 
 GitHub Actions/Release remains the source of test artifacts and release artifacts. Code signing remains separate work unless explicitly scheduled.
 
@@ -321,7 +333,7 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-1. **M1.5 Raw Vault capture** (Issues #22/#25): versioned immutable generations with safe incremental capture and explicit partition coverage.
+1. **M1.5 Raw Vault capture** (Issues #22/#25/#37): the v0.3.0 source-partition/completeness blocker is closed and the chain is verified in the real environment (versioned immutable generations, safe incremental capture and explicit partition coverage); the milestone itself remains incomplete.
 2. Finish the remaining M1 incremental synchronization (canonical second-sync path).
 3. Continue M2 semantic depth.
 4. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.

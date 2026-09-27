@@ -59,8 +59,11 @@ internal static class CapturedWeChatSourceAdapter
             .FirstOrDefault();
         var session = Find("session/session.db");
         var contacts = Find("contact/contact.db");
+        // Conversation message tables live in both the message_N and biz_message_N families
+        // (official-account conversations live in the latter), so the captured reader indexes
+        // every preserved shard the live locator recognises as a message shard (Issue #37).
         var messages = databases
-            .Where(d => Path.GetFileName(d.Relative).StartsWith("message_", StringComparison.OrdinalIgnoreCase))
+            .Where(d => WeChatDataLocator.IsMessageShardFileName(Path.GetFileName(d.Relative)))
             .OrderBy(d => d.Relative, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -75,7 +78,14 @@ internal static class CapturedWeChatSourceAdapter
             generation.GenerationDirectory,
             manifest.Capture.CaptureTime);
         var cache = SqlCipherDatabaseCache.ForCapturedPlaintext();
-        var reader = new WeChatAccountReader(account, cache, session, contacts, paths, partitions);
+        var reader = new WeChatAccountReader(
+            account,
+            cache,
+            session,
+            contacts,
+            paths,
+            partitions,
+            requiredMessageEvidenceComplete: IsRequiredMessageEvidenceComplete(manifest));
         var sourceAccount = new SourceAccount
         {
             SourceProfileId = manifest.SourceProfileId,
@@ -93,5 +103,36 @@ internal static class CapturedWeChatSourceAdapter
             IsAvailable = true,
         };
         return new WeChatWindowsSourceAdapter(sourceAccount, descriptor, reader, cache);
+    }
+
+    /// <summary>
+    /// Whether this generation's manifest proves that every Required message-bearing partition it
+    /// accounts for was captured or reused.
+    /// <para>
+    /// Only such a generation may report a conversation with no message table as legitimately
+    /// empty. A version-1 manifest, a generation whose coverage does not name any Required message
+    /// shard, or a Required message shard recorded as unavailable/unsupported leaves the reader's
+    /// existing Fatal source-coverage semantics in place, so a conversation is never published as
+    /// complete while required evidence could actually be missing (docs/RAW_VAULT.md section 7,
+    /// Issue #37). Which partitions are Required is a WeChat source-partition question, so the
+    /// judgement stays here rather than in the source-neutral reader.
+    /// </para>
+    /// </summary>
+    private static bool IsRequiredMessageEvidenceComplete(RawManifest manifest)
+    {
+        if (manifest.ManifestVersion < 2 || manifest.Coverage.Count == 0)
+        {
+            return false;
+        }
+
+        var requiredMessageShards = manifest.Coverage
+            .Where(entry =>
+                WeChatSourcePartitionPolicy.Classify(entry.PartitionId) == WeChatSourcePartitionClass.Required &&
+                WeChatDataLocator.IsMessageShardFileName(Path.GetFileName(entry.PartitionId)))
+            .ToArray();
+
+        return requiredMessageShards.Length > 0 &&
+            requiredMessageShards.All(entry =>
+                entry.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused);
     }
 }

@@ -241,6 +241,7 @@ public sealed class CollectionCliTests
                 SourceConversationId = CollectionHarness.GroupId("100200300"),
                 Text = "C unreadable",
                 MessageTablePresent = false,
+                MessageShardUnreadable = true,
             });
         var idA = harness.StableId(CollectionHarness.DirectId("a"));
         var idC = harness.StableId(CollectionHarness.GroupId("100200300"));

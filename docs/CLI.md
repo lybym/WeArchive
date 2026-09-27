@@ -14,13 +14,12 @@ contract.
 
 ## Entry point
 
-During the CLI migration the entry-point project is `src/WeArchive.Cli` (assembly
-`WeArchive.Cli`). The historical WPF project (`src/WeArchive.App`, assembly `WeArchive`) still
-exists, so the CLI is built as a distinct assembly to avoid a name collision while both surfaces
-coexist. Once the WPF presentation layer is retired, this project becomes the shipped
-`wearchive` / `WeArchive.exe` (see ADR 0006 transition rule). The composition root
-(`Program.cs`) reuses `AddWeArchiveCore` + `AddWeChatWindowsSource` — there is no second
-composition model.
+The entry-point project is `src/WeArchive.Cli` and its assembly is named `WeArchive`, so the
+shipped executable is `WeArchive.exe` — the product surface named `wearchive` throughout this
+document. Earlier M0.5 work used the assembly name `WeArchive.Cli` only to avoid a name
+collision with the historical WPF project's `WeArchive` assembly; Issue #9 removed that
+project and the collision along with it. The composition root (`Program.cs`) reuses
+`AddWeArchiveCore` + `AddWeChatWindowsSource` — there is no second composition model.
 
 ## Global options
 
@@ -358,13 +357,15 @@ publishes a new generation only after checking the current source partitions, an
 coverage explicitly.
 
 Account resolution (never prompts, safe under `--no-input`): `--account <id>` selects explicitly
-by the account's stable id (`a_...`) **or** its source profile id; otherwise the current account
-(`is_current`) is used, falling back to the first account.
+by the account's **source profile id**; otherwise the current account (`is_current`) is used, falling
+back to the first account. Selecting by the canonical stable account id (`a_...`) is not implemented
+for this command yet — a stable id is reported as `account_not_found`; the deferred code fix is
+tracked in [Issue #39](https://github.com/lybym/WeArchive/issues/39).
 
 Options:
 
 ```text
---account <id>   Optional. Stable account id (a_) or source profile id.
+--account <id>   Optional. Source profile id.
 ```
 
 Reliability — **R1** (Raw Vault publication): a normal success publishes exactly one complete
@@ -372,7 +373,7 @@ generation with a validated manifest and checksums. A Fatal source/coverage fail
 cancellation discards the staged material and publishes nothing — no incomplete generation is
 ever published as complete. No journal, commit marker or rollback ledger is persisted. See
 [DEVELOPMENT.md](DEVELOPMENT.md) Reliability Levels and
-[ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md).
+[ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
 
 Exits `1` with `failure` (capture did not complete), `source_unavailable`, `no_accounts` or
 `account_not_found` on the corresponding failure; `2` on a usage error; `130` on cancellation.
@@ -416,6 +417,14 @@ and `incremental` when unchanged partitions reused already-published evidence. `
 number of partitions this run accounted for; `captured + reused + unavailable + unsupported`
 equals `expected`. `previous_generation_id` links to the immediately preceding published
 generation for the same account, forming an append-only chain.
+
+`completeness = complete` means the adapter's required supported evidence was captured/reused and
+verified; it does **not** mean every physical `*.db` in the source tree was decryptable. A complete
+run may therefore report `coverage_summary.unsupported > 0` for partitions the adapter explicitly
+classifies as known-unsupported, each with a `partition_unsupported` info diagnostic. A discovered
+partition the adapter cannot classify is reported as `unsupported` coverage with a
+`partition_unclassified` partial diagnostic and forces `partial`, so it can never be silently
+presented as covered ([RAW_VAULT.md](RAW_VAULT.md) "Source-partition support policy").
 
 `coverage` reports each partition's `captured`/`reused`/`unavailable`/`unsupported` status, and
 `diagnostic` gives the engineering reason for a partition that was not captured, so a consumer
@@ -745,13 +754,34 @@ user-maintained participant display-name overrides, validates the completed SQLi
 selects it as the active archive. Any failure before replacement leaves the selected archive
 untouched. Raw Vault generations and exports are not modified.
 
+An account directory left behind by a failed or cancelled capture has no published generation and
+therefore no evidence to rebuild. It is reported per account in `skipped_accounts` and skipped,
+instead of aborting the rebuild for every other account. An account whose generation exists but
+cannot be read, validated or normalized is still a hard failure, and if no account has a published
+generation at all the command fails rather than publishing an empty archive.
+
 ```text
 wearchive rebuild [--json] [--no-input] [--quiet]
 ```
 
 JSON success emits one object with `succeeded`, `archive_path`, `account_count`,
-`participant_count`, `conversation_count` and `message_count`. Failures use the standard JSON
-error envelope; cancellation exits `130`.
+`participant_count`, `conversation_count`, `message_count` and `skipped_accounts` (an array of
+`{ "account_id", "reason" }`, empty when every Raw Vault account contributed). Failures use the
+standard JSON error envelope; cancellation exits `130`.
+
+```json
+{
+  "succeeded": true,
+  "archive_path": "C:\\Users\\<user>\\AppData\\Local\\WeArchive\\archive\\wearchive.db",
+  "account_count": 1,
+  "participant_count": 12,
+  "conversation_count": 40,
+  "message_count": 900,
+  "skipped_accounts": [
+    { "account_id": "a_<16-hex>", "reason": "The Raw Vault account has no published generation." }
+  ]
+}
+```
 
 The rebuild publication guarantee is limited to normal completion and caught in-process errors.
 Process crash, OS/filesystem crash and power loss during replacement are not guaranteed recovery

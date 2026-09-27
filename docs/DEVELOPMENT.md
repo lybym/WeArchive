@@ -81,7 +81,7 @@ C# 14 / .NET 10 LTS
   xUnit v2 on the VSTest platform for tests
 ```
 
-During the CLI migration the historical `WeArchive.App` WPF project may still be present, but it is transitional and must not be treated as a second first-class presentation layer.
+The historical `WeArchive.App` WPF project was removed by Issue #9. There is one first-class presentation layer: `src/WeArchive.Cli`, whose assembly is named `WeArchive` and which produces the shipped `WeArchive.exe`.
 
 The SDK is pinned by `global.json`. Language level, nullable, analyzer level, warnings-as-errors and deterministic builds are centralized in `Directory.Build.props`; package versions are centrally pinned.
 
@@ -301,7 +301,7 @@ one complete generation with a validated manifest and checksums; a Fatal source/
 or caught cancellation/I/O failure discards the staged material best-effort and publishes
 nothing — no incomplete generation is ever published as complete. Process crash and OS/power
 loss are not guaranteed recovery classes. No journal, commit marker or rollback ledger is
-persisted. See [ADR 0008](adr/0008-raw-vault-storage-and-snapshot.md) and
+persisted. See [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md) and
 [RAW_VAULT.md](RAW_VAULT.md).
 
 Incremental capture (Issue #25) retains R1. Its versioned checkpoint is embedded in the
@@ -309,6 +309,19 @@ publish-last manifest and therefore advances only with a successfully published 
 generation. A partial generation records coverage without advancing the checkpoint; caught
 failure and cancellation do not publish a new checkpoint. No separate recovery protocol is
 introduced.
+
+Issue #37 defines the source-partition policy used to decide that completeness verdict. Source
+filesystem discovery and the adapter's supported evidence set are not equivalent. For WeChat 4.x,
+Required and Supported auxiliary partitions are part of the supported capture contract; a Known
+unsupported partition is recorded explicitly as `unsupported` but does not by itself downgrade
+`Complete`; an Unknown/unclassified discovered partition must be diagnosed and cannot yield
+`Complete` until classified. A complete capture checkpoint therefore fingerprints only the
+captured/reused supported partitions. Known-unsupported evidence is accounted for in coverage but
+is not reusable checkpoint evidence. Independently of the adapter's verdict, `CaptureService`
+records a run as `partial` when its coverage carries an `unavailable` partition or its diagnostics
+carry a partial-severity finding, and the manifest read side rejects a `complete` generation that
+carries `unavailable` coverage, so a coverage failure can never be published as complete
+(docs/PRD.md FR-20). No reliability level changes: still R1.
 
 Per section 7's fixture strategy, the WeChat capture adapter reaches the live source through an
 injectable environment seam (discovery, client-running probe, materialization), so the shipped
@@ -337,6 +350,16 @@ conversation under the normal R2 transaction, and runs SQLite integrity validati
 replacement. If a caught failure occurs before replacement, the old archive remains selected.
 Replacement does not provide a process-crash, OS-crash or power-loss recovery guarantee; rebuild
 does not add persistent journals or commit markers.
+
+Which conditions count as a source-coverage failure is decided by the adapter's declared Required
+evidence, not by an individual record's absence. A conversation whose message table is absent from
+every successfully indexed shard is published as an explicitly empty conversation (with a
+`no_new_records` info diagnostic) only when the generation proves its Required message evidence is
+complete; a Required message partition that is missing, unavailable, unsupported or unreadable, or a
+generation that is not complete, still fails that conversation under the hard rule above. Rebuild
+also reports and skips an account directory that has no published generation instead of failing
+every other account. Neither rule changes the R2 anchor: the per-conversation transaction boundary,
+the rollback-on-Fatal behaviour and the absence of a recovery journal are unchanged.
 
 Checkpoint advancement must occur only after the corresponding import publication boundary required by the checkpoint design.
 

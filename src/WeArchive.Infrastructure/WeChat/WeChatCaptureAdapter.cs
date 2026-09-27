@@ -29,11 +29,29 @@ namespace WeArchive.Infrastructure.WeChat;
 /// This class stays inside the WeChat infrastructure boundary: no WeChat table names, column
 /// names or message type codes leak into Core, CLI, query or export layers.
 /// </para>
+/// <para>
+/// Source-partition support policy (Issue #37, docs/RAW_VAULT.md): filesystem discovery does not
+/// define product support. Every discovered partition is classified by
+/// <see cref="WeChatSourcePartitionPolicy"/> as Required, Supported auxiliary, Known unsupported or
+/// Unknown. Only Required/Supported-auxiliary partitions are materialized, fingerprinted and made
+/// addressable by the capture checkpoint; Known-unsupported evidence stays visible as
+/// <c>unsupported</c> coverage without downgrading <c>Complete</c>; Unknown evidence additionally
+/// forces <c>Partial</c> so an unclassified partition can never be silently reported as covered.
+/// </para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDisposable
 {
     public const string Family = "wechat-windows";
+
+    /// <summary>
+    /// The adapter version is deliberately unchanged by Issue #37. The manifest structure, the
+    /// checkpoint shape (one fingerprint per captured/reused partition) and the per-partition
+    /// fingerprint contract are all unchanged; only which discovered partitions count as expected
+    /// evidence changed. Every pre-existing <c>0.1.0</c> checkpoint already contains exactly its
+    /// captured/reused partitions, so it stays reusable, while the partial rc.1 generations (no
+    /// checkpoint at all) still fail closed into a full baseline.
+    /// </summary>
     public const string Version = "0.1.0";
 
     private const string SourceDatabaseRole = "source-database";
@@ -121,8 +139,12 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             };
         }
 
-        var databases = _environment.EnumerateDatabases(account);
-        if (databases.Count == 0)
+        // A `-wal`/`-shm` sibling is fingerprint input, not a partition, so it is never classified.
+        var databases = _environment
+            .EnumerateDatabases(account)
+            .Where(WeChatSourcePartitionPolicy.IsPartitionFile)
+            .ToArray();
+        if (databases.Length == 0)
         {
             return new SourceCaptureResult
             {
@@ -145,6 +167,20 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             .OrderBy(partition => partition.Id, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        // Classify every discovered partition exactly once, in a deterministic order. Discovery
+        // alone never makes a partition required evidence (docs/RAW_VAULT.md "Source-partition
+        // support policy", Issue #37): only positively classified Required/Supported-auxiliary
+        // partitions are materialized, fingerprinted and addressable by the capture checkpoint.
+        var partitionClasses = new Dictionary<string, WeChatSourcePartitionClass>(StringComparer.OrdinalIgnoreCase);
+        foreach (var partition in current)
+        {
+            partitionClasses[partition.Id] = WeChatSourcePartitionPolicy.Classify(partition.Id);
+        }
+
+        var evidence = current
+            .Where(partition => WeChatSourcePartitionPolicy.IsSupportedEvidence(partitionClasses[partition.Id]))
+            .ToArray();
+
         // A verified prior generation is still insufficient without a matching capture cursor
         // and unambiguous path-to-artifact mapping. In that case do a fresh full capture.
         var prior = BuildPriorMap(previous);
@@ -159,7 +195,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         var before = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            foreach (var partition in current)
+            foreach (var partition in evidence)
             {
                 before.Add(partition.Id, await FingerprintDatabaseAsync(partition.Path, cancellationToken)
                     .ConfigureAwait(false));
@@ -197,13 +233,15 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             }
         }
 
-        var needsCapture = previous is null || current.Any(p =>
+        // Only supported evidence decides whether anything must be materialized: an unsupported or
+        // unclassified partition is never read and never needs a key.
+        var needsCapture = previous is null || evidence.Any(p =>
             !prior!.TryGetValue(p.Id, out var old) ||
             !string.Equals(old.Fingerprint, before[p.Id], StringComparison.Ordinal));
 
         // Acquire a transient key only if there is new or changed evidence to materialize.
         WeChatKeySet? keySet = null;
-        if (needsCapture && !_environment.IsClientRunning())
+        if (needsCapture && evidence.Length > 0 && !_environment.IsClientRunning())
         {
             return new SourceCaptureResult
             {
@@ -218,9 +256,11 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
             };
         }
 
-        if (needsCapture)
+        if (needsCapture && evidence.Length > 0)
         {
-            var keyResult = _keyAcquirer.Acquire(databases);
+            // The acquirer uses this list only to verify candidate keys against real database
+            // pages, so narrowing it to the partitions the adapter will materialize is safe.
+            var keyResult = _keyAcquirer.Acquire([.. evidence.Select(partition => partition.Path)]);
             if (!keyResult.Succeeded || keyResult.KeySet is null)
             {
                 return new SourceCaptureResult
@@ -249,6 +289,63 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         {
             cancellationToken.ThrowIfCancellationRequested();
             var partition = current[i];
+            var partitionClass = partitionClasses[partition.Id];
+
+            // Known-unsupported evidence is accounted for, not silently skipped and not required:
+            // it is never materialized, never fingerprinted and never addressable by the
+            // checkpoint, and its presence alone does not downgrade the generation.
+            if (partitionClass is WeChatSourcePartitionClass.KnownUnsupported)
+            {
+                var unsupportedMessage =
+                    $"Source partition '{partition.Id}' is outside this adapter version's " +
+                    "supported evidence contract; it is recorded as unsupported and is not " +
+                    "required for a complete capture.";
+                diagnostics.Add(RawManifestDiagnostic.Info(
+                    DiagnosticCodes.PartitionUnsupported, unsupportedMessage));
+                coverage.Add(new RawPartitionCoverage
+                {
+                    PartitionId = partition.Id,
+                    Status = RawPartitionStatus.Unsupported,
+                    Diagnostic = unsupportedMessage,
+                });
+                progress?.Report(new CaptureProgress
+                {
+                    Stage = CaptureStages.Snapshotting,
+                    Processed = i + 1,
+                    Total = current.Length,
+                    Detail = partition.Id,
+                });
+                continue;
+            }
+
+            // Unclassified evidence is conservative: it stays visible as unsupported coverage and
+            // forces Partial, so the run can never be reported Complete and never publishes a
+            // checkpoint until the partition's product semantics are classified.
+            if (partitionClass is WeChatSourcePartitionClass.Unknown)
+            {
+                var unclassifiedMessage =
+                    $"Source partition '{partition.Id}' has no approved support classification for " +
+                    "this adapter version; it is recorded as unsupported and the generation cannot " +
+                    "be complete until that partition is classified.";
+                diagnostics.Add(RawManifestDiagnostic.Partial(
+                    DiagnosticCodes.PartitionUnclassified, unclassifiedMessage));
+                coverage.Add(new RawPartitionCoverage
+                {
+                    PartitionId = partition.Id,
+                    Status = RawPartitionStatus.Unsupported,
+                    Diagnostic = unclassifiedMessage,
+                });
+                completeness = RawGenerationCompleteness.Partial;
+                progress?.Report(new CaptureProgress
+                {
+                    Stage = CaptureStages.Snapshotting,
+                    Processed = i + 1,
+                    Total = current.Length,
+                    Detail = partition.Id,
+                });
+                continue;
+            }
+
             var databasePath = partition.Path;
             var fingerprint = before[partition.Id];
 
@@ -364,7 +461,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
 
         // Recheck all source evidence after reuse and decryption. Any change means neither the
         // copied old artifact nor the new snapshot can be claimed as the current source state.
-        foreach (var partition in current)
+        foreach (var partition in evidence)
         {
             var after = await FingerprintDatabaseAsync(partition.Path, cancellationToken)
                 .ConfigureAwait(false);
@@ -417,6 +514,13 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
     /// generation with the same adapter family/version, and every covered partition must map
     /// unambiguously to exactly one artifact of the same generation whose checksum matches.
     /// </para>
+    /// <para>
+    /// The returned map is exactly the predecessor's checkpoint evidence, i.e. its
+    /// <c>captured</c>/<c>reused</c> partitions. <c>unsupported</c> and <c>unavailable</c>
+    /// coverage entries are accounted for in coverage but are not checkpoint evidence
+    /// (docs/RAW_VAULT.md, Issue #37): reusing them would present evidence the adapter never
+    /// preserved as unchanged source state.
+    /// </para>
     /// </summary>
     internal static Dictionary<string, WeChatPriorPartition>? BuildPriorMap(RawGeneration? previous)
     {
@@ -453,8 +557,19 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
         var result = new Dictionary<string, WeChatPriorPartition>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in previous.Manifest.Coverage)
         {
-            if (item.Status is not (RawPartitionStatus.Captured or RawPartitionStatus.Reused) ||
-                item.SourceFingerprint is null || item.ArtifactSha256 is null ||
+            if (item.Status is not (RawPartitionStatus.Captured or RawPartitionStatus.Reused))
+            {
+                // Only captured/reused evidence is addressable by the checkpoint; a non-evidence
+                // entry that appears in it would make the predecessor's meaning ambiguous.
+                if (checkpoint.PartitionFingerprints.ContainsKey(item.PartitionId))
+                {
+                    return null;
+                }
+
+                continue;
+            }
+
+            if (item.SourceFingerprint is null || item.ArtifactSha256 is null ||
                 !checkpoint.PartitionFingerprints.TryGetValue(item.PartitionId, out var fingerprint) ||
                 !string.Equals(fingerprint, item.SourceFingerprint, StringComparison.Ordinal) ||
                 !artifacts.TryGetValue(item.PartitionId, out var artifact) ||
