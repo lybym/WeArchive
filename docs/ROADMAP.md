@@ -144,7 +144,11 @@ Still missing (non-goals of the rebuild slice):
 
 - physical cross-generation storage-dedup optimization;
 - Raw Vault encryption-at-rest;
-- real-environment verification on a supported Windows/WeChat 4.x installation.
+- real-environment verification on a supported Windows/WeChat 4.x installation. The first
+  `v0.3.0-rc.1` real-account run exposed Issue #37: the current recursive `*.db` discovery treats
+  `migrate/unspportmsg.db` as required even though the current canonical rebuild reader does not
+  consume it. v0.3.0 Stable is blocked until the source-partition support policy is documented,
+  implemented and the complete-capture -> incremental-reuse -> isolated-rebuild chain passes.
 
 Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and `wearchive rebuild`.
 Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints. Issue #25 adds incremental
@@ -321,7 +325,7 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-1. **M1.5 Raw Vault capture** (Issues #22/#25): versioned immutable generations with safe incremental capture and explicit partition coverage.
+1. **M1.5 Raw Vault capture** (Issues #22/#25/#37): close the v0.3.0 source-partition/completeness blocker, then verify versioned immutable generations with safe incremental capture and explicit partition coverage in the real environment.
 2. Finish the remaining M1 incremental synchronization (canonical second-sync path).
 3. Continue M2 semantic depth.
 4. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.
