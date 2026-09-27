@@ -310,6 +310,15 @@ generation. A partial generation records coverage without advancing the checkpoi
 failure and cancellation do not publish a new checkpoint. No separate recovery protocol is
 introduced.
 
+Issue #37 defines the source-partition policy used to decide that completeness verdict. Source
+filesystem discovery and the adapter's supported evidence set are not equivalent. For WeChat 4.x,
+Required and Supported auxiliary partitions are part of the supported capture contract; a Known
+unsupported partition is recorded explicitly as `unsupported` but does not by itself downgrade
+`Complete`; an Unknown/unclassified discovered partition must be diagnosed and cannot yield
+`Complete` until classified. A complete capture checkpoint therefore fingerprints only the
+captured/reused supported partitions. Known-unsupported evidence is accounted for in coverage but
+is not reusable checkpoint evidence.
+
 Per section 7's fixture strategy, the WeChat capture adapter reaches the live source through an
 injectable environment seam (discovery, client-running probe, materialization), so the shipped
 fingerprint/prior-map/reuse/recheck decision is covered by fixture tests without a live client or
