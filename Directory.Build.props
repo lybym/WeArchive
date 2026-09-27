@@ -15,7 +15,7 @@
     <Product>WeArchive</Product>
     <Company>WeArchive</Company>
     <Authors>WeArchive</Authors>
-    <VersionPrefix>0.2.0</VersionPrefix>
+    <VersionPrefix>0.3.0</VersionPrefix>
     <Copyright>WeArchive contributors</Copyright>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/lybym/WeArchive</RepositoryUrl>
