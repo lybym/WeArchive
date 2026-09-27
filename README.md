@@ -85,7 +85,7 @@ The difficult archive/source/export engine is already implemented:
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
 
-The historical `src/WeArchive.App` WPF application has been removed (Issue #9); the CLI is the only first-class product surface, and no second presentation layer may be added without a new product decision. Remaining CLI-migration work is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+The **M0.5 CLI product-surface migration** is complete: the CLI is the only product surface and the historical WPF application has been removed (Issue #9). No second presentation layer may be added without a new product decision; later milestones are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Reliability model
 
@@ -158,7 +158,6 @@ In scope:
 
 Not yet complete:
 
-- CLI product-surface migration itself;
 - incremental canonical (second-sync) synchronization;
 - canonical partition-coverage reporting;
 - full-text archive search (no FTS index exists);
@@ -166,7 +165,7 @@ Not yet complete:
   `sync --collection` are shipped);
 - a CLI archive-status command and MCP transport (capture/ingest/canonical freshness is available
   through `ArchiveQueryService`);
-- time-range selection.
+- scope-level time-range selection (message-level `--since`/`--until` bounds ship on `message list`).
 
 Out of current scope:
 
@@ -198,7 +197,7 @@ Read before coding:
 | [`docs/MESSAGE_SCHEMA.md`](docs/MESSAGE_SCHEMA.md) | Canonical message semantics |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Technical boundaries and CLI target architecture |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Archive model and schema evolution |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | M0.5 CLI migration and later milestones |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones and current priority |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Development/reliability/CLI governance |
 | [`docs/CLI.md`](docs/CLI.md) | CLI command/JSON/exit contract |
 | [`docs/adr/`](docs/adr/) | Accepted architecture decisions, including Collection configuration ownership |

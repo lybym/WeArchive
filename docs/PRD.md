@@ -29,14 +29,16 @@ The following are accepted target requirements but are not yet shipped in 0.2.x:
 
 - the incremental canonical (second-sync) path over the live adapter, and canonical
   partition-coverage rollup;
-- `ArchiveQueryService` retrieval API;
-- FTS/search/context CLI commands;
+- FTS/keyword search and a CLI archive-status command (`message list` and `context` ship as the
+  M3a structured-retrieval slice; the FTS index and full-text search remain open);
 - Collection-scoped query/search and export selection;
 - MCP transport.
 
 Delivered since the 0.2.x list was written: incremental Raw Vault capture with explicit partition
 coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), and the
-application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26).
+application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26), and the
+M3a minimum structured retrieval slice: `ArchiveQueryService` with the `message list` / `context`
+CLI contract (Issue #27).
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 

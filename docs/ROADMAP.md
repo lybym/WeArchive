@@ -41,7 +41,7 @@ Acceptance criteria — met:
 
 The historical WPF shell was an implementation vehicle and is not part of the enduring M0 product contract.
 
-## M0.5 — CLI product-surface migration (current priority)
+## M0.5 — CLI product-surface migration (delivered)
 
 **Goal:** replace the WPF-first product surface with a small `gh`-style command CLI while preserving the existing archive/source/export engine.
 
@@ -72,9 +72,9 @@ wearchive export --conversation <id-or-alias>
 - Conversation import remains `R2`: Fatal source-coverage failure rolls back the entire conversation transaction.
 - CLI migration must not introduce R3+ crash-recovery machinery unless a separate requirement explicitly authorizes it.
 
-### Acceptance criteria
+### Acceptance criteria — met
 
-- `WeArchive.Cli` or equivalent console entry point is the primary executable;
+- `WeArchive.Cli` is the primary executable (assembly `WeArchive`, producing `WeArchive.exe`);
 - all required commands call existing application services rather than duplicating business logic;
 - human and JSON output paths are tested;
 - stdout/stderr and exit semantics are tested;

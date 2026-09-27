@@ -121,7 +121,7 @@ If an agent discovers that a non-trivial PR has already been opened without a pr
 
 ## Current priority
 
-Current priority is **M0.5 — CLI product-surface migration**.
+**M0.5 — CLI product-surface migration** is complete. The CLI is the only product surface, and the historical WPF application has been removed.
 
 Required initial command family:
 
