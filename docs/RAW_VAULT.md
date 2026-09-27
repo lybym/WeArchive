@@ -27,6 +27,17 @@ checks SQLite integrity, and only then replaces the selected canonical file. A f
 normalization or validation leaves the selected archive untouched. Rebuild never writes into
 Raw Vault generations; exports remain separate derived outputs.
 
+Conversation-level coverage follows the same supported-evidence contract. WeChat creates a
+conversation's message table only once it has records, so a conversation listed by `session.db` may
+have no table in any message shard. When the generation used for the rebuild proves its Required
+message evidence is complete — every Required message-bearing partition is `captured`/`reused` and
+every message shard indexed successfully — such a conversation is **legitimately empty** and is
+published with the framework's `no_new_records` info diagnostic instead of being reported as a
+source-coverage failure. In every other case the Fatal semantics are unchanged: a Required message
+partition that is missing, unavailable, unsupported or unreadable, or a generation that is not
+`complete`, still fails that conversation rather than publishing an empty one. A conversation is
+therefore never reported as complete while required evidence could actually be missing.
+
 `wearchive ingest` incrementally imports verified Raw Vault generations into an existing
 canonical archive. It publishes one conversation at a time through the normal SQLite import
 transaction and commits that conversation's ingest checkpoint in the same transaction. An
@@ -334,11 +345,17 @@ Published generations are **immutable**: the store refuses to overwrite an exist
 directory. Later captures create new generations linked by `previous_generation_id`, forming an
 append-only chain. Later source deletion does not delete or rewrite earlier generations.
 
-Reading preserved evidence never modifies or deletes it either. Artifacts are opened read-only, and
-the plaintext materialization cache only ever deletes an image it created itself in its own scratch
-directory — never a preserved artifact or a source file. (SQLite may create `-wal`/`-shm` sidecars
-next to an image it opens in place; those are not manifest evidence and are never referenced by a
-manifest.)
+Reading preserved evidence never modifies or deletes it, and never leaves anything behind:
+
+- the plaintext materialization cache only ever deletes an image it created itself in its own
+  scratch directory — never a preserved artifact, and never an unencrypted source file;
+- a preserved image is opened with SQLite's `immutable=1` semantics. A preserved image is a
+  self-contained, checkpointed image whose committed state is entirely in the main file, so it can
+  be read without locking it and without SQLite creating `-wal`/`-shm` sidecars inside the
+  generation directory. A live source database is deliberately **not** opened this way, because its
+  current state can live only in its write-ahead log.
+
+Reading a generation therefore leaves its directory byte-for-byte as published.
 
 ## 7. Completeness and failure modes
 
@@ -396,6 +413,13 @@ No journal, commit marker or rollback ledger is persisted.
 - `OpenGenerationAsync(accountId, generationId)` — opens a generation for read-only inspection,
   verifying every artifact's SHA-256. A tampered or corrupted generation is rejected (returns
   null) rather than trusted.
+
+An account directory can exist without any published generation: a capture that failed or was
+cancelled leaves the account/generations scaffold behind. Such an account has no evidence, so
+`wearchive rebuild` reports it explicitly and skips it rather than aborting the rebuild for every
+other account. A generation that does exist but cannot be read, validated or normalized is still a
+hard failure; and if no account has a published generation at all, rebuild refuses to publish an
+empty archive rather than replacing a usable one.
 
 ## 10. Key non-persistence
 

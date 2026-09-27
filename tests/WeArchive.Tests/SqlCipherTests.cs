@@ -344,6 +344,119 @@ public sealed class SqlCipherTests
     }
 
     [Fact]
+    public void OpeningAPreservedImageReadOnlyCreatesNoSidecarsAndKeepsTheImage()
+    {
+        using var temp = new TempDirectory();
+        var generationArtifacts = temp.Combine("generation", "artifacts");
+        Directory.CreateDirectory(generationArtifacts);
+        var artifact = Path.Combine(generationArtifacts, "artifact.db");
+        CreateWriteAheadLogModeDatabase(artifact, rows: 5);
+        var before = File.ReadAllBytes(artifact);
+
+        using var cache = SqlCipherDatabaseCache.ForCapturedPlaintext();
+        using (var connection = cache.OpenReadOnly(artifact))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM messages;";
+            Assert.Equal(5L, command.ExecuteScalar());
+        }
+
+        // Issue #37: reading preserved evidence must not mutate the published generation it came
+        // from. A preserved image is immutable evidence, so SQLite must not create -wal/-shm
+        // sidecars next to it (which also used to delete the artifact via the fingerprint change).
+        Assert.False(File.Exists(artifact + "-wal"));
+        Assert.False(File.Exists(artifact + "-shm"));
+        Assert.Equal(before, File.ReadAllBytes(artifact));
+        Assert.Equal(
+            new[] { "artifact.db" },
+            Directory.EnumerateFileSystemEntries(generationArtifacts).Select(Path.GetFileName).ToArray());
+    }
+
+    [Fact]
+    public void TheSourceCacheStillReadsWriteAheadLogCommittedFrames()
+    {
+        // Immutable semantics are reserved for preserved images. The live/capture cache must keep
+        // reading committed WAL frames, because a live source database's current state can live
+        // only in its write-ahead log.
+        using var temp = new TempDirectory();
+        var pair = CreateWriteAheadLogOnlyDatabasePair(temp.Path);
+        Assert.True(new FileInfo(pair + "-wal").Length > 32);
+
+        var keys = new WeChatKeySet([]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+        using var connection = cache.OpenReadOnly(pair);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM messages;";
+
+        Assert.Equal(5L, command.ExecuteScalar());
+    }
+
+    /// <summary>Creates a plaintext database whose header is in WAL mode, then closes it cleanly.</summary>
+    private static void CreateWriteAheadLogModeDatabase(string path, int rows)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode=WAL;";
+        command.ExecuteNonQuery();
+        command.CommandText = "CREATE TABLE messages(id INTEGER PRIMARY KEY, body TEXT);";
+        command.ExecuteNonQuery();
+        for (var i = 1; i <= rows; i++)
+        {
+            command.CommandText = $"INSERT INTO messages VALUES ({i}, '{new string('x', 50)}');";
+            command.ExecuteNonQuery();
+        }
+
+        SqliteConnection.ClearAllPools();
+    }
+
+    /// <summary>
+    /// Copies a WAL-mode database while its connection is open, so the committed rows exist only in
+    /// the copied <c>-wal</c> file, exactly like a live WeChat database mid-session.
+    /// </summary>
+    private static string CreateWriteAheadLogOnlyDatabasePair(string directory)
+    {
+        var source = Path.Combine(directory, "source.db");
+        var pair = Path.Combine(directory, "pair.db");
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = source,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=WAL;";
+            command.ExecuteNonQuery();
+            command.CommandText = "CREATE TABLE messages(id INTEGER PRIMARY KEY, body TEXT);";
+            command.ExecuteNonQuery();
+            using var transaction = connection.BeginTransaction();
+            command.Transaction = transaction;
+            for (var i = 1; i <= 5; i++)
+            {
+                command.CommandText = $"INSERT INTO messages VALUES ({i}, 'body-{i}');";
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            command.Transaction = null;
+
+            // Copy while the connection still holds the WAL, so the frames are not checkpointed.
+            File.Copy(source, pair, overwrite: true);
+            File.Copy(source + "-wal", pair + "-wal", overwrite: true);
+        }
+
+        SqliteConnection.ClearAllPools();
+        return pair;
+    }
+
+    [Fact]
     public void ReaderFailsClosedWhenNoKeyMatches()
     {
         using var temp = new TempDirectory();

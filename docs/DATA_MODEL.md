@@ -697,6 +697,18 @@ continue to use section 16 derivation. Existing `user_display_name` overrides ar
 the rebuilt database when a matching canonical participant remains present. The Raw Vault
 format version is tracked in each manifest, not in `schema_migrations`.
 
+Rebuild covers exactly the accounts that have a published generation. An account directory left
+behind by a failed or cancelled capture (no published generation) is reported and skipped instead
+of aborting every other account, and a rebuild that could rebuild no account at all fails rather
+than publishing an empty canonical database. A generation that exists but cannot be read,
+validated or normalized remains a hard failure.
+
+Conversation coverage follows the same supported-evidence contract as capture. A conversation whose
+message table is absent from every successfully indexed message shard is published as legitimately
+empty (with a `no_new_records` info diagnostic) only when the generation proves its Required message
+evidence complete; otherwise the conversation stays a Fatal source-coverage failure and nothing of
+it is published. No canonical schema, message-schema or checkpointer change is involved.
+
 ## 22. Collection configuration (not canonical SQLite)
 
 `Collection` is the shared reusable scope for a named set of conversations (`docs/PRD.md` FR-23).

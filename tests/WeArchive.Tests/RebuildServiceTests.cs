@@ -5,6 +5,7 @@ using WeArchive.Cli.Commands;
 using WeArchive.Cli.CommandLine;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
+using WeArchive.Core.Services;
 using WeArchive.Infrastructure;
 using WeArchive.Infrastructure.RawVault;
 using WeArchive.Infrastructure.WeChat;
@@ -113,15 +114,234 @@ public sealed class RebuildServiceTests
             messageShardRelativePath: "message/biz_message_0.db");
         var archivePath = temp.Combine("archive", "wearchive.db");
 
-        var stats = await new RebuildService(vault, archivePath, new FixedClock())
+        var result = await new RebuildService(vault, archivePath, new FixedClock())
             .RebuildAsync(null, CancellationToken.None);
 
-        Assert.Equal(1, stats.ConversationCount);
-        Assert.Equal(1, stats.MessageCount);
+        Assert.Equal(1, result.Stats.ConversationCount);
+        Assert.Equal(1, result.Stats.MessageCount);
+        Assert.Empty(result.SkippedAccounts);
         var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(archivePath, new FixedClock());
         var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
         var message = Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None));
         Assert.Equal("official account text", message.Text);
+    }
+
+    [Fact]
+    public async Task ConversationWithoutAMessageTableIsProvablyEmptyWhenRequiredEvidenceIsComplete()
+    {
+        // WeChat creates a conversation's Msg_ table only once it has records, so a session row
+        // with no table is legitimately empty -- but only when the evidence set proves every
+        // Required message partition was captured (Issue #37 authorized scope).
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true);
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        var result = await new RebuildService(vault, archivePath, new FixedClock())
+            .RebuildAsync(null, CancellationToken.None);
+
+        Assert.Equal(1, result.Stats.AccountCount);
+        Assert.Equal(2, result.Stats.ConversationCount);
+        Assert.Equal(1, result.Stats.MessageCount);
+        Assert.Empty(result.SkippedAccounts);
+
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(archivePath, new FixedClock());
+        var messageCounts = new List<int>();
+        foreach (var conversation in await archive.ListConversationsAsync(accountId, CancellationToken.None))
+        {
+            messageCounts.Add((await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None)).Count);
+        }
+
+        // One conversation carries its record; the table-less one is archived as empty instead of
+        // aborting the whole rebuild.
+        Assert.Equal(new[] { 0, 1 }, messageCounts.OrderBy(count => count));
+    }
+
+    [Fact]
+    public async Task ProvablyEmptyConversationCompletesWithTheNoNewRecordsDiagnostic()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var generation = await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true);
+
+        using var adapter = CapturedWeChatSourceAdapter.Create(generation);
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(
+            temp.Combine("archive", "wearchive.db"), new FixedClock());
+        var outcome = await new ImportService(adapter, archive, new FixedClock())
+            .ImportConversationAsync(
+                new ImportRequest
+                {
+                    SourceProfileId = profile,
+                    SourceConversationId = "wxid_never_messaged",
+                    Kind = ConversationKind.Direct,
+                    PeerSourceUserId = "wxid_never_messaged",
+                },
+                null,
+                CancellationToken.None);
+
+        // Not a silent empty import: the run completes and says why it read nothing.
+        Assert.Equal(ImportRunStatus.Completed, outcome.Run.Status);
+        var diagnostic = Assert.Single(outcome.Diagnostics, d => d.Code == DiagnosticCodes.NoNewRecords);
+        Assert.Equal(DiagnosticSeverity.Info, diagnostic.Severity);
+        Assert.Equal(0, outcome.Run.RecordsScanned);
+    }
+
+    [Fact]
+    public async Task ConversationWithoutAMessageTableStaysFatalWhenRequiredEvidenceIsNotProven()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+
+        // Same shape, but the generation's coverage does not name the required message shard, so
+        // this evidence set cannot prove required message coverage is complete.
+        var generation = await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true,
+            omitMessageShardFromCoverage: true);
+
+        using (var adapter = CapturedWeChatSourceAdapter.Create(generation))
+        {
+            var error = await Assert.ThrowsAsync<SourceCoverageException>(async () =>
+            {
+                await foreach (var _ in adapter.ReadMessagesAsync(
+                    profile, "wxid_never_messaged", CancellationToken.None))
+                {
+                }
+            });
+            Assert.Equal(DiagnosticCodes.PartitionMissing, error.Code);
+        }
+
+        // The rebuild therefore still fails closed rather than publishing a partial conversation.
+        var archivePath = temp.Combine("archive", "wearchive.db");
+        var thrown = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new RebuildService(vault, archivePath, new FixedClock()).RebuildAsync(null, CancellationToken.None));
+        Assert.Contains("wxid_never_messaged", thrown.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(archivePath));
+    }
+
+    [Fact]
+    public async Task AccountDirectoryWithoutAPublishedGenerationIsReportedAndSkipped()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "captured text", "0.1.0", CapturedAt);
+
+        // A failed or cancelled capture leaves the account scaffold behind: an account directory
+        // whose generations directory is empty. It must not abort every other account's rebuild.
+        var emptyAccountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, "wxid_unpublished");
+        Directory.CreateDirectory(Path.Combine(vault.VaultRoot, "accounts", emptyAccountId, "generations"));
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        var result = await new RebuildService(vault, archivePath, new FixedClock())
+            .RebuildAsync(null, CancellationToken.None);
+
+        Assert.Equal(1, result.Stats.AccountCount);
+        Assert.Equal(1, result.Stats.ConversationCount);
+        Assert.Equal(1, result.Stats.MessageCount);
+        var skipped = Assert.Single(result.SkippedAccounts);
+        Assert.Equal(emptyAccountId, skipped.AccountId);
+        Assert.False(string.IsNullOrWhiteSpace(skipped.Reason));
+        Assert.True(File.Exists(archivePath));
+    }
+
+    [Fact]
+    public async Task RebuildFailsWhenNoAccountHasAPublishedGeneration()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var emptyAccountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, "wxid_unpublished");
+        Directory.CreateDirectory(Path.Combine(vault.VaultRoot, "accounts", emptyAccountId, "generations"));
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        var thrown = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new RebuildService(vault, archivePath, new FixedClock()).RebuildAsync(null, CancellationToken.None));
+
+        // Publishing an empty archive over a usable one would be worse than failing explicitly.
+        Assert.Contains(emptyAccountId, thrown.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(archivePath));
+    }
+
+    [Fact]
+    public async Task RebuildJsonReportsSkippedAccountDirectories()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(vault, temp.Path, profile, accountId, "captured text", "0.1.0", CapturedAt);
+        var emptyAccountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, "wxid_unpublished");
+        Directory.CreateDirectory(Path.Combine(vault.VaultRoot, "accounts", emptyAccountId, "generations"));
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var exit = await new RebuildCommand(new RebuildService(vault, archivePath, new FixedClock()))
+            .ExecuteAsync(new CliContext(stdout, stderr, new GlobalOptions { Json = true, NoInput = true }), [], CancellationToken.None);
+
+        Assert.Equal(ExitCode.Success, exit);
+        Assert.Empty(stderr.ToString());
+        using var json = System.Text.Json.JsonDocument.Parse(stdout.ToString());
+        Assert.True(json.RootElement.GetProperty("succeeded").GetBoolean());
+        Assert.Equal(1, json.RootElement.GetProperty("account_count").GetInt32());
+        var skipped = json.RootElement.GetProperty("skipped_accounts").EnumerateArray().ToArray();
+        var entry = Assert.Single(skipped);
+        Assert.Equal(emptyAccountId, entry.GetProperty("account_id").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(entry.GetProperty("reason").GetString()));
+    }
+
+    [Fact]
+    public async Task ReadingPreservedEvidenceLeavesTheGenerationDirectoryUntouched()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        // The message shard is a WAL-mode image, which is what a real captured artifact is. Opening
+        // it in place without immutable semantics made SQLite create -wal/-shm sidecars inside the
+        // published generation directory (and once deleted the artifact itself).
+        var generation = await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "captured text", "0.1.0", CapturedAt,
+            walMode: true, publishCoverage: true);
+        var before = DescribeGenerationDirectory(generation);
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        await new RebuildService(vault, archivePath, new FixedClock()).RebuildAsync(null, CancellationToken.None);
+
+        Assert.Equal(before, DescribeGenerationDirectory(generation));
+    }
+
+    /// <summary>The exact file set and per-file hashes of one published generation.</summary>
+    private static string DescribeGenerationDirectory(RawGeneration generation)
+    {
+        var entries = Directory.EnumerateFileSystemEntries(generation.GenerationDirectory, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(generation.GenerationDirectory, path))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .Select(path =>
+            {
+                var full = Path.Combine(generation.GenerationDirectory, path);
+                return Directory.Exists(full)
+                    ? path + "/"
+                    : path + "=" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(full))).ToLowerInvariant();
+            });
+        return string.Join("\n", entries);
     }
 
     [Fact]
@@ -775,7 +995,10 @@ public sealed class RebuildServiceTests
         bool additionalHasMessageTable = true,
         int messageCount = 1,
         string participantRemark = "Bob",
-        string messageShardRelativePath = "message/message_0.db")
+        string messageShardRelativePath = "message/message_0.db",
+        bool walMode = false,
+        bool publishCoverage = false,
+        bool omitMessageShardFromCoverage = false)
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
@@ -805,7 +1028,7 @@ public sealed class RebuildServiceTests
                 {messageRows}
                 {(additionalTable is null || !additionalHasMessageTable ? string.Empty : $"CREATE TABLE \"{additionalTable}\" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB); INSERT INTO \"{additionalTable}\" VALUES (1, 7002, {sourceType}, 1, 1736907600, '{additionalText ?? text}', 0, NULL);")}
                 """ : string.Empty);
-        BuildDb(Path.Combine(dbRoot, messageShardFileName), messageSql);
+        BuildDb(Path.Combine(dbRoot, messageShardFileName), (walMode ? "PRAGMA journal_mode=WAL;" : string.Empty) + messageSql);
 
         var context = new RawGenerationContext
         {
@@ -829,6 +1052,33 @@ public sealed class RebuildServiceTests
             artifacts.Add(await session.WriteArtifactAsync("source-database", name, stream, "sqlite", true,
                 new Dictionary<string, string> { ["source_relative_path"] = relative }, CancellationToken.None));
         }
+        var coverage = new List<RawPartitionCoverage>();
+        RawCaptureCheckpoint? checkpoint = null;
+        if (publishCoverage)
+        {
+            coverage =
+            [
+                .. artifacts
+                    .Where(a => !omitMessageShardFromCoverage ||
+                        a.Metadata!["source_relative_path"] != messageShardRelativePath)
+                    .Select(a => new RawPartitionCoverage
+                    {
+                        PartitionId = a.Metadata!["source_relative_path"],
+                        Status = RawPartitionStatus.Captured,
+                        SourceFingerprint = a.Sha256,
+                        ArtifactSha256 = a.Sha256,
+                    }),
+            ];
+            checkpoint = new RawCaptureCheckpoint
+            {
+                GenerationId = session.GenerationId,
+                CaptureAdapterFamily = WeChatCaptureAdapter.Family,
+                CaptureAdapterVersion = readerVersion,
+                PartitionFingerprints = coverage.ToDictionary(
+                    c => c.PartitionId, c => c.SourceFingerprint!, StringComparer.Ordinal),
+            };
+        }
+
         var manifest = new RawManifest
         {
             GenerationId = session.GenerationId,
@@ -837,6 +1087,8 @@ public sealed class RebuildServiceTests
             Source = new RawManifestSource { AdapterName = WeChatWindowsSourceAdapter.Name, AdapterVersion = readerVersion, SourceProductName = "WeChat for Windows", SourceVersion = "4.1.13.12" },
             Capture = new RawManifestCapture { CaptureTime = capturedAt, CaptureAdapterFamily = WeChatCaptureAdapter.Family, CaptureAdapterVersion = readerVersion, Mode = RawCaptureMode.Baseline, Completeness = completeness, ArtifactCount = artifacts.Count },
             Artifacts = artifacts,
+            Coverage = coverage,
+            CaptureCheckpoint = checkpoint,
             PreviousGenerationId = previous?.GenerationId,
         };
         var result = await session.PublishAsync(manifest, CancellationToken.None);

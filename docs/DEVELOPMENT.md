@@ -351,6 +351,16 @@ replacement. If a caught failure occurs before replacement, the old archive rema
 Replacement does not provide a process-crash, OS-crash or power-loss recovery guarantee; rebuild
 does not add persistent journals or commit markers.
 
+Which conditions count as a source-coverage failure is decided by the adapter's declared Required
+evidence, not by an individual record's absence. A conversation whose message table is absent from
+every successfully indexed shard is published as an explicitly empty conversation (with a
+`no_new_records` info diagnostic) only when the generation proves its Required message evidence is
+complete; a Required message partition that is missing, unavailable, unsupported or unreadable, or a
+generation that is not complete, still fails that conversation under the hard rule above. Rebuild
+also reports and skips an account directory that has no published generation instead of failing
+every other account. Neither rule changes the R2 anchor: the per-conversation transaction boundary,
+the rollback-on-Fatal behaviour and the absence of a recovery journal are unchanged.
+
 Checkpoint advancement must occur only after the corresponding import publication boundary required by the checkpoint design.
 
 Raw Vault ingestion uses the same R2 per-conversation SQLite transaction for canonical records and

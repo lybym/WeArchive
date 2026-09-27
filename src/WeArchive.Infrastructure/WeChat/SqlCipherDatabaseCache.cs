@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Runtime.Versioning;
+using Microsoft.Data.Sqlite;
 using WeArchive.Infrastructure.WeChat.Crypto;
 using WeArchive.Infrastructure.WeChat.KeyAcquisition;
 
@@ -35,11 +36,19 @@ internal sealed record DecryptionOutcome(
 /// file — is used in place and is never deleted by this cache, even when it is materialized again
 /// after its fingerprint changed.
 /// </para>
+/// <para>
+/// The captured-plaintext cache additionally treats every image it sees as immutable evidence and
+/// opens it with SQLite's <c>immutable=1</c> semantics, so reading a preserved image neither locks
+/// it nor creates <c>-wal</c>/<c>-shm</c> sidecars inside a published generation directory. A
+/// preserved image is a self-contained checkpointed image whose committed state is entirely in the
+/// main file, so ignoring any sidecar next to it cannot lose evidence (Issue #37).
+/// </para>
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class SqlCipherDatabaseCache : IDisposable
 {
     private readonly WeChatKeySet? _keys;
+    private readonly bool _preservedImagesAreImmutable;
     private readonly Dictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly string? _scratchRoot;
     private bool _disposed;
@@ -55,12 +64,54 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         Directory.CreateDirectory(_scratchRoot);
     }
 
-    private SqlCipherDatabaseCache()
+    private SqlCipherDatabaseCache(bool preservedImagesAreImmutable)
     {
+        _preservedImagesAreImmutable = preservedImagesAreImmutable;
     }
 
     /// <summary>Opens preserved plaintext database images without any source key path.</summary>
-    public static SqlCipherDatabaseCache ForCapturedPlaintext() => new();
+    public static SqlCipherDatabaseCache ForCapturedPlaintext() => new(preservedImagesAreImmutable: true);
+
+    /// <summary>
+    /// Opens one database read-only for querying, materializing it first when it is still encrypted.
+    /// A preserved image is opened with immutable semantics so the read path cannot mutate the
+    /// published generation it came from (see the type remarks).
+    /// </summary>
+    public SqliteConnection OpenReadOnly(string encryptedPath)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var plaintext = GetPlaintext(encryptedPath);
+        var dataSource = plaintext.WasPlaintext && _preservedImagesAreImmutable
+            ? ImmutableDataSource(plaintext.PlaintextPath)
+            : plaintext.PlaintextPath;
+
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        return connection;
+    }
+
+    /// <summary>A SQLite URI that makes the immutable-by-contract image readable without sidecars.</summary>
+    private static string ImmutableDataSource(string path)
+    {
+        string uri;
+        try
+        {
+            uri = new Uri(Path.GetFullPath(path)).AbsoluteUri;
+        }
+        catch (UriFormatException)
+        {
+            // A path the URI parser rejects is still usable in the plain form SQLite accepts.
+            uri = "file:" + Path.GetFullPath(path).Replace('\\', '/');
+        }
+
+        return uri + "?immutable=1";
+    }
 
     public DecryptionOutcome GetPlaintext(string encryptedPath)
     {

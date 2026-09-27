@@ -43,7 +43,8 @@ internal sealed class WeChatAccountReader(
     string? capturedSessionPath = null,
     string? capturedContactPath = null,
     IReadOnlyList<string>? capturedMessagePaths = null,
-    IReadOnlyDictionary<string, string>? capturedPartitions = null)
+    IReadOnlyDictionary<string, string>? capturedPartitions = null,
+    bool requiredMessageEvidenceComplete = false)
 {
     private readonly WeChatAccountLocation _account = account;
     private readonly SqlCipherDatabaseCache _cache = cache;
@@ -51,6 +52,11 @@ internal sealed class WeChatAccountReader(
     private readonly string? _capturedContactPath = capturedContactPath;
     private readonly IReadOnlyList<string>? _capturedMessagePaths = capturedMessagePaths;
     private readonly IReadOnlyDictionary<string, string>? _capturedPartitions = capturedPartitions;
+    // True only when the evidence set behind this reader proves that every Required message-bearing
+    // partition was captured/reused and indexed (a verified complete Raw Vault generation). Only
+    // then may a conversation with no message table be reported as legitimately empty; the caller
+    // owns that WeChat-specific judgement, this reader only consumes the fact (Issue #37).
+    private readonly bool _requiredMessageEvidenceComplete = requiredMessageEvidenceComplete;
     private Dictionary<string, WeChatContactRow>? _contacts;
     private List<WeChatSessionRow>? _sessions;
     private Dictionary<string, string>? _messageShardByTable;
@@ -271,21 +277,34 @@ internal sealed class WeChatAccountReader(
         var shard = FindMessageShard(sourceConversationId);
         if (shard is null)
         {
-            // No readable shard holds this conversation's table. If any shard failed to
-            // index, the table may live in one of those, so coverage is genuinely partial;
-            // otherwise the source simply has no table for this conversation. Either way
-            // this must not become a silent empty import that exports an apparently valid
-            // empty dataset (FR-14).
-            throw _unreadableShards.Count > 0
-                ? new SourceCoverageException(
+            // No readable shard holds this conversation's table. If any shard failed to index, the
+            // table may live in one of those, so coverage is genuinely partial and this stays
+            // Fatal: a conversation must never be published as complete while required evidence
+            // could actually be missing (FR-14/FR-20).
+            if (_unreadableShards.Count > 0)
+            {
+                throw new SourceCoverageException(
                     DiagnosticCodes.PartitionUnreadable,
                     $"The message shard for conversation '{sourceConversationId}' could not be read. " +
                     $"{_unreadableShards.Count} shard(s) failed during indexing, so source coverage is " +
-                    "incomplete and no records were archived for this conversation.")
-                : new SourceCoverageException(
-                    DiagnosticCodes.PartitionMissing,
-                    $"No message shard was found for conversation '{sourceConversationId}'. " +
-                    "The source provided no readable records for this conversation.");
+                    "incomplete and no records were archived for this conversation.");
+            }
+
+            // Every message shard indexed successfully. When the evidence set behind this reader
+            // proves its Required message partitions are all present, the absence of a table is
+            // source truth rather than unknown coverage: WeChat only creates a conversation's table
+            // once it has records, so the conversation is legitimately empty. The import then
+            // completes with the framework's `no_new_records` info diagnostic instead of a silent
+            // empty dataset (Issue #37).
+            if (_requiredMessageEvidenceComplete)
+            {
+                yield break;
+            }
+
+            throw new SourceCoverageException(
+                DiagnosticCodes.PartitionMissing,
+                $"No message shard was found for conversation '{sourceConversationId}'. " +
+                "The source provided no readable records for this conversation.");
         }
 
         var partition = _capturedPartitions is not null
@@ -345,18 +364,7 @@ internal sealed class WeChatAccountReader(
         return instant.ToOffset(TimeZoneInfo.Local.GetUtcOffset(instant.UtcDateTime));
     }
 
-    private SqliteConnection Open(string encryptedPath)
-    {
-        var plaintext = _cache.GetPlaintext(encryptedPath);
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = plaintext.PlaintextPath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false,
-        }.ToString());
-        connection.Open();
-        return connection;
-    }
+    private SqliteConnection Open(string encryptedPath) => _cache.OpenReadOnly(encryptedPath);
 
     public static string Describe(WeChatContactRow contact) => string.Create(
         CultureInfo.InvariantCulture,

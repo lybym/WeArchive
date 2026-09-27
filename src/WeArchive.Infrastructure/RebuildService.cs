@@ -15,7 +15,7 @@ public sealed class RebuildService(IRawVaultStore rawVault, string archivePath, 
     private readonly string _archivePath = Path.GetFullPath(archivePath);
     private readonly IClock _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
-    public async Task<ArchiveStats> RebuildAsync(IProgress<string>? progress, CancellationToken cancellationToken)
+    public async Task<RebuildResult> RebuildAsync(IProgress<string>? progress, CancellationToken cancellationToken)
     {
         if (_rawVault is not RawVaultStore store)
             throw new NotSupportedException("The configured Raw Vault store cannot enumerate captured accounts.");
@@ -28,14 +28,28 @@ public sealed class RebuildService(IRawVaultStore rawVault, string archivePath, 
         Directory.CreateDirectory(directory);
         var stagingPath = _archivePath + ".rebuild-" + Guid.NewGuid().ToString("N") + ".db";
         var fresh = new SqliteArchiveStore(stagingPath, _clock);
+        var skipped = new List<RebuildSkippedAccount>();
         try
         {
             await fresh.InitializeAsync(cancellationToken).ConfigureAwait(false);
             foreach (var accountId in accountIds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var latest = await _rawVault.GetLatestGenerationAsync(accountId, cancellationToken).ConfigureAwait(false)
-                    ?? throw new InvalidDataException($"Raw Vault account '{accountId}' has no published generation.");
+                var latest = await _rawVault.GetLatestGenerationAsync(accountId, cancellationToken).ConfigureAwait(false);
+                if (latest is null)
+                {
+                    // An account directory can exist without any published generation: a capture that
+                    // failed or was cancelled leaves the account/generations scaffold behind. Such an
+                    // account has no evidence to rebuild, so it is reported and skipped instead of
+                    // aborting the rebuild for every other account (Issue #37). A generation that
+                    // exists but cannot be read still fails hard below.
+                    skipped.Add(new RebuildSkippedAccount(
+                        accountId,
+                        "The Raw Vault account has no published generation."));
+                    progress?.Report($"Skipping {accountId}: no published generation");
+                    continue;
+                }
+
                 var generation = await _rawVault.OpenGenerationAsync(accountId, latest.GenerationId, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidDataException($"Raw Vault generation '{latest.GenerationId}' failed manifest or checksum validation.");
                 using var adapter = CapturedWeChatSourceAdapter.Create(generation);
@@ -86,11 +100,24 @@ public sealed class RebuildService(IRawVaultStore rawVault, string archivePath, 
                 progress?.Report($"Rebuilt {accountId}");
             }
 
+            if (skipped.Count == accountIds.Count)
+            {
+                // Nothing was rebuildable, so publishing an empty archive would replace a usable
+                // canonical archive with an evidently incomplete one. Report explicitly instead.
+                throw new InvalidDataException(
+                    "No Raw Vault account has a published generation to rebuild: " +
+                    string.Join(", ", skipped.Select(s => s.AccountId)) + ".");
+            }
+
             await PreserveUserDisplayNamesAsync(fresh, cancellationToken).ConfigureAwait(false);
             var stats = await fresh.GetArchiveStatsAsync(cancellationToken).ConfigureAwait(false);
             await ValidateIntegrityAsync(stagingPath, cancellationToken).ConfigureAwait(false);
             await ReplaceArchiveAsync(stagingPath, cancellationToken).ConfigureAwait(false);
-            return stats with { ArchivePath = _archivePath };
+            return new RebuildResult
+            {
+                Stats = stats with { ArchivePath = _archivePath },
+                SkippedAccounts = skipped,
+            };
         }
         finally
         {
@@ -201,4 +228,20 @@ public sealed class RebuildService(IRawVaultStore rawVault, string archivePath, 
         try { if (File.Exists(path)) File.Delete(path); }
         catch (IOException) { }
     }
+}
+
+/// <summary>
+/// One Raw Vault account directory that could not contribute to a rebuild because it has no
+/// published generation. It is reported rather than fatal, so one leftover directory from a failed
+/// capture cannot block rebuilding every other account (docs/CLI.md, Issue #37).
+/// </summary>
+public sealed record RebuildSkippedAccount(string AccountId, string Reason);
+
+/// <summary>Outcome of a Raw-Vault-only canonical rebuild.</summary>
+public sealed record RebuildResult
+{
+    public required ArchiveStats Stats { get; init; }
+
+    /// <summary>Account directories that were reported and skipped because they have no evidence.</summary>
+    public IReadOnlyList<RebuildSkippedAccount> SkippedAccounts { get; init; } = [];
 }
