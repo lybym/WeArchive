@@ -317,7 +317,11 @@ unsupported partition is recorded explicitly as `unsupported` but does not by it
 `Complete`; an Unknown/unclassified discovered partition must be diagnosed and cannot yield
 `Complete` until classified. A complete capture checkpoint therefore fingerprints only the
 captured/reused supported partitions. Known-unsupported evidence is accounted for in coverage but
-is not reusable checkpoint evidence.
+is not reusable checkpoint evidence. Independently of the adapter's verdict, `CaptureService`
+records a run as `partial` when its coverage carries an `unavailable` partition or its diagnostics
+carry a partial-severity finding, and the manifest read side rejects a `complete` generation that
+carries `unavailable` coverage, so a coverage failure can never be published as complete
+(docs/PRD.md FR-20). No reliability level changes: still R1.
 
 Per section 7's fixture strategy, the WeChat capture adapter reaches the live source through an
 injectable environment seam (discovery, client-running probe, materialization), so the shipped

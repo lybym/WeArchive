@@ -657,14 +657,19 @@ capture_checkpoint   — version, generation_id, capture_adapter_family,
                        capture_adapter_version, partition_fingerprints{partition_id -> fingerprint}
 ```
 
-The checkpoint is the Raw Vault-side capture cursor. It is written only for a `complete`
-generation whose every coverage entry is `captured` or `reused` with a fingerprint and a
-checksum that resolves to an artifact of the same generation; a `partial` generation records
-coverage but no checkpoint, and a discarded generation publishes nothing at all. It is a record
-distinct from SQLite `ingest_checkpoints`: capture freshness and canonical ingest freshness can
-legitimately differ, and neither is ever inferred from the other. A version-1 manifest has no
-checkpoint, so the next live capture widens to a full snapshot. No canonical SQLite migration is
-involved.
+The checkpoint is the Raw Vault-side capture cursor. It covers exactly the coverage entries this
+generation recorded as `captured` or `reused`, i.e. the adapter's Required and Supported auxiliary
+evidence, and each of those carries a fingerprint and a checksum that resolves to an artifact of the
+same generation. `unsupported` coverage entries (partitions the adapter explicitly classifies as
+outside its supported evidence contract) stay in `coverage` but are never part of the checkpoint and
+are never reusable. A `partial` generation records coverage but no checkpoint, and a discarded
+generation publishes nothing at all. Independently of the adapter's own verdict, a run carrying an
+`unavailable` coverage entry or a partial-severity diagnostic is recorded as `partial` and publishes
+no checkpoint, and a manifest that claims `complete` while carrying `unavailable` coverage is
+rejected on read. It is a record distinct from SQLite `ingest_checkpoints`: capture freshness and
+canonical ingest freshness can legitimately differ, and neither is ever inferred from the other. A
+version-1 manifest has no checkpoint, so the next live capture widens to a full snapshot. No
+canonical SQLite migration is involved.
 
 `unavailable` is a report, never a deletion instruction: a partition that disappears from the
 live source cannot remove an earlier generation or any artifact it requires.
@@ -676,7 +681,12 @@ independently of the capture process — i.e. a new `RawVaultStore` instance poi
 root can discover and validate a published generation without the capture adapter being alive.
 They must also verify that a version-2 generation round-trips its coverage and checkpoint, and
 that a coverage/checkpoint pair which disagrees (fingerprint, partition set, adapter identity or
-a checksum that names no artifact of the generation) is rejected rather than trusted.
+a checksum that names no artifact of the generation) is rejected rather than trusted. Because the
+checkpoint addresses exactly the `captured`/`reused` entries (section 21.5), the tests must also
+reject a checkpoint that omits `captured`/`reused` evidence or that addresses an `unsupported` or
+`unavailable` entry, reject a `complete` manifest carrying `unavailable` coverage, and still accept
+a pre-existing version-2 manifest whose checkpoint covered all of its (necessarily captured/reused)
+coverage entries.
 
 ### 21.7 Rebuild and canonical migration
 

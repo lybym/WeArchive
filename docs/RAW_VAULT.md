@@ -182,7 +182,7 @@ source-partition id (never a chat content value):
 | `captured` | The partition was read now and materialized into an artifact of this generation |
 | `reused` | The partition fingerprint matched the previous complete generation, so its verified artifact was carried into this generation |
 | `unavailable` | The partition was expected (or previously captured) but could not be read, or is absent from the live source |
-| `unsupported` | The partition exists but this adapter version cannot represent it |
+| `unsupported` | The partition exists but is outside this adapter version's supported evidence contract (Known unsupported), or has no approved classification yet (Unknown/unclassified) |
 
 #### Source-partition support policy
 
@@ -211,10 +211,32 @@ supported contract that is required for a complete snapshot; it does **not** mea
 `*.db` below the source data directory was decryptable. The capture-required evidence set and the
 evidence required by the current Raw-Vault-only rebuild reader must remain consistent.
 
+Classification is an explicit allowlist inside the WeChat infrastructure boundary
+(`WeChatSourcePartitionPolicy`), never "everything that is not required is auxiliary". For the
+current WeChat 4.x release line the concrete classification is:
+
+| Class | WeChat 4.x partitions |
+|---|---|
+| Required | `session/session.db`, `contact/contact.db`, `message/message_<n>.db` |
+| Supported auxiliary | `bizchat/bizchat.db`, `chatbot/chatbot_message.db`, `contact/contact_fts.db`, `emoticon/emoticon.db`, `favorite/favorite.db`, `favorite/favorite_fts.db`, `general/general.db`, `hardlink/hardlink.db`, `head_image/head_image.db`, `message/biz_message_<n>.db`, `message/media_<n>.db`, `message/message_fts.db`, `message/message_resource.db`, `message/weclaw.db`, `sns/sns.db`, `solitaire/solitaire.db`, `third_app_icon/third_app_icon.db` |
+| Known unsupported | `migrate/unspportmsg.db` |
+| Unknown | every other discovered partition, including any other `migrate/` database |
+
+Matching ignores case and accepts `\` and `/` as the same separator. A database's `-wal`/`-shm`
+siblings are fingerprint inputs, not partitions, and are never classified or recorded in coverage.
+
 For the current WeChat 4.x release line, `migrate/unspportmsg.db` is **Known unsupported**. The current
 canonical reader/rebuild contract does not consume it, so capture must account for its presence as
 unsupported rather than require a database key/materialized artifact. Reclassifying it or adding
 canonical semantics for it requires a later approved product change.
+
+A Known-unsupported partition is accounted for by a `coverage` entry with `status = unsupported` and
+an informational `partition_unsupported` diagnostic, and is never materialized, never fingerprinted
+and never part of the capture checkpoint. An Unknown/unclassified partition is also recorded as
+`unsupported` coverage, but with a partial-severity `partition_unclassified` diagnostic naming that
+partition, and it forces the generation to `partial` — so it can never be reported `complete` and
+never publishes a checkpoint until its support semantics are classified. Unknown evidence is never
+silently aggregated away or treated as Known unsupported.
 
 `expected` in the CLI rollup is the number of coverage entries, i.e. every partition this run
 accounted for — not a claim that every theoretical source partition was observed.
@@ -315,6 +337,21 @@ append-only chain. Later source deletion does not delete or rewrite earlier gene
 Fatal examples: required partition unavailable, inconsistent snapshot/WAL state, checksum
 mismatch, source identity unavailable, key unavailable before capture, artifact publication
 failure, a partition that changes while it is being fingerprinted or read.
+
+Issue #37 adds exactly three diagnostics to that model:
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `partition_unsupported` | `info` | A discovered partition is a known, explicitly classified partition outside the adapter's supported evidence contract. It is recorded as `unsupported` coverage and does not by itself downgrade `complete`. |
+| `partition_unclassified` | `partial` | A discovered partition has no approved support classification for this adapter version. It is recorded as `unsupported` coverage, is named in the message, and forces `partial` so the generation cannot be reported `complete` and publishes no checkpoint. |
+| `capture_completeness_downgraded` | `partial` | Defensive Core guard: a capture adapter reported complete coverage while the run carried an `unavailable` coverage entry or a partial-severity diagnostic, so the generation was recorded as `partial` instead. |
+
+The `complete` verdict and the checkpoint are also enforced on the read side: a manifest that claims
+`complete` while carrying `unavailable` coverage, or a checkpoint that omits a captured/reused entry,
+addresses an `unsupported`/`unavailable` entry, or disagrees on a fingerprint or artifact, is rejected
+rather than trusted ([DATA_MODEL.md](DATA_MODEL.md) section 21.6). `manifest_version` stays `2`: the
+persisted structure is unchanged and only which coverage entries the checkpoint addresses is
+clarified, so version-2 manifests written before this change remain readable.
 
 Incremental capture adds exactly one diagnostic: `capture_full_fallback` (severity `info`). It
 means incremental safety could not be proven and the run read the whole source instead. It is

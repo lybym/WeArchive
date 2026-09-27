@@ -416,6 +416,14 @@ number of partitions this run accounted for; `captured + reused + unavailable + 
 equals `expected`. `previous_generation_id` links to the immediately preceding published
 generation for the same account, forming an append-only chain.
 
+`completeness = complete` means the adapter's required supported evidence was captured/reused and
+verified; it does **not** mean every physical `*.db` in the source tree was decryptable. A complete
+run may therefore report `coverage_summary.unsupported > 0` for partitions the adapter explicitly
+classifies as known-unsupported, each with a `partition_unsupported` info diagnostic. A discovered
+partition the adapter cannot classify is reported as `unsupported` coverage with a
+`partition_unclassified` partial diagnostic and forces `partial`, so it can never be silently
+presented as covered ([RAW_VAULT.md](RAW_VAULT.md) "Source-partition support policy").
+
 `coverage` reports each partition's `captured`/`reused`/`unavailable`/`unsupported` status, and
 `diagnostic` gives the engineering reason for a partition that was not captured, so a consumer
 can attribute a coverage gap without parsing `diagnostics[].message`. Both deliberately omit the
