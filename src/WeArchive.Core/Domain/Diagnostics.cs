@@ -42,6 +42,27 @@ public static class DiagnosticCodes
     /// all widening reasons so consumers can detect the fallback itself (Issue #25).
     /// </summary>
     public const string CaptureFullFallback = "capture_full_fallback";
+    /// <summary>
+    /// A discovered source partition is a known, explicitly classified partition outside the
+    /// adapter's supported evidence contract. It stays visible as <c>unsupported</c> coverage and
+    /// is excluded from the capture checkpoint, but does not by itself downgrade an otherwise
+    /// complete generation (docs/RAW_VAULT.md "Source-partition support policy", Issue #37).
+    /// </summary>
+    public const string PartitionUnsupported = "partition_unsupported";
+    /// <summary>
+    /// A discovered source partition has no approved support classification for this adapter
+    /// version. It is recorded as <c>unsupported</c> coverage and forces <c>partial</c>, so the
+    /// generation can never be reported <c>complete</c> and never publishes a capture checkpoint
+    /// until the partition is classified (Issue #37).
+    /// </summary>
+    public const string PartitionUnclassified = "partition_unclassified";
+    /// <summary>
+    /// Defensive Core guard: a capture adapter reported complete coverage while the run carried an
+    /// <c>unavailable</c> coverage entry or a partial-severity diagnostic, so
+    /// <c>CaptureService</c> recorded the generation as <c>partial</c> instead of silently
+    /// publishing a complete verdict (docs/PRD.md FR-20, Issue #37).
+    /// </summary>
+    public const string CaptureCompletenessDowngraded = "capture_completeness_downgraded";
     public const string ContentDecompressionFailed = "content_decompression_failed";
     public const string UnsupportedClientVersion = "unsupported_client_version";
 }
