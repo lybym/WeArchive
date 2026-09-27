@@ -357,13 +357,15 @@ publishes a new generation only after checking the current source partitions, an
 coverage explicitly.
 
 Account resolution (never prompts, safe under `--no-input`): `--account <id>` selects explicitly
-by the account's stable id (`a_...`) **or** its source profile id; otherwise the current account
-(`is_current`) is used, falling back to the first account.
+by the account's **source profile id**; otherwise the current account (`is_current`) is used, falling
+back to the first account. Selecting by the canonical stable account id (`a_...`) is not implemented
+for this command yet — a stable id is reported as `account_not_found`; the deferred code fix is
+tracked in [Issue #39](https://github.com/lybym/WeArchive/issues/39).
 
 Options:
 
 ```text
---account <id>   Optional. Stable account id (a_) or source profile id.
+--account <id>   Optional. Source profile id.
 ```
 
 Reliability — **R1** (Raw Vault publication): a normal success publishes exactly one complete

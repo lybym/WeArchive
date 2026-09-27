@@ -143,12 +143,20 @@ Delivered:
 Still missing (non-goals of the rebuild slice):
 
 - physical cross-generation storage-dedup optimization;
-- Raw Vault encryption-at-rest;
-- real-environment verification on a supported Windows/WeChat 4.x installation. The first
-  `v0.3.0-rc.1` real-account run exposed Issue #37: the current recursive `*.db` discovery treats
-  `migrate/unspportmsg.db` as required even though the current canonical rebuild reader does not
-  consume it. v0.3.0 Stable is blocked until the source-partition support policy is documented,
-  implemented and the complete-capture -> incremental-reuse -> isolated-rebuild chain passes.
+- Raw Vault encryption-at-rest.
+
+Real-environment verification on a supported Windows/WeChat 4.x installation was performed under
+Issue #37 and passed. On the real account the baseline capture reached `complete` with expected 25 /
+captured 24 / unsupported 1 (`migrate/unspportmsg.db` recorded as `unsupported` with a
+`partition_unsupported` info diagnostic and excluded from the 24-fingerprint checkpoint), two
+incremental captures reused 18-24 unchanged partitions with no full fallback, and the isolated
+Raw-Vault-only rebuild succeeded with 1 account, 1382 conversations and 216662 messages while
+reporting the account directory with no published generation through `skipped_accounts`. All 9
+generations x 24 artifacts re-hashed with 0 missing and 0 changed, and the pre-existing canonical
+archive was restored byte-identical. The first `v0.3.0-rc.1` real-account run exposed Issue #37
+(recursive `*.db` discovery treated `migrate/unspportmsg.db` as required even though the canonical
+rebuild reader does not consume it); the source-partition support policy is now documented and
+implemented, so `v0.3.0` Stable is no longer blocked by it.
 
 Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and `wearchive rebuild`.
 Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints. Issue #25 adds incremental
@@ -325,7 +333,7 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-1. **M1.5 Raw Vault capture** (Issues #22/#25/#37): close the v0.3.0 source-partition/completeness blocker, then verify versioned immutable generations with safe incremental capture and explicit partition coverage in the real environment.
+1. **M1.5 Raw Vault capture** (Issues #22/#25/#37): the v0.3.0 source-partition/completeness blocker is closed and the chain is verified in the real environment (versioned immutable generations, safe incremental capture and explicit partition coverage); the milestone itself remains incomplete.
 2. Finish the remaining M1 incremental synchronization (canonical second-sync path).
 3. Continue M2 semantic depth.
 4. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.

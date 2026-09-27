@@ -38,7 +38,8 @@ Delivered since the 0.2.x list was written: incremental Raw Vault capture with e
 coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), and the
 application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26), and the
 M3a minimum structured retrieval slice: `ArchiveQueryService` with the `message list` / `context`
-CLI contract (Issue #27).
+CLI contract (Issue #27), and the WeChat source-partition completeness policy with its
+real-environment verification (Issue #37).
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 
@@ -540,8 +541,18 @@ Delivered by Issue #25: incremental capture checkpoints, explicit expected/captu
 unavailable/unsupported partition coverage, and an automatic full-snapshot fallback whenever
 incremental safety cannot be proven.
 
-Still outstanding: physical cross-generation storage dedup, Raw Vault encryption-at-rest, and
-real-environment verification on a supported Windows/WeChat 4.x installation.
+Delivered by Issue #37: the explicit WeChat source-partition support policy (Required / Supported
+auxiliary / Known unsupported / Unknown), `message/biz_message_<n>.db` recognised as Required message
+evidence, manifest/checkpoint validation over exactly the captured/reused evidence, non-mutating reads
+of preserved evidence, conversations that are provably absent from every successfully indexed shard
+published as explicitly empty, and `rebuild --json` reporting account directories without a published
+generation through `skipped_accounts`. Real-environment verification on a supported Windows/WeChat 4.x
+installation was performed under Issue #37 and passed (complete baseline with one Known-unsupported
+partition, incremental reuse without a full fallback, and a successful isolated Raw-Vault-only rebuild).
+
+Still outstanding: physical cross-generation storage dedup and Raw Vault encryption-at-rest.
+
+M1.5 remains incomplete.
 
 ### M2 — Semantic completeness
 
