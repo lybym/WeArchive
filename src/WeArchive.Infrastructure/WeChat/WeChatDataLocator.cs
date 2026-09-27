@@ -147,6 +147,28 @@ internal static class WeChatDataLocator
     public static string ContactDatabase(WeChatAccountLocation account) =>
         Path.Combine(account.DatabaseDirectory, "contact", "contact.db");
 
+    /// <summary>
+    /// Whether a source file name is a WeChat 4.x candidate conversation message shard, i.e. a
+    /// database whose tables may include <c>Msg_&lt;md5&gt;</c> conversation tables.
+    /// <para>
+    /// WeChat 4.x splits conversations across the <c>message_N.db</c> family <em>and</em> the
+    /// <c>biz_message_N.db</c> family: official-account (<c>gh_</c>) conversations live in the
+    /// latter. Discovery that only recognises <c>message_N.db</c> makes those conversations
+    /// unreadable, which is exactly the capture-versus-rebuild evidence inconsistency Issue #37
+    /// requires to be closed, so both paths share this one definition.
+    /// </para>
+    /// <para>
+    /// The broad <c>message_</c> prefix is kept deliberately: it is what discovery accepted before
+    /// this family was added, so a previously indexed file keeps being indexed. Files such as
+    /// <c>message_fts.db</c> match the prefix but hold no conversation tables, so they simply
+    /// contribute none. <c>media_N.db</c> is not matched, because it is not a message shard.
+    /// </para>
+    /// </summary>
+    public static bool IsMessageShardFileName(string fileName) =>
+        fileName.StartsWith("message_", StringComparison.OrdinalIgnoreCase) ||
+        fileName.StartsWith("biz_message_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>All conversation message shards belonging to an account.</summary>
     public static IReadOnlyList<string> MessageDatabases(WeChatAccountLocation account)
     {
         var directory = Path.Combine(account.DatabaseDirectory, "message");
@@ -157,7 +179,8 @@ internal static class WeChatDataLocator
 
         return
         [
-            .. Directory.EnumerateFiles(directory, "message_*.db")
+            .. Directory.EnumerateFiles(directory, "*.db")
+                .Where(path => IsMessageShardFileName(Path.GetFileName(path)))
                 .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
         ];
     }

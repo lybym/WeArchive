@@ -217,13 +217,21 @@ current WeChat 4.x release line the concrete classification is:
 
 | Class | WeChat 4.x partitions |
 |---|---|
-| Required | `session/session.db`, `contact/contact.db`, `message/message_<n>.db` |
-| Supported auxiliary | `bizchat/bizchat.db`, `chatbot/chatbot_message.db`, `contact/contact_fts.db`, `emoticon/emoticon.db`, `favorite/favorite.db`, `favorite/favorite_fts.db`, `general/general.db`, `hardlink/hardlink.db`, `head_image/head_image.db`, `message/biz_message_<n>.db`, `message/media_<n>.db`, `message/message_fts.db`, `message/message_resource.db`, `message/weclaw.db`, `sns/sns.db`, `solitaire/solitaire.db`, `third_app_icon/third_app_icon.db` |
+| Required | `session/session.db`, `contact/contact.db`, `message/message_<n>.db`, `message/biz_message_<n>.db` |
+| Supported auxiliary | `bizchat/bizchat.db`, `chatbot/chatbot_message.db`, `contact/contact_fts.db`, `emoticon/emoticon.db`, `favorite/favorite.db`, `favorite/favorite_fts.db`, `general/general.db`, `hardlink/hardlink.db`, `head_image/head_image.db`, `message/media_<n>.db`, `message/message_fts.db`, `message/message_resource.db`, `message/weclaw.db`, `sns/sns.db`, `solitaire/solitaire.db`, `third_app_icon/third_app_icon.db` |
 | Known unsupported | `migrate/unspportmsg.db` |
 | Unknown | every other discovered partition, including any other `migrate/` database |
 
 Matching ignores case and accepts `\` and `/` as the same separator. A database's `-wal`/`-shm`
 siblings are fingerprint inputs, not partitions, and are never classified or recorded in coverage.
+
+WeChat 4.x splits conversation tables across both the `message_<n>.db` family and the
+`biz_message_<n>.db` family, which is where official-account (`gh_`) conversations live. The
+canonical rebuild reader cannot read those conversations without the `biz_message_<n>.db`
+partition, so it is Required evidence rather than auxiliary, and the live locator and the
+captured-source reader share one definition of "message shard" so the capture-required set and the
+rebuild-required set cannot drift apart again. `media_<n>.db` holds no conversation tables and
+stays auxiliary.
 
 For the current WeChat 4.x release line, `migrate/unspportmsg.db` is **Known unsupported**. The current
 canonical reader/rebuild contract does not consume it, so capture must account for its presence as
@@ -325,6 +333,12 @@ complete one.
 Published generations are **immutable**: the store refuses to overwrite an existing generation
 directory. Later captures create new generations linked by `previous_generation_id`, forming an
 append-only chain. Later source deletion does not delete or rewrite earlier generations.
+
+Reading preserved evidence never modifies or deletes it either. Artifacts are opened read-only, and
+the plaintext materialization cache only ever deletes an image it created itself in its own scratch
+directory — never a preserved artifact or a source file. (SQLite may create `-wal`/`-shm` sidecars
+next to an image it opens in place; those are not manifest evidence and are never referenced by a
+manifest.)
 
 ## 7. Completeness and failure modes
 

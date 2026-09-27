@@ -23,6 +23,10 @@ public sealed class WeChatSourcePartitionPolicyTests
     [InlineData("message/message_0.db")]
     [InlineData("message/message_1.db")]
     [InlineData("message/message_12345.db")]
+    // Official-account (gh_) conversations live in the biz_message_ family, and the canonical
+    // rebuild reader cannot read them without it, so it is Required evidence (Issue #37).
+    [InlineData("message/biz_message_0.db")]
+    [InlineData("message/biz_message_99.db")]
     public void RequiredEvidenceIsClassifiedRequired(string partitionId) =>
         Assert.Equal(WeChatSourcePartitionClass.Required, WeChatSourcePartitionPolicy.Classify(partitionId));
 
@@ -31,6 +35,7 @@ public sealed class WeChatSourcePartitionPolicyTests
     [InlineData(@"session\session.db")]
     [InlineData("Contact/Contact.Db")]
     [InlineData(@"MESSAGE\Message_7.DB")]
+    [InlineData(@"Message\Biz_Message_3.DB")]
     public void ClassificationIgnoresCaseAndAcceptsBackslashSeparators(string partitionId) =>
         Assert.Equal(WeChatSourcePartitionClass.Required, WeChatSourcePartitionPolicy.Classify(partitionId));
 
@@ -44,8 +49,6 @@ public sealed class WeChatSourcePartitionPolicyTests
     [InlineData("general/general.db")]
     [InlineData("hardlink/hardlink.db")]
     [InlineData("head_image/head_image.db")]
-    [InlineData("message/biz_message_0.db")]
-    [InlineData("message/biz_message_99.db")]
     [InlineData("message/media_0.db")]
     [InlineData("message/media_12.db")]
     [InlineData("message/message_fts.db")]
@@ -84,6 +87,7 @@ public sealed class WeChatSourcePartitionPolicyTests
     [InlineData("message/message_.db")]
     [InlineData("message/message_0x.db")]
     [InlineData("message/biz_message.db")]
+    [InlineData("message/biz_message_0x.db")]
     [InlineData("message/message_0.db-wal")]
     [InlineData("message/message_0.db-shm")]
     public void UnclassifiablePartitionsAreNeverBlessed(string partitionId) =>
@@ -111,8 +115,8 @@ public sealed class WeChatSourcePartitionPolicyTests
             .ToArray();
 
         Assert.Equal(25, classified.Length);
-        Assert.Equal(5, classified.Count(c => c.Class == WeChatSourcePartitionClass.Required));
-        Assert.Equal(19, classified.Count(c => c.Class == WeChatSourcePartitionClass.SupportedAuxiliary));
+        Assert.Equal(7, classified.Count(c => c.Class == WeChatSourcePartitionClass.Required));
+        Assert.Equal(17, classified.Count(c => c.Class == WeChatSourcePartitionClass.SupportedAuxiliary));
         Assert.Equal(1, classified.Count(c => c.Class == WeChatSourcePartitionClass.KnownUnsupported));
         Assert.Equal(0, classified.Count(c => c.Class == WeChatSourcePartitionClass.Unknown));
 
@@ -123,6 +127,8 @@ public sealed class WeChatSourcePartitionPolicyTests
             new[]
             {
                 "contact/contact.db",
+                "message/biz_message_0.db",
+                "message/biz_message_1.db",
                 "message/message_0.db",
                 "message/message_1.db",
                 "message/message_2.db",

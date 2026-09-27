@@ -100,14 +100,19 @@ internal static class WeChatSourcePartitionPolicy
         UnsupportedMessagePartition,
     };
 
-    /// <summary>The conversation message shards the canonical rebuild contract requires.</summary>
+    /// <summary>
+    /// The conversation message shards the canonical rebuild contract requires. Both families hold
+    /// <c>Msg_&lt;md5&gt;</c> conversation tables: <c>message_N.db</c> for direct/group
+    /// conversations and <c>biz_message_N.db</c> for official-account (<c>gh_</c>) conversations.
+    /// A rebuild cannot complete without them, so they are Required evidence.
+    /// </summary>
     private static readonly Regex RequiredShardPattern = new(
-        @"\Amessage/message_[0-9]+\.db\z",
+        @"\Amessage/(?:message|biz_message)_[0-9]+\.db\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>Numbered message-shard siblings the adapter preserves as auxiliary evidence.</summary>
     private static readonly Regex AuxiliaryShardPattern = new(
-        @"\Amessage/(?:biz_message|media)_[0-9]+\.db\z",
+        @"\Amessage/media_[0-9]+\.db\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>

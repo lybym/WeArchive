@@ -59,8 +59,11 @@ internal static class CapturedWeChatSourceAdapter
             .FirstOrDefault();
         var session = Find("session/session.db");
         var contacts = Find("contact/contact.db");
+        // Conversation message tables live in both the message_N and biz_message_N families
+        // (official-account conversations live in the latter), so the captured reader indexes
+        // every preserved shard the live locator recognises as a message shard (Issue #37).
         var messages = databases
-            .Where(d => Path.GetFileName(d.Relative).StartsWith("message_", StringComparison.OrdinalIgnoreCase))
+            .Where(d => WeChatDataLocator.IsMessageShardFileName(Path.GetFileName(d.Relative)))
             .OrderBy(d => d.Relative, StringComparer.OrdinalIgnoreCase)
             .ToList();
 

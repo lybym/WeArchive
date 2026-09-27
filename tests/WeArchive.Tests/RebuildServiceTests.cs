@@ -97,6 +97,34 @@ public sealed class RebuildServiceTests
     }
 
     [Fact]
+    public async Task OfficialAccountConversationsCapturedInTheBizMessageShardAreRebuildable()
+    {
+        // The real-account failure Issue #37 exposed: an official-account (gh_) conversation was
+        // listed from session.db but its message table lives in message/biz_message_0.db, which a
+        // message_ prefix filter skipped, so the whole rebuild aborted with an unreadable
+        // conversation. A captured generation that preserves that shard must be fully readable.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "official account text", "0.1.0", CapturedAt,
+            conversationId: "gh_synthetic_official",
+            messageShardRelativePath: "message/biz_message_0.db");
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        var stats = await new RebuildService(vault, archivePath, new FixedClock())
+            .RebuildAsync(null, CancellationToken.None);
+
+        Assert.Equal(1, stats.ConversationCount);
+        Assert.Equal(1, stats.MessageCount);
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(archivePath, new FixedClock());
+        var conversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        var message = Assert.Single(await archive.ReadMessagesAsync(conversation.Id, CancellationToken.None));
+        Assert.Equal("official account text", message.Text);
+    }
+
+    [Fact]
     public async Task FailedRebuildLeavesSelectedArchiveUntouched()
     {
         using var temp = new TempDirectory();
@@ -746,10 +774,12 @@ public sealed class RebuildServiceTests
         string? additionalText = null,
         bool additionalHasMessageTable = true,
         int messageCount = 1,
-        string participantRemark = "Bob")
+        string participantRemark = "Bob",
+        string messageShardRelativePath = "message/message_0.db")
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
+        var messageShardFileName = Path.GetFileName(messageShardRelativePath);
         var table = "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(conversationId))).ToLowerInvariant();
         var additionalTable = additionalConversationId is null ? null
             : "Msg_" + Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(additionalConversationId))).ToLowerInvariant();
@@ -775,7 +805,7 @@ public sealed class RebuildServiceTests
                 {messageRows}
                 {(additionalTable is null || !additionalHasMessageTable ? string.Empty : $"CREATE TABLE \"{additionalTable}\" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB); INSERT INTO \"{additionalTable}\" VALUES (1, 7002, {sourceType}, 1, 1736907600, '{additionalText ?? text}', 0, NULL);")}
                 """ : string.Empty);
-        BuildDb(Path.Combine(dbRoot, "message_0.db"), messageSql);
+        BuildDb(Path.Combine(dbRoot, messageShardFileName), messageSql);
 
         var context = new RawGenerationContext
         {
@@ -788,17 +818,14 @@ public sealed class RebuildServiceTests
         var previous = await vault.GetLatestGenerationAsync(accountId, CancellationToken.None);
         var session = await vault.BeginGenerationAsync(context, CancellationToken.None);
         var artifacts = new List<RawArtifactDescriptor>();
-        foreach (var (name, path) in new[]
+        foreach (var (name, relative, path) in new[]
         {
-            ("session.db", Path.Combine(dbRoot, "session.db")),
-            ("contact.db", Path.Combine(dbRoot, "contact.db")),
-            ("message_0.db", Path.Combine(dbRoot, "message_0.db")),
+            ("session.db", "session/session.db", Path.Combine(dbRoot, "session.db")),
+            ("contact.db", "contact/contact.db", Path.Combine(dbRoot, "contact.db")),
+            (messageShardFileName, messageShardRelativePath, Path.Combine(dbRoot, messageShardFileName)),
         })
         {
             await using var stream = File.OpenRead(path);
-            var relative = name == "session.db" ? "session/session.db"
-                : name == "contact.db" ? "contact/contact.db"
-                : "message/message_0.db";
             artifacts.Add(await session.WriteArtifactAsync("source-database", name, stream, "sqlite", true,
                 new Dictionary<string, string> { ["source_relative_path"] = relative }, CancellationToken.None));
         }
