@@ -214,6 +214,130 @@ public sealed class IncrementalCaptureFlowTests
     }
 
     [Fact]
+    public async Task KnownUnsupportedCoverageDoesNotDowngradeCompletenessOrBlockTheCheckpoint()
+    {
+        using var temp = new TempDirectory();
+        var (service, vault, adapter, clock) = CreateHarness(temp.Combine("vault"));
+
+        adapter.Partitions["A"] = "a";
+        adapter.Partitions["B"] = "b";
+        adapter.Partitions["Q"] = "q";
+        adapter.Unsupported.Add("Q");
+
+        var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        // A complete generation may legitimately carry `unsupported` coverage for a
+        // discovered-but-unsupported partition (Issue #37).
+        Assert.True(first.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, first.Completeness);
+        Assert.Equal(2, first.Coverage.Count(c => c.Status == RawPartitionStatus.Captured));
+        Assert.Equal(
+            RawPartitionStatus.Unsupported,
+            first.Coverage.Single(c => c.PartitionId == "Q").Status);
+
+        var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation1);
+        var checkpoint = generation1!.Manifest.CaptureCheckpoint;
+        Assert.NotNull(checkpoint);
+
+        // The checkpoint covers exactly the captured/reused set: the unsupported entry stays in
+        // coverage but is never checkpoint evidence.
+        Assert.Equal(3, generation1.Manifest.Coverage.Count);
+        Assert.Equal(2, checkpoint!.PartitionFingerprints.Count);
+        Assert.DoesNotContain("Q", checkpoint.PartitionFingerprints.Keys);
+        Assert.Equal(2, generation1.Manifest.Capture.ArtifactCount);
+
+        // The next run still reuses from that checkpoint and keeps the unsupported entry visible.
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var second = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(second.Succeeded);
+        Assert.Equal(RawCaptureMode.Incremental, second.Mode);
+        Assert.Equal(RawGenerationCompleteness.Complete, second.Completeness);
+        Assert.Equal(2, second.Coverage.Count(c => c.Status == RawPartitionStatus.Reused));
+        Assert.Equal(
+            RawPartitionStatus.Unsupported,
+            second.Coverage.Single(c => c.PartitionId == "Q").Status);
+        Assert.DoesNotContain(second.Diagnostics, d => d.Code == DiagnosticCodes.CaptureFullFallback);
+
+        var generation2 = await vault.OpenGenerationAsync(first.AccountId, second.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation2);
+        Assert.Equal(second.GenerationId, generation2!.Manifest.CaptureCheckpoint!.GenerationId);
+        Assert.Equal(2, generation2.Manifest.CaptureCheckpoint.PartitionFingerprints.Count);
+    }
+
+    [Fact]
+    public async Task UnclassifiedCoverageForcesPartialAndPublishesNoCheckpoint()
+    {
+        using var temp = new TempDirectory();
+        var (service, vault, adapter, clock) = CreateHarness(temp.Combine("vault"));
+
+        adapter.Partitions["A"] = "a";
+        adapter.Partitions["N"] = "n";
+        adapter.Unclassified.Add("N");
+
+        var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        // Unknown/unclassified evidence can never yield a complete verdict, and stays explicit.
+        Assert.True(first.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Partial, first.Completeness);
+        Assert.Equal(
+            RawPartitionStatus.Unsupported,
+            first.Coverage.Single(c => c.PartitionId == "N").Status);
+        Assert.Contains(first.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnclassified);
+
+        var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation1);
+        Assert.Null(generation1!.Manifest.CaptureCheckpoint);
+
+        // Without a checkpoint the following capture widens to a full baseline.
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var second = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(second.Succeeded);
+        Assert.Equal(RawCaptureMode.Baseline, second.Mode);
+        Assert.Contains(second.Diagnostics, d => d.Code == DiagnosticCodes.CaptureFullFallback);
+    }
+
+    [Fact]
+    public async Task ACompleteVerdictContradictedByCoverageOrDiagnosticsIsDowngraded()
+    {
+        using var temp = new TempDirectory();
+        var (service, vault, adapter, clock) = CreateHarness(temp.Combine("vault"));
+
+        adapter.Partitions["A"] = "a";
+        adapter.Partitions["R"] = "r";
+        adapter.Unreadable.Add("R");
+
+        // The fixture reports Partial for unreadable evidence, so force the contradictory shape
+        // directly: a complete verdict that still carries an unavailable coverage entry. FR-20
+        // requires the service to refuse to publish that as complete.
+        adapter.ReportCompleteDespiteCoverageGaps = true;
+        var first = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(first.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Partial, first.Completeness);
+        Assert.Contains(first.Diagnostics, d => d.Code == DiagnosticCodes.CaptureCompletenessDowngraded);
+
+        var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation1);
+        Assert.Equal(RawGenerationCompleteness.Partial, generation1!.Manifest.Capture.Completeness);
+        Assert.Null(generation1.Manifest.CaptureCheckpoint);
+
+        // The contradictory evidence is still published as a partial generation, never dropped.
+        Assert.Contains(
+            generation1.Manifest.Coverage,
+            c => c.PartitionId == "R" && c.Status == RawPartitionStatus.Unavailable);
+
+        // The next run widens because the predecessor is not a complete checkpoint generation.
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        adapter.ReportCompleteDespiteCoverageGaps = false;
+        adapter.Unreadable.Clear();
+        var second = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(second.Succeeded);
+        Assert.Equal(RawCaptureMode.Baseline, second.Mode);
+        Assert.Equal(RawGenerationCompleteness.Complete, second.Completeness);
+    }
+
+    [Fact]
     public async Task CaughtAdapterFailureBeforePublicationLeavesPreviousCheckpointUnchanged()
     {
         using var temp = new TempDirectory();

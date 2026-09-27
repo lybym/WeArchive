@@ -258,6 +258,147 @@ public sealed class RawVaultManifestTests
         }));
     }
 
+    [Fact]
+    public void CompleteGenerationMayCarryUnsupportedCoverageOutsideTheCheckpoint()
+    {
+        var manifest = BuildManifest() with
+        {
+            Coverage =
+            [
+                Partition("p1", "hash-1"),
+                new RawPartitionCoverage
+                {
+                    PartitionId = "migrate/unspportmsg.db",
+                    Status = RawPartitionStatus.Unsupported,
+                    Diagnostic = "outside the supported evidence contract.",
+                },
+            ],
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1")),
+        };
+
+        var restored = Deserialize(manifest);
+        Assert.NotNull(restored);
+        Assert.Equal(2, restored!.Coverage.Count);
+        Assert.Single(restored.CaptureCheckpoint!.PartitionFingerprints);
+        Assert.DoesNotContain("migrate/unspportmsg.db", restored.CaptureCheckpoint.PartitionFingerprints.Keys);
+    }
+
+    [Fact]
+    public void CheckpointMustCoverEveryCapturedEntryAndAddressNoNonEvidenceEntry()
+    {
+        var manifest = BuildManifest() with
+        {
+            Coverage =
+            [
+                Partition("p1", "hash-1"),
+                new RawPartitionCoverage
+                {
+                    PartitionId = "q",
+                    Status = RawPartitionStatus.Unsupported,
+                },
+            ],
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1")),
+        };
+        Assert.NotNull(Deserialize(manifest));
+
+        // A checkpoint that omits captured evidence proves nothing about that partition.
+        Assert.Null(Deserialize(manifest with
+        {
+            Coverage = [Partition("p1", "hash-1"), Partition("p2", "hash-2")],
+        }));
+
+        // ... and an unsupported entry is never addressable by the checkpoint.
+        Assert.Null(Deserialize(manifest with
+        {
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1"), ("q", "hash-q")),
+        }));
+
+        // An unavailable entry is equally non-evidence.
+        Assert.Null(Deserialize(manifest with
+        {
+            Coverage =
+            [
+                Partition("p1", "hash-1"),
+                new RawPartitionCoverage
+                {
+                    PartitionId = "q",
+                    Status = RawPartitionStatus.Unavailable,
+                    Diagnostic = "missing.",
+                },
+            ],
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1"), ("q", "hash-q")),
+        }));
+
+        // A captured entry whose checksum names no artifact of the generation cannot be verified.
+        Assert.Null(Deserialize(manifest with
+        {
+            Coverage = [Partition("p1", "hash-1", "no-such-artifact"), Partition("q", "hash-q")],
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1"), ("q", "hash-q")),
+        }));
+    }
+
+    [Fact]
+    public void CompleteVerdictWithUnavailableCoverageIsRejectedButPartialIsAccepted()
+    {
+        var baseline = BuildManifest();
+        var coverage = new RawPartitionCoverage[]
+        {
+            Partition("p1", "hash-1"),
+            new RawPartitionCoverage
+            {
+                PartitionId = "r",
+                Status = RawPartitionStatus.Unavailable,
+                Diagnostic = "no database key.",
+            },
+        };
+
+        // A complete verdict must not claim an evidence set the manifest itself records as missing.
+        Assert.Null(Deserialize(baseline with
+        {
+            Coverage = coverage,
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1")),
+        }));
+
+        // The identical coverage with a truthful partial verdict stays valid and checkpoint-free.
+        var partial = Deserialize(baseline with
+        {
+            Capture = baseline.Capture with { Completeness = RawGenerationCompleteness.Partial },
+            Coverage = coverage,
+        });
+        Assert.NotNull(partial);
+        Assert.Null(partial!.CaptureCheckpoint);
+        Assert.Equal(2, partial.Coverage.Count);
+    }
+
+    [Fact]
+    public void PreChangeAllCoverageCheckpointStillValidates()
+    {
+        // Every version-2 manifest written before Issue #37 recorded a checkpoint over all of its
+        // (necessarily captured/reused) coverage entries. That shape must keep validating.
+        var manifest = BuildManifest() with
+        {
+            Coverage =
+            [
+                Partition("p1", "hash-1"),
+                Partition("p2", "hash-2") with { Status = RawPartitionStatus.Reused },
+            ],
+            CaptureCheckpoint = Checkpoint(("p1", "hash-1"), ("p2", "hash-2")),
+        };
+
+        var restored = Deserialize(manifest);
+        Assert.NotNull(restored);
+        Assert.Equal(2, restored!.CaptureCheckpoint!.PartitionFingerprints.Count);
+        Assert.Equal(RawPartitionStatus.Reused, restored.Coverage[1].Status);
+    }
+
+    private static RawCaptureCheckpoint Checkpoint(params (string PartitionId, string Fingerprint)[] fingerprints) => new()
+    {
+        GenerationId = "gen_abcdef0123456789",
+        CaptureAdapterFamily = "fixture",
+        CaptureAdapterVersion = "1.0.0",
+        PartitionFingerprints = fingerprints.ToDictionary(p => p.PartitionId, p => p.Fingerprint, StringComparer.Ordinal),
+    };
+
     private static RawPartitionCoverage Partition(
         string partitionId,
         string fingerprint,
