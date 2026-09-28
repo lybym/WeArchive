@@ -95,11 +95,19 @@ jobs:
         shell: pwsh
         run: ./scripts/smoke-test-package.ps1 -ExpectedVersion 0.0.0-ci
 
+      # Convenience artifact only: the object that actually ships is produced by the
+      # Release workflow and attached as a GitHub Release asset, which does not consume
+      # Actions artifact storage. The artifact and extracted-ZIP smoke tests above have
+      # already verified this ZIP, so a storage-quota or transport failure here must not
+      # fail the job conclusion and turn main red (Issue #40).
       - name: Upload portable ZIP
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: WeArchive-win-x64-ci
           path: artifacts/WeArchive-win-x64.zip
           if-no-files-found: error
-          retention-days: 3
+          # One day keeps the ~39 MB/upload steady state well inside the private-repo
+          # storage quota even during active development; three days measured ~540 MB.
+          retention-days: 1
