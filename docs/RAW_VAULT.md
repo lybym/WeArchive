@@ -38,6 +38,17 @@ partition that is missing, unavailable, unsupported or unreadable, or a generati
 `complete`, still fails that conversation rather than publishing an empty one. A conversation is
 therefore never reported as complete while required evidence could actually be missing.
 
+This rule is deliberately asymmetric between the captured-rebuild path and the live source path.
+A rebuild reads a published generation whose manifest — coverage plus the capture checkpoint — can
+*prove* its Required message evidence is complete, so an absent table is source truth. The live
+source path has no generation and no checkpoint: nothing distinguishes "WeChat never created this
+table" from "the shard that holds it was not seen", so the live reader keeps the Fatal
+`partition_missing` semantics for a table-less conversation. The direction must not be "aligned"
+away: aligning the live path would publish conversations as empty without proof, and aligning the
+rebuild path to the live semantics would discard a proof the manifest genuinely carries (Issue #39).
+The completeness proof itself is cross-checked against the capture checkpoint (section 4.3), so
+coverage entries alone are never accepted as evidence.
+
 `wearchive ingest` incrementally imports verified Raw Vault generations into an existing
 canonical archive. It publishes one conversation at a time through the normal SQLite import
 transaction and commits that conversation's ingest checkpoint in the same transaction. An
@@ -249,6 +260,14 @@ canonical reader/rebuild contract does not consume it, so capture must account f
 unsupported rather than require a database key/materialized artifact. Reclassifying it or adding
 canonical semantics for it requires a later approved product change.
 
+The classification rests on recorded structural evidence, not convenience (Issue #39). On the real
+account that exposed the Issue #37 defect, `migrate/unspportmsg.db` is 8192 bytes — two database
+pages, structurally incapable of holding the conversation tables the canonical contract reads — and
+it admitted no verifiable database key. On the second real account observed on the same machine the
+partition is entirely absent. Both facts are consistent with a migration-staging database that
+never holds required evidence, so its presence can neither be required for a complete capture nor
+silently ignored: it stays visible as unsupported coverage with an explicit diagnostic.
+
 A Known-unsupported partition is accounted for by a `coverage` entry with `status = unsupported` and
 an informational `partition_unsupported` diagnostic, and is never materialized, never fingerprinted
 and never part of the capture checkpoint. An Unknown/unclassified partition is also recorded as
@@ -277,7 +296,12 @@ the CLI (see [CLI.md](CLI.md)) and audited later without weakening the no-secret
 - a Fatal failure, caught cancellation or I/O error discards the staged generation, so the
   previously published checkpoint is unchanged and stays the latest;
 - it can legitimately be fresher or staler than the canonical SQLite ingest checkpoint
-  (`docs/DATA_MODEL.md` section 21). Neither is ever inferred from the other.
+  (`docs/DATA_MODEL.md` section 21). Neither is ever inferred from the other;
+- the captured-source rebuild reader cross-checks Required message-shard coverage against
+  `capture_checkpoint` before it may treat a table-less conversation as legitimately empty: the
+  counted shards must appear in the checkpoint with the source fingerprints their coverage entries
+  record, so a complete version-2 coverage shape without a matching checkpoint — or with checkpoint
+  evidence that disagrees with its own coverage — is not proof (Issue #39).
 
 Incremental safety is proven per partition, from the source itself, by the capture adapter. For
 WeChat 4.x this is a content fingerprint of the database file and its committed WAL bytes; the

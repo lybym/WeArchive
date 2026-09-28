@@ -117,10 +117,31 @@ internal static class CapturedWeChatSourceAdapter
     /// Issue #37). Which partitions are Required is a WeChat source-partition question, so the
     /// judgement stays here rather than in the source-neutral reader.
     /// </para>
+    /// <para>
+    /// Coverage alone is not proof: the counted shards are cross-checked against the manifest's
+    /// capture checkpoint, mirroring the identity checks <see cref="WeChatCaptureAdapter.BuildPriorMap"/>
+    /// applies to a reused predecessor, so a <c>complete</c> version-2 coverage shape without
+    /// checkpoint evidence — or with checkpoint evidence that disagrees with its own coverage —
+    /// is not accepted either (Issue #39). This shape is not reachable through the shipped capture
+    /// path; the cross-check is hardening for hand-built or future manifests.
+    /// </para>
     /// </summary>
     private static bool IsRequiredMessageEvidenceComplete(RawManifest manifest)
     {
         if (manifest.ManifestVersion < 2 || manifest.Coverage.Count == 0)
+        {
+            return false;
+        }
+
+        // The checkpoint is the capture cursor published with this manifest. It must belong to
+        // this generation and this capture, and every counted shard must appear in it with the
+        // same source fingerprint its coverage entry records.
+        var checkpoint = manifest.CaptureCheckpoint;
+        if (checkpoint is null
+            || checkpoint.Version != 1
+            || !string.Equals(checkpoint.GenerationId, manifest.GenerationId, StringComparison.Ordinal)
+            || !string.Equals(checkpoint.CaptureAdapterFamily, manifest.Capture.CaptureAdapterFamily, StringComparison.Ordinal)
+            || !string.Equals(checkpoint.CaptureAdapterVersion, manifest.Capture.CaptureAdapterVersion, StringComparison.Ordinal))
         {
             return false;
         }
@@ -133,6 +154,9 @@ internal static class CapturedWeChatSourceAdapter
 
         return requiredMessageShards.Length > 0 &&
             requiredMessageShards.All(entry =>
-                entry.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused);
+                entry.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused &&
+                entry.SourceFingerprint is not null &&
+                checkpoint.PartitionFingerprints.TryGetValue(entry.PartitionId, out var fingerprint) &&
+                string.Equals(fingerprint, entry.SourceFingerprint, StringComparison.Ordinal));
     }
 }
