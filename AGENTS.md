@@ -138,13 +138,20 @@ wearchive capture [--account <id>]
 
 Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 
-**v0.3.0 is the current stable baseline** (Release Issue #35): the M1.5 capture slice and the Raw-Vault-only canonical rebuild are verified in the real environment (complete baseline → incremental reuse → Raw-Vault-only rebuild → 216662 messages). Post-release priorities, in order:
+**v0.3.1 is the current Stable baseline** (Release Issue #45, tag `v0.3.1`, Release PR #46). It carries the `v0.3.0` M1.5 capture slice plus the `0.3.1` hardening batch, and the chain remains verified in the real environment (complete baseline → incremental reuse → Raw-Vault-only rebuild → 216662 messages). The post-`v0.3.0` cleanup batch is delivered and closed history, not an active priority:
 
-1. **CI credibility**: restore Actions artifact quota hygiene and make the portable-ZIP upload non-blocking (Issue #40) so `main` does not run red on convenience-artifact failures.
-2. **Issue #39** ([post-0.3.0] deferred hardening and the `capture --account` stable-id defect): the first batch of 0.3.1 work.
-3. Then the remaining milestone order: M1.5 remainder (cross-generation dedup and encryption-at-rest stay open), M1 completion, then M2/M3/M4.
+- **Issue #40 — CI credibility** (closed): Actions artifact retention lowered and the portable-ZIP upload made non-blocking, so `main` does not run red on convenience-artifact failures.
+- **Issue #39 — post-`v0.3.0` deferred hardening** (closed): the first batch of `0.3.1` work, including the `capture --account` stable-id defect surfaced by Issue #37.
 
-Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit partition-coverage reporting. Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Issue #27 delivers the M3a minimum structured retrieval slice: `ArchiveQueryService` plus the `message list` / `context` CLI contract, read-only over the canonical archive with no FTS index and no schema migration. Continue to M2/M3/M4 after M1 completion.
+The next product **P0 is M1 completion (Issue #49)**: the canonical incremental second-sync path over the live workflow — `sync --conversation` converged on the shared `CaptureService` → Raw Vault → conversation-scoped ingest orchestration — plus canonical partition-coverage reporting. M1 stays incomplete until its two outstanding Roadmap acceptance criteria are demonstrably met under Issue #49; no other Issue may mark M1 complete, and nothing in this priority alignment marks M1.5 complete.
+
+The remaining M1.5 items — **physical cross-generation storage deduplication** and **Raw Vault encryption-at-rest** — are open/deferred optimization and protection work. They are **not** prerequisites for closing the M1 canonical sync loop, and they must not be pulled into the M1 implementation scope.
+
+**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) is a post-`v0.3.1` **P2 non-blocking hardening follow-up**. It is not the next P0 product line and it does not gate M1.
+
+After M1 completion the milestone order is the one in `docs/ROADMAP.md`: M2 message semantics, then M3 retrieval (the FTS index, keyword search, statistics/activity timeline and a CLI status command beyond the shipped M3a slice), then M4 Harness workflows (Collection-scoped query/search and export selection). FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest all stay outside the M1 scope.
+
+Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit partition-coverage reporting. Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Issue #27 delivers the M3a minimum structured retrieval slice: `ArchiveQueryService` plus the `message list` / `context` CLI contract, read-only over the canonical archive with no FTS index and no schema migration. Issue #37 delivers the WeChat source-partition support policy (Required / Supported auxiliary / Known unsupported / Unknown) and the real-environment verification of the capture and Raw-Vault-only rebuild chain. Continue to M2/M3/M4 after M1 completion.
 
 Collection remains the one scope abstraction: do not add a `sync-group`, `watch-list` or `harness-dataset` model, and do not make the derived export-package `collections.yaml` authoritative for product behavior.
 
