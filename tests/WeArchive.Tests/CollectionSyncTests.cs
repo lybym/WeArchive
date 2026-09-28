@@ -21,15 +21,15 @@ public sealed class CollectionSyncTests
     public async Task CollectionSyncPublishesEveryMemberIndependently()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" },
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("b"), Text = "B message" },
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.GroupId("100200300"), Text = "C message" });
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" },
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("b"), Text = "B message" },
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.GroupId("100200300"), Text = "C message" });
 
         harness.WriteCollection("project-x",
-            harness.StableId(CollectionHarness.DirectId("a")),
-            harness.StableId(CollectionHarness.DirectId("b")),
-            harness.StableId(CollectionHarness.GroupId("100200300")));
+            harness.StableId(WeChatSyncHarness.DirectId("a")),
+            harness.StableId(WeChatSyncHarness.DirectId("b")),
+            harness.StableId(WeChatSyncHarness.GroupId("100200300")));
 
         var result = await harness.Sync.SyncAsync(
             new CollectionSyncRequest { CollectionName = "project-x" }, null, CancellationToken.None);
@@ -60,20 +60,20 @@ public sealed class CollectionSyncTests
     public async Task OneFatalConversationDoesNotRevertSuccessfulConversations()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A committed" },
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("b"), Text = "B committed" },
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A committed" },
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("b"), Text = "B committed" },
             new SyntheticCaptureConversation
             {
-                SourceConversationId = CollectionHarness.GroupId("100200300"),
+                SourceConversationId = WeChatSyncHarness.GroupId("100200300"),
                 Text = "C unreadable",
                 MessageTablePresent = false,
                 MessageShardUnreadable = true,
             });
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idB = harness.StableId(CollectionHarness.DirectId("b"));
-        var idC = harness.StableId(CollectionHarness.GroupId("100200300"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idB = harness.StableId(WeChatSyncHarness.DirectId("b"));
+        var idC = harness.StableId(WeChatSyncHarness.GroupId("100200300"));
         harness.WriteCollection("project-x", idA, idB, idC);
 
         var result = await harness.Sync.SyncAsync(
@@ -97,7 +97,7 @@ public sealed class CollectionSyncTests
         Assert.Equal(2, conversations.Count);
         Assert.Equal("A committed 1", Assert.Single(await harness.MessagesAsync(idA)).Text);
         Assert.Equal("B committed 1", Assert.Single(await harness.MessagesAsync(idB)).Text);
-        Assert.Null(await harness.FindConversationAsync(CollectionHarness.GroupId("100200300")));
+        Assert.Null(await harness.FindConversationAsync(WeChatSyncHarness.GroupId("100200300")));
 
         // The successful conversations kept their committed checkpoints; the failed one has none,
         // so nothing about it can be mistaken for progress.
@@ -110,12 +110,12 @@ public sealed class CollectionSyncTests
     public async Task ChangedConversationAdvancesWhileAnUnchangedConversationReportsNoChange()
     {
         using var temp = new TempDirectory();
-        var changed = new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A first" };
-        var stable = new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("b"), Text = "B stable" };
-        using var harness = CollectionHarness.Create(temp, changed, stable);
+        var changed = new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A first" };
+        var stable = new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("b"), Text = "B stable" };
+        using var harness = WeChatSyncHarness.Create(temp, changed, stable);
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idB = harness.StableId(CollectionHarness.DirectId("b"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idB = harness.StableId(WeChatSyncHarness.DirectId("b"));
         harness.WriteCollection("project-x", idA, idB);
 
         var first = await harness.Sync.SyncAsync(
@@ -150,18 +150,18 @@ public sealed class CollectionSyncTests
     public async Task RetryingAfterAFatalMemberPreservesSuccessfulProgressAndReattemptsTheFailedMember()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A committed" },
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A committed" },
             new SyntheticCaptureConversation
             {
-                SourceConversationId = CollectionHarness.GroupId("100200300"),
+                SourceConversationId = WeChatSyncHarness.GroupId("100200300"),
                 Text = "C unreadable",
                 MessageTablePresent = false,
                 MessageShardUnreadable = true,
             });
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idC = harness.StableId(CollectionHarness.GroupId("100200300"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idC = harness.StableId(WeChatSyncHarness.GroupId("100200300"));
         harness.WriteCollection("project-x", idA, idC);
 
         var first = await harness.Sync.SyncAsync(
@@ -189,26 +189,26 @@ public sealed class CollectionSyncTests
         Assert.Equal(CollectionSyncItemStatus.Failed, retried.Status);
         Assert.False(string.IsNullOrWhiteSpace(retried.Error));
         Assert.Null(await harness.ConversationCheckpointAsync(idC));
-        Assert.Null(await harness.FindConversationAsync(CollectionHarness.GroupId("100200300")));
+        Assert.Null(await harness.FindConversationAsync(WeChatSyncHarness.GroupId("100200300")));
     }
 
     [Fact]
     public async Task RetryingAfterCancellationCompletesTheInterruptedConversationAndKeepsEarlierProgress()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A committed" },
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A committed" },
             new SyntheticCaptureConversation
             {
-                SourceConversationId = CollectionHarness.DirectId("b"),
+                SourceConversationId = WeChatSyncHarness.DirectId("b"),
                 Text = "B interrupted",
                 MessageCount = 300,
             },
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("c"), Text = "C committed" });
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("c"), Text = "C committed" });
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idB = harness.StableId(CollectionHarness.DirectId("b"));
-        var idC = harness.StableId(CollectionHarness.DirectId("c"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idB = harness.StableId(WeChatSyncHarness.DirectId("b"));
+        var idC = harness.StableId(WeChatSyncHarness.DirectId("c"));
         harness.WriteCollection("project-x", idA, idB, idC);
 
         using (var cancellation = new CancellationTokenSource())
@@ -248,19 +248,19 @@ public sealed class CollectionSyncTests
     public async Task CancellationDuringOneConversationKeepsEarlierCommitsAndRollsBackTheCurrentOne()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A committed" },
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A committed" },
             new SyntheticCaptureConversation
             {
-                SourceConversationId = CollectionHarness.DirectId("b"),
+                SourceConversationId = WeChatSyncHarness.DirectId("b"),
                 Text = "B interrupted",
                 MessageCount = 300,
             },
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("c"), Text = "C untouched" });
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("c"), Text = "C untouched" });
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idB = harness.StableId(CollectionHarness.DirectId("b"));
-        var idC = harness.StableId(CollectionHarness.DirectId("c"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idB = harness.StableId(WeChatSyncHarness.DirectId("b"));
+        var idC = harness.StableId(WeChatSyncHarness.DirectId("c"));
         harness.WriteCollection("project-x", idA, idB, idC);
 
         using var cancellation = new CancellationTokenSource();
@@ -284,21 +284,21 @@ public sealed class CollectionSyncTests
         Assert.NotNull(await harness.ConversationCheckpointAsync(idA));
 
         // ...the in-flight conversation rolled back entirely...
-        Assert.Null(await harness.FindConversationAsync(CollectionHarness.DirectId("b")));
+        Assert.Null(await harness.FindConversationAsync(WeChatSyncHarness.DirectId("b")));
         Assert.Null(await harness.ConversationCheckpointAsync(idB));
 
         // ...and the run stopped instead of continuing to the next member.
-        Assert.Null(await harness.FindConversationAsync(CollectionHarness.DirectId("c")));
+        Assert.Null(await harness.FindConversationAsync(WeChatSyncHarness.DirectId("c")));
     }
 
     [Fact]
     public async Task InvalidMembershipEntriesAreReportedAsUnresolvedMembers()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA, "wxid_not_a_stable_id");
 
         var result = await harness.Sync.SyncAsync(
@@ -321,10 +321,10 @@ public sealed class CollectionSyncTests
     public async Task DuplicateMembershipIsReportedAndSynchronizedOnce()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
 
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA, idA);
 
         var result = await harness.Sync.SyncAsync(
@@ -342,13 +342,13 @@ public sealed class CollectionSyncTests
     public async Task AMemberThatNamesNoCapturedConversationIsReportedAsUnresolved()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
 
         // A well-formed stable id that belongs to another account resolves to nothing in this
         // account's preserved evidence.
         var foreign = StableIds.Conversation("a_0000000000000000", ConversationKind.Direct, "wxid_elsewhere", "wxid_elsewhere");
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA, foreign);
 
         var result = await harness.Sync.SyncAsync(
@@ -365,8 +365,8 @@ public sealed class CollectionSyncTests
     public async Task AnUnknownCollectionNameIsADeterministicError()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
-        harness.WriteCollection("project-x", harness.StableId(CollectionHarness.DirectId("a")));
+        using var harness = WeChatSyncHarness.Create(temp);
+        harness.WriteCollection("project-x", harness.StableId(WeChatSyncHarness.DirectId("a")));
 
         var error = await Assert.ThrowsAsync<CollectionNotFoundException>(() =>
             harness.Sync.SyncAsync(new CollectionSyncRequest { CollectionName = "missing" }, null, CancellationToken.None));
@@ -381,7 +381,7 @@ public sealed class CollectionSyncTests
     public async Task AnEmptyCollectionSynchronizesWithoutCapturing()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
         harness.WriteCollection("empty");
 
         var result = await harness.Sync.SyncAsync(
@@ -399,9 +399,9 @@ public sealed class CollectionSyncTests
     public async Task AnUnavailableSourceFailsTheOperationRatherThanFabricatingPerMemberFailures()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
-        harness.WriteCollection("project-x", harness.StableId(CollectionHarness.DirectId("a")));
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
+        harness.WriteCollection("project-x", harness.StableId(WeChatSyncHarness.DirectId("a")));
         harness.Source.IsAvailable = false;
 
         var error = await Assert.ThrowsAsync<CollectionCaptureException>(() =>
@@ -416,9 +416,9 @@ public sealed class CollectionSyncTests
     public async Task ACaptureThatThrowsFailsTheOperationAndPublishesNothing()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
-        harness.WriteCollection("project-x", harness.StableId(CollectionHarness.DirectId("a")));
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
+        harness.WriteCollection("project-x", harness.StableId(WeChatSyncHarness.DirectId("a")));
         harness.Capture.Failure = new IOException("the snapshot could not be read");
 
         var error = await Assert.ThrowsAsync<CollectionCaptureException>(() =>

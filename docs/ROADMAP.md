@@ -108,23 +108,28 @@ Delivered:
 - system/revoke and other documented semantic types;
 - source partition/shard abstraction and merged timeline ordering;
 - completeness diagnostics and unknown accounting;
-- read-only SQLCipher access with verified local key acquisition.
+- read-only SQLCipher access with verified local key acquisition;
+- **conversation-scoped canonical second sync** (`sync --conversation` converged on the shared
+  `CaptureService` → Raw Vault → conversation-scoped incremental ingest workflow, Issue #49):
+  an unchanged repeat reuses verified capture evidence, publishes nothing and reports
+  `no_change`, and new/changed evidence advances only the selected conversation's ingest
+  checkpoint.
 
 Still missing:
 
-- **Canonical second-sync path** — the gap Issue #49 (M1a) owns. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and live-source capture checkpoints plus explicit partition-coverage reporting are delivered by Issue #25; incremental canonical synchronization over the live adapter is still open.
 - **Full partition-coverage reporting on the canonical import path** — the gap Issue #51 (M1b) owns. Capture-side expected/captured/reused/unavailable/unsupported coverage is delivered by Issue #25; the canonical import path still diagnoses missing/unreadable partitions without a complete expected/read rollup.
 
 Acceptance criteria still outstanding — the next product P0 after the `v0.3.1` Stable baseline is one
 M1 release slice made of two non-overlapping capability Issues, one per remaining criterion:
 
-- a second sync imports only new/changed records where supported — owned by **Issue #49** (M1a
-  canonical incremental second-sync orchestration);
+- ~~a second sync imports only new/changed records where supported~~ — delivered by **Issue #49**
+  (M1a canonical incremental second-sync orchestration);
 - canonical source coverage reporting is explicit enough to distinguish complete and incomplete reads
   — owned by **Issue #51** (M1b canonical source-neutral partition/evidence coverage reporting).
 
-M1 is complete only after both Issues are accepted: `#48 → #49 → #51 → M1 complete`. Neither Issue
-alone closes the milestone and neither may take on the other's acceptance criterion.
+M1 is complete only after the remaining criterion is accepted: `#48 → #49 → #51 → M1 complete`.
+M1a alone does not close the milestone, and neither Issue may take on the other's acceptance
+criterion.
 
 ## M1.5 — Raw Vault preservation (incremental capture delivered; milestone incomplete)
 
@@ -346,15 +351,15 @@ and closed — the CI credibility work (Issue #40) and the deferred hardening th
 priority. `AGENTS.md` "Current priority" states the same order.
 
 1. **The next product P0 is one M1 release slice with two non-overlapping capability Issues, in
-   order.** **Issue #49 (M1a)** converges the canonical incremental second-sync path over the live
+   order.** **Issue #49 (M1a)** has converged the canonical incremental second-sync path over the live
    workflow — `sync --conversation` on the shared `CaptureService` → Raw Vault → conversation-scoped
    ingest orchestration already shipped for Collection sync — and owns the acceptance criterion *"a
    second sync imports only new/changed records where supported"*. **Issue #51 (M1b)** then adds
    canonical source-neutral partition/evidence coverage reporting on the stable sync-result boundary
    Issue #49 hands over, and owns the acceptance criterion *"canonical source coverage reporting is
    explicit enough to distinguish complete and incomplete reads"*. The graph is
-   `#48 → #49 → #51 → M1 complete`; M1 stays incomplete until both criteria are demonstrably met by
-   their owning Issues, and neither Issue may absorb the other's criterion.
+   `#48 → #49 → #51 → M1 complete`; M1 stays incomplete until the remaining criterion is demonstrably
+   met by its owning Issue, and neither Issue may absorb the other's criterion.
 2. The remaining M1.5 items — physical cross-generation storage deduplication and Raw Vault
    encryption-at-rest — stay open/deferred optimization and protection work. They are **not**
    prerequisites for closing the M1 canonical sync loop, and M1.5 itself remains incomplete. The

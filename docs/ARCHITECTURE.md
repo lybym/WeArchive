@@ -170,9 +170,29 @@ Key services:
 ```text
 SourceCatalogService   # describe source, list accounts/conversations, describe conversation
 ImportService          # adapter -> normalizer -> archive, with diagnostics
-ArchiveWorkflow        # sync/export coordination and archive statistics
+ArchiveWorkflow        # live re-import + export coordination and archive statistics (export path)
 ArchiveQueryService    # bounded canonical retrieval, context windows and freshness (section 3.9)
+SyncOrchestrationService # the one preservation-first boundary: capture -> Raw Vault -> per-conversation ingest
+ConversationSyncService  # one conversation on that boundary (sync --conversation)
+CollectionSyncService    # one named Collection on that boundary (section 3.8)
 ```
+
+`SyncOrchestrationService` is the single application-level sync boundary (Issue #49). Every
+live-source synchronization scope — one conversation or a named Collection — resolves its scope,
+then acquires evidence through `CaptureService` and publishes through
+`IConversationIngestService` on this boundary; no scope assembles its own capture/ingest pipeline
+and no CLI command owns capture policy, generation selection or checkpoint semantics:
+
+```text
+live source -> CaptureService -> immutable Raw Vault generation
+            -> conversation-scoped incremental ingest -> canonical SQLite + ingest checkpoint
+```
+
+`ImportService` remains the per-conversation publication engine: the Raw Vault ingest path uses it
+over captured evidence (section 10), and the export path re-imports from the live source.
+`ConversationSyncService` adds no second incremental-ingest implementation; it sequences the
+documented boundaries. Capture is **R1** and one conversation's publication is **R2**, unchanged
+(docs/DEVELOPMENT.md section 10).
 
 #### 3.2.1 Import publication
 
@@ -383,7 +403,9 @@ Responsibilities:
 - `CollectionSyncService` (Core) orchestrates one named Collection: resolve membership, capture
   required live-source evidence once through the shared `CaptureService`, then ingest each
   conversation through `IConversationIngestService`. It introduces no second source parser and no
-  JSONL scanning.
+  JSONL scanning. It depends on the same `SyncOrchestrationService` boundary
+  `sync --conversation` uses (section 3.2), so one preservation-first workflow serves both scopes
+  and the two selectors cannot drift apart (Issue #49).
 - The Raw Vault ingest implementation (`RawVaultIngestService`, Infrastructure) selects a
   conversation by stable conversation ID or upstream source conversation ID, so the Collection's
   membership keys address the same conversations the discovery surface reports.

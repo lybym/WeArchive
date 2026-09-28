@@ -27,19 +27,21 @@ The 0.2.x implementation already provides:
 
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
-- the incremental canonical (second-sync) path over the live adapter, and canonical
-  partition-coverage rollup;
+- canonical partition-coverage rollup (the incremental conversation-scoped second-sync path is
+  shipped by Issue #49; the canonical expected/read coverage contract remains Issue #51's gap);
 - FTS/keyword search and a CLI archive-status command (`message list` and `context` ship as the
   M3a structured-retrieval slice; the FTS index and full-text search remain open);
 - Collection-scoped query/search and export selection;
 - MCP transport.
 
 Delivered since the 0.2.x list was written: incremental Raw Vault capture with explicit partition
-coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), and the
-application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26), and the
+coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), the
+application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26), the
 M3a minimum structured retrieval slice: `ArchiveQueryService` with the `message list` / `context`
-CLI contract (Issue #27), and the WeChat source-partition completeness policy with its
-real-environment verification (Issue #37).
+CLI contract (Issue #27), the WeChat source-partition completeness policy with its
+real-environment verification (Issue #37), and the canonical incremental conversation second-sync
+path — `sync --conversation` converged on the shared `CaptureService` → Raw Vault →
+conversation-scoped ingest workflow (Issue #49).
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 
@@ -414,7 +416,10 @@ wearchive rebuild
 Shipped status: `capture`, `ingest`, `rebuild` and `sync --collection <name>` are implemented;
 `sync --collection` scopes capture + Raw Vault ingest over the application-level Collection catalog
 (Issue #26) and reuses `sync --conversation`'s resolution semantics rather than adding a second
-scope abstraction.
+scope abstraction. `sync --conversation` is implemented on the same preservation-first workflow
+(Issue #49): capture → immutable Raw Vault generation → conversation-scoped incremental ingest, so
+the two selectors share one application-level `SyncOrchestrationService` boundary instead of
+maintaining a separate direct-live canonical publication path.
 
 ### FR-30 Target query commands
 

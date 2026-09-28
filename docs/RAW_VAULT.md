@@ -58,6 +58,12 @@ already fully examined. `--conversation` scopes the operation to one source conv
 does not advance the account scan cursor; `--replay` reprocesses preserved generations after a
 reader repair and invalidates prior scan coverage until the replay catches up.
 
+`wearchive sync --conversation` and `wearchive sync --collection` use this same ingest path: they
+capture once through `CaptureService` and then publish the selected conversation(s) from the
+published generation, so each conversation's ingest checkpoint advances exactly as described here
+and a successfully published generation is never rolled back because a later ingest failed
+(docs/CLI.md, Issue #49).
+
 ## 2. Entities
 
 Conceptual entities (independent of the canonical archive schema):

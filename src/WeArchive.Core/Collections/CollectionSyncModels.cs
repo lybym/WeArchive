@@ -1,4 +1,5 @@
 using WeArchive.Core.RawVault;
+using WeArchive.Core.Services;
 
 namespace WeArchive.Core.Collections;
 
@@ -93,18 +94,18 @@ public sealed record CollectionSyncResult
 /// Capturing live-source evidence for a Collection did not publish a usable generation, so no
 /// member could be ingested. Capture is account-scoped and precedes per-member work, so this is an
 /// operation-level failure rather than a fabricated per-member failure.
+/// <para>
+/// It derives from the shared <see cref="SyncCaptureException"/> so every preservation-first sync
+/// scope surfaces the same capture condition, while the Collection keeps its scope detail.
+/// </para>
 /// </summary>
-public sealed class CollectionCaptureException : Exception
+public sealed class CollectionCaptureException : SyncCaptureException
 {
     public CollectionCaptureException(string collectionName, string message)
-        : base($"Capturing evidence for collection '{collectionName}' failed: {message}")
+        : base($"Capturing evidence for collection '{collectionName}' failed: {message}", message)
     {
         CollectionName = collectionName;
-        Reason = message;
     }
 
     public string CollectionName { get; }
-
-    /// <summary>The capture failure reason without the collection prefix.</summary>
-    public string Reason { get; }
 }
