@@ -42,9 +42,12 @@ internal sealed class SyntheticCaptureConversation
 }
 
 /// <summary>
-/// The synthetic live source behind a Collection sync test. It reports one account and nothing
-/// else: driving <c>CaptureService</c> is its only purpose, and the conversation surface of a live
-/// source is deliberately not simulated here (the captured evidence is what the ingest path reads).
+/// The synthetic live source behind a conversation- or Collection-scope sync test. It reports one
+/// account, and the live conversation surface of the same conversations its paired
+/// <see cref="SyntheticWeChatCaptureAdapter"/> preserves, so selector resolution
+/// (<c>sync --conversation</c>, <c>conversation show</c>) runs against a source that is consistent
+/// with the captured evidence. The captured evidence — not this surface — remains what the ingest
+/// path reads.
 /// </summary>
 internal sealed class SyntheticWeChatSourceAdapter : ISourceAdapter
 {
@@ -56,6 +59,12 @@ internal sealed class SyntheticWeChatSourceAdapter : ISourceAdapter
 
     /// <summary>When false, capture reports an unavailable source instead of publishing a generation.</summary>
     public bool IsAvailable { get; set; } = true;
+
+    /// <summary>
+    /// The conversations the live surface exposes. Tests mutate these same instances to model new
+    /// or changed source content, so the live surface and the preserved evidence move together.
+    /// </summary>
+    public IReadOnlyList<SyntheticCaptureConversation> Conversations { get; set; } = [];
 
     public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
         Task.FromResult(new SourceDescriptor
@@ -82,7 +91,16 @@ internal sealed class SyntheticWeChatSourceAdapter : ISourceAdapter
     public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
         string sourceProfileId,
         CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<SourceConversation>>([]);
+        Task.FromResult<IReadOnlyList<SourceConversation>>(
+        [
+            .. Conversations.Select(conversation => new SourceConversation
+            {
+                SourceConversationId = conversation.SourceConversationId,
+                Kind = SyntheticWeChatNaming.KindOf(conversation.SourceConversationId),
+                PeerSourceUserId = SyntheticWeChatNaming.PeerOf(conversation.SourceConversationId),
+                Title = conversation.SourceConversationId,
+            }),
+        ]);
 
     public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
         string sourceProfileId,
@@ -92,9 +110,23 @@ internal sealed class SyntheticWeChatSourceAdapter : ISourceAdapter
     public Task<SourceConversationDetail> DescribeConversationAsync(
         string sourceProfileId,
         string sourceConversationId,
-        CancellationToken cancellationToken) =>
-        throw new NotSupportedException(
-            "The synthetic source drives capture only; the captured evidence is what ingest reads.");
+        CancellationToken cancellationToken)
+    {
+        var conversation = Conversations.FirstOrDefault(candidate =>
+            string.Equals(candidate.SourceConversationId, sourceConversationId, StringComparison.Ordinal));
+        if (conversation is null)
+        {
+            throw new KeyNotFoundException(
+                $"The synthetic source exposes no conversation '{sourceConversationId}'.");
+        }
+
+        return Task.FromResult(new SourceConversationDetail
+        {
+            SourceConversationId = sourceConversationId,
+            MessageCount = Math.Max(conversation.MessageCount, 1),
+            ParticipantCount = 1,
+        });
+    }
 
     public IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
         string sourceProfileId,
@@ -113,8 +145,15 @@ internal sealed class SyntheticWeChatSourceAdapter : ISourceAdapter
 /// Evidence is built from <see cref="Conversations"/>, which a test may mutate between runs to
 /// model changed and unchanged source content and to model a later recovery of a failed member.
 /// </para>
+/// <para>
+/// It also implements the shipped incremental capture path (Issue #25): each database image has a
+/// deterministic source fingerprint over the SQL that materializes it, so an unchanged image is
+/// reused from the verified predecessor generation exactly as the live WeChat adapter reuses an
+/// unchanged partition. That keeps <c>capture_mode</c> meaningful in second-sync tests without a
+/// live client or a database key.
+/// </para>
 /// </summary>
-internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDisposable
+internal sealed class SyntheticWeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDisposable
 {
     private const string SourceDatabaseRole = "source-database";
 
@@ -141,11 +180,31 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
 
     public string CaptureAdapterFamily => WeChatCaptureAdapter.Family;
 
-    public string CaptureAdapterVersion => WeChatCaptureAdapter.Version;
+    /// <summary>
+    /// Mutable so a test can reproduce an adapter version change, which invalidates the published
+    /// capture checkpoint and makes the next capture widen to a full consistent snapshot
+    /// (Issue #25 / docs/DEVELOPMENT.md section 10.3.1).
+    /// </summary>
+    public string CaptureAdapterVersion { get; set; } = WeChatCaptureAdapter.Version;
 
-    public async Task<SourceCaptureResult> CaptureAsync(
+    public Task<SourceCaptureResult> CaptureAsync(
         string sourceProfileId,
         IRawGenerationSession session,
+        IProgress<CaptureProgress>? progress,
+        CancellationToken cancellationToken) =>
+        CaptureCoreAsync(session, null, progress, cancellationToken);
+
+    public Task<SourceCaptureResult> CaptureIncrementalAsync(
+        string sourceProfileId,
+        IRawGenerationSession session,
+        RawGeneration previous,
+        IProgress<CaptureProgress>? progress,
+        CancellationToken cancellationToken) =>
+        CaptureCoreAsync(session, previous, progress, cancellationToken);
+
+    private async Task<SourceCaptureResult> CaptureCoreAsync(
+        IRawGenerationSession session,
+        RawGeneration? previous,
         IProgress<CaptureProgress>? progress,
         CancellationToken cancellationToken)
     {
@@ -176,12 +235,43 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
             databases.Add(("message_1.db", "message/message_1.db", NotADatabaseMarker));
         }
 
+        var prior = previous?.Manifest.Coverage
+            .Where(entry => entry.Status is RawPartitionStatus.Captured or RawPartitionStatus.Reused)
+            .ToDictionary(entry => entry.PartitionId, StringComparer.Ordinal);
+
         var artifacts = new List<RawArtifactDescriptor>();
         var coverage = new List<RawPartitionCoverage>();
         for (var i = 0; i < databases.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (name, relativePath, sql) = databases[i];
+            var fingerprint = SyntheticWeChatNaming.Sha256Hex(Encoding.UTF8.GetBytes(sql));
+
+            // An unchanged image is reused from the verified predecessor instead of being
+            // reacquired, mirroring the live adapter's partition reuse (Issue #25).
+            var reusable = FindReusableArtifact(previous, prior, relativePath, fingerprint, name);
+            if (reusable is not null)
+            {
+                var reused = await session
+                    .ReuseArtifactAsync(previous!, reusable, cancellationToken)
+                    .ConfigureAwait(false);
+                artifacts.Add(reused);
+                coverage.Add(new RawPartitionCoverage
+                {
+                    PartitionId = relativePath,
+                    Status = RawPartitionStatus.Reused,
+                    SourceFingerprint = fingerprint,
+                    ArtifactSha256 = reused.Sha256,
+                });
+                progress?.Report(new CaptureProgress
+                {
+                    Stage = CaptureStages.Snapshotting,
+                    Processed = i + 1,
+                    Total = databases.Count,
+                });
+                continue;
+            }
+
             var path = Path.Combine(_scratchRoot, name);
             if (sql == NotADatabaseMarker)
             {
@@ -214,7 +304,7 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
             {
                 PartitionId = relativePath,
                 Status = RawPartitionStatus.Captured,
-                SourceFingerprint = descriptor.Sha256,
+                SourceFingerprint = fingerprint,
                 ArtifactSha256 = descriptor.Sha256,
             });
 
@@ -230,10 +320,30 @@ internal sealed class SyntheticWeChatCaptureAdapter : ISourceCaptureAdapter, IDi
         {
             Artifacts = artifacts,
             Coverage = coverage,
+            Mode = previous is null ? RawCaptureMode.Baseline : RawCaptureMode.Incremental,
             Completeness = RawGenerationCompleteness.Complete,
             SourceProductName = "WeChat for Windows",
             SourceVersion = "4.1.13.12",
         };
+    }
+
+    private static RawArtifactDescriptor? FindReusableArtifact(
+        RawGeneration? previous,
+        Dictionary<string, RawPartitionCoverage>? prior,
+        string partitionId,
+        string fingerprint,
+        string name)
+    {
+        if (previous is null ||
+            prior is null ||
+            !prior.TryGetValue(partitionId, out var entry) ||
+            !string.Equals(entry.SourceFingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return previous.Manifest.Artifacts.FirstOrDefault(artifact =>
+            string.Equals(artifact.Name, name, StringComparison.Ordinal));
     }
 
     private string BuildSessionSql()
@@ -363,20 +473,28 @@ internal static class SyntheticWeChatNaming
     /// <summary>A group conversation's upstream room id.</summary>
     public static string GroupId(string suffix) => suffix + "@chatroom";
 
+    /// <summary>The conversation kind the shipped WeChat classifier derives for an upstream id.</summary>
+    public static ConversationKind KindOf(string sourceConversationId) =>
+        WeChat4Schema.ClassifyConversation(sourceConversationId);
+
+    /// <summary>
+    /// The peer identity a direct conversation reports, mirroring
+    /// <c>WeChatWindowsSourceAdapter.ListConversationsAsync</c>; a group conversation has none.
+    /// </summary>
+    public static string? PeerOf(string sourceConversationId) =>
+        KindOf(sourceConversationId) == ConversationKind.Direct ? sourceConversationId : null;
+
     /// <summary>
     /// The stable conversation id the source surface reports for an upstream id, mirroring
     /// <c>WeChatWindowsSourceAdapter.ListConversationsAsync</c> (a direct conversation's peer is its
     /// own upstream id; a group conversation has no peer).
     /// </summary>
-    public static string StableConversationId(string accountId, string sourceConversationId)
-    {
-        var kind = WeChat4Schema.ClassifyConversation(sourceConversationId);
-        return StableIds.Conversation(
+    public static string StableConversationId(string accountId, string sourceConversationId) =>
+        StableIds.Conversation(
             accountId,
-            kind,
+            KindOf(sourceConversationId),
             sourceConversationId,
-            kind == ConversationKind.Direct ? sourceConversationId : null);
-    }
+            PeerOf(sourceConversationId));
 
     /// <summary>The WeChat 4.x message-shard table name for a conversation.</summary>
     public static string MessageTableName(string sourceConversationId) =>

@@ -21,8 +21,8 @@ public sealed class CollectionCliTests
     public async Task CollectionListReportsNamesInJsonAndHumanModes()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        using var harness = WeChatSyncHarness.Create(temp);
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA);
 
         var json = await RunAsync(harness, ["collection", "list", "--json", "--no-input"]);
@@ -48,7 +48,7 @@ public sealed class CollectionCliTests
     public async Task CollectionListWithoutAConfigurationIsAnEmptyResult()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(harness, ["collection", "list", "--json", "--no-input"]);
 
@@ -61,8 +61,8 @@ public sealed class CollectionCliTests
     public async Task CollectionListCountsInvalidAndDuplicateDeclarations()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        using var harness = WeChatSyncHarness.Create(temp);
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA, idA, "wxid_not_stable");
 
         var result = await RunAsync(harness, ["collection", "list", "--json", "--no-input"]);
@@ -81,8 +81,8 @@ public sealed class CollectionCliTests
     public async Task CollectionShowReturnsStableMembershipAndReportsInvalidAndDuplicateEntries()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        using var harness = WeChatSyncHarness.Create(temp);
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA, "wxid_not_stable", idA);
 
         var result = await RunAsync(harness, ["collection", "show", "project-x", "--json", "--no-input"]);
@@ -103,8 +103,8 @@ public sealed class CollectionCliTests
     public async Task CollectionShowHumanOutputListsMembership()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        using var harness = WeChatSyncHarness.Create(temp);
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA);
 
         var result = await RunAsync(harness, ["collection", "show", "project-x", "--no-input"]);
@@ -118,8 +118,8 @@ public sealed class CollectionCliTests
     public async Task CollectionShowOfAnUnknownNameIsADeterministicOperationFailure()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
-        harness.WriteCollection("project-x", harness.StableId(CollectionHarness.DirectId("a")));
+        using var harness = WeChatSyncHarness.Create(temp);
+        harness.WriteCollection("project-x", harness.StableId(WeChatSyncHarness.DirectId("a")));
 
         var result = await RunAsync(harness, ["collection", "show", "missing", "--json", "--no-input"]);
 
@@ -133,7 +133,7 @@ public sealed class CollectionCliTests
     public async Task CollectionShowWithoutANameIsAUsageError()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(harness, ["collection", "show", "--json", "--no-input"]);
 
@@ -146,7 +146,7 @@ public sealed class CollectionCliTests
     public async Task UnknownCollectionSubcommandIsAUsageError()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(harness, ["collection", "add", "project-x", "--json", "--no-input"]);
 
@@ -161,7 +161,7 @@ public sealed class CollectionCliTests
     public async Task MalformedConfigurationIsAConfigurationValidationFailure()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
         // An unterminated flow mapping is not valid YAML.
         harness.WriteConfiguration("collections: {\n");
 
@@ -181,7 +181,7 @@ public sealed class CollectionCliTests
     public async Task UnsupportedConfigurationSchemaVersionIsAConfigurationValidationFailure()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
         harness.WriteConfiguration("schema_version: 9.9\ncollections: {}\n");
 
         var result = await RunAsync(harness, ["collection", "show", "project-x", "--json", "--no-input"]);
@@ -197,11 +197,11 @@ public sealed class CollectionCliTests
     public async Task SyncCollectionReportsEveryMemberAndSucceeds()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" },
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.GroupId("100200300"), Text = "C message" });
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idC = harness.StableId(CollectionHarness.GroupId("100200300"));
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" },
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.GroupId("100200300"), Text = "C message" });
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idC = harness.StableId(WeChatSyncHarness.GroupId("100200300"));
         harness.WriteCollection("project-x", idA, idC);
 
         var result = await RunAsync(harness, ["sync", "--collection", "project-x", "--json", "--no-input"]);
@@ -234,17 +234,17 @@ public sealed class CollectionCliTests
     public async Task SyncCollectionPartialFailureExitsNonZeroAndStillReportsSuccessfulMembers()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A committed" },
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A committed" },
             new SyntheticCaptureConversation
             {
-                SourceConversationId = CollectionHarness.GroupId("100200300"),
+                SourceConversationId = WeChatSyncHarness.GroupId("100200300"),
                 Text = "C unreadable",
                 MessageTablePresent = false,
                 MessageShardUnreadable = true,
             });
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
-        var idC = harness.StableId(CollectionHarness.GroupId("100200300"));
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idC = harness.StableId(WeChatSyncHarness.GroupId("100200300"));
         harness.WriteCollection("project-x", idA, idC);
 
         var result = await RunAsync(harness, ["sync", "--collection", "project-x", "--json", "--no-input"]);
@@ -267,16 +267,16 @@ public sealed class CollectionCliTests
 
         // The successful member really committed; the failed one left no state behind.
         Assert.NotNull(await harness.ConversationCheckpointAsync(idA));
-        Assert.Null(await harness.FindConversationAsync(CollectionHarness.GroupId("100200300")));
+        Assert.Null(await harness.FindConversationAsync(WeChatSyncHarness.GroupId("100200300")));
     }
 
     [Fact]
     public async Task SyncCollectionHumanOutputReportsMembersAndASummary()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
-        var idA = harness.StableId(CollectionHarness.DirectId("a"));
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
         harness.WriteCollection("project-x", idA);
 
         var result = await RunAsync(harness, ["sync", "--collection", "project-x", "--no-input"]);
@@ -291,7 +291,7 @@ public sealed class CollectionCliTests
     public async Task SyncCollectionOfAnUnknownNameFailsWithADeterministicCode()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(harness, ["sync", "--collection", "missing", "--json", "--no-input"]);
 
@@ -304,9 +304,9 @@ public sealed class CollectionCliTests
     public async Task SyncCollectionCaptureFailureIsReportedAsAnOperationFailure()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp,
-            new SyntheticCaptureConversation { SourceConversationId = CollectionHarness.DirectId("a"), Text = "A message" });
-        harness.WriteCollection("project-x", harness.StableId(CollectionHarness.DirectId("a")));
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A message" });
+        harness.WriteCollection("project-x", harness.StableId(WeChatSyncHarness.DirectId("a")));
         harness.Source.IsAvailable = false;
 
         var result = await RunAsync(harness, ["sync", "--collection", "project-x", "--json", "--no-input"]);
@@ -320,7 +320,7 @@ public sealed class CollectionCliTests
     public async Task SyncRejectsBothSelectors()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(
             harness, ["sync", "--collection", "project-x", "--conversation", "wxid_a", "--json", "--no-input"]);
@@ -334,7 +334,7 @@ public sealed class CollectionCliTests
     public async Task SyncWithoutASelectorIsAUsageError()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(harness, ["sync", "--json", "--no-input"]);
 
@@ -349,7 +349,7 @@ public sealed class CollectionCliTests
     public async Task HelpListsTheCollectionCommand()
     {
         using var temp = new TempDirectory();
-        using var harness = CollectionHarness.Create(temp);
+        using var harness = WeChatSyncHarness.Create(temp);
 
         var result = await RunAsync(harness, ["--help", "--json"]);
 
@@ -365,7 +365,7 @@ public sealed class CollectionCliTests
 
     // ---- helpers -----------------------------------------------------------
 
-    private static async Task<CliRun> RunAsync(CollectionHarness harness, string[] args)
+    private static async Task<CliRun> RunAsync(WeChatSyncHarness harness, string[] args)
     {
         var stdout = new StringWriter();
         var stderr = new StringWriter();

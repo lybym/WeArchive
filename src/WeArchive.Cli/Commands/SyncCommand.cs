@@ -1,7 +1,6 @@
 using WeArchive.Cli.CommandLine;
 using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
-using WeArchive.Core.Abstractions;
 using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
 using WeArchive.Core.Services;
@@ -10,17 +9,18 @@ namespace WeArchive.Cli.Commands;
 
 /// <summary>
 /// <c>wearchive sync --conversation &lt;id-or-alias&gt;</c> and
-/// <c>wearchive sync --collection &lt;name&gt;</c>: imports one conversation, or every conversation a
-/// named Collection scopes, from the local source into the SQLite archive
-/// (docs/PRD.md FR-04/FR-08/FR-09/FR-23/FR-29, docs/ROADMAP.md M0.5/M4).
+/// <c>wearchive sync --collection &lt;name&gt;</c>: synchronizes one conversation, or every
+/// conversation a named Collection scopes, from the local source into the SQLite archive
+/// (docs/PRD.md FR-04/FR-08/FR-09/FR-14/FR-23/FR-29, docs/ROADMAP.md M0.5/M1/M4).
 /// <para>
-/// This is a thin transport adapter. The <c>--conversation</c> path resolves the requested
-/// conversation through the source catalog using the same stable upstream identifier the
-/// <see cref="ImportService"/> consumes, then delegates publication entirely to
-/// <see cref="ImportService"/>. The <c>--collection</c> path delegates the whole
-/// capture-then-ingest scope to <see cref="CollectionSyncService"/>. This command contains no
-/// normalization, no WeChat schema logic and no archive transaction semantics: a Fatal
-/// source-coverage failure rolls back the whole conversation transaction inside the importer (R2).
+/// This is a thin transport adapter. Both selectors resolve through the same stable-id /
+/// upstream-id matching <c>conversation show</c> uses, and both publish through the one
+/// preservation-first workflow: <see cref="ConversationSyncService"/> and
+/// <see cref="CollectionSyncService"/> delegate live capture, Raw Vault generation selection and
+/// conversation-scoped incremental ingest to the shared application boundary. The command contains
+/// no normalization, no WeChat schema logic, no capture policy and no archive transaction
+/// semantics: a Fatal ingest failure rolls the conversation transaction back inside the importer
+/// (R2).
 /// </para><para>
 /// Collection execution is multi-scope, not one transaction, so its result document reports each
 /// conversation's own outcome and the process exits non-zero when any requested conversation failed
@@ -30,17 +30,17 @@ namespace WeArchive.Cli.Commands;
 public sealed class SyncCommand : ICliCommand
 {
     private readonly SourceCatalogService _catalog;
-    private readonly ImportService _importer;
+    private readonly ConversationSyncService _conversationSync;
     private readonly SourceConversationResolver _resolver;
     private readonly CollectionSyncService _collectionSync;
 
     public SyncCommand(
         SourceCatalogService catalog,
-        ImportService importer,
+        ConversationSyncService conversationSync,
         CollectionSyncService collectionSync)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
-        _importer = importer ?? throw new ArgumentNullException(nameof(importer));
+        _conversationSync = conversationSync ?? throw new ArgumentNullException(nameof(conversationSync));
         _collectionSync = collectionSync ?? throw new ArgumentNullException(nameof(collectionSync));
         _resolver = new SourceConversationResolver(catalog);
     }
@@ -78,78 +78,78 @@ public sealed class SyncCommand : ICliCommand
             return ExitCode.Failure;
         var (account, source) = resolved.Value;
 
-        CliReporting.Progress(context, $"Probing '{source.SourceConversationId}'…");
-        SourceConversationDetail detail;
+        var accountId = StableIds.Account(_catalog.AdapterName, account.SourceProfileId);
+        var conversationId = StableIds.Conversation(
+            accountId, source.Kind, source.SourceConversationId, source.PeerSourceUserId);
+
+        CliReporting.Progress(context, $"Synchronizing {conversationId} from the live source…");
+
+        ConversationSyncResult outcome;
         try
         {
-            detail = await _catalog
-                .DescribeConversationAsync(account.SourceProfileId, source.SourceConversationId, cancellationToken)
+            outcome = await _conversationSync
+                .SyncAsync(
+                    new ConversationSyncRequest
+                    {
+                        // Pinning the profile the resolver selected keeps capture and ingest on the
+                        // same account the selector resolved against (no prompt, safe under
+                        // --no-input).
+                        SourceProfileId = account.SourceProfileId,
+                        // Canonical identity is the stable conversation id, not the mutable alias
+                        // the caller typed (docs/DATA_MODEL.md section 16).
+                        ConversationId = conversationId,
+                    },
+                    new HumanProgress(context),
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            throw;
+            // Cancellation follows the phase that was in flight: a cancelled capture publishes
+            // nothing, and a cancelled ingest rolls back the in-flight conversation together with
+            // its ingest checkpoint. A successfully published Raw Vault generation is retained
+            // (docs/DEVELOPMENT.md section 10, docs/CLI.md).
+            context.WriteError(
+                CliErrorCode.Cancelled,
+                "sync --conversation was cancelled; the in-flight conversation was rolled back and any published Raw Vault generation is retained.");
+            return ExitCode.Cancelled;
         }
-        catch (Exception ex)
+        catch (SyncCaptureException ex)
         {
-            // The probe only fills the progress total, but a source that fails it after the
-            // conversation resolved is the same condition `conversation show` reports as
-            // `conversation_describe_failed`. Surface that granular code instead of letting
-            // CliHost collapse it to a generic `failure` (docs/CLI.md error table).
-            context.WriteError(CliErrorCode.ConversationDescribeFailed, ex.Message);
+            // Capture is account-scoped and mandatory: a capture that publishes nothing is an
+            // operation-level failure, never a fabricated per-conversation result.
+            context.WriteError(CliErrorCode.CaptureFailed, ex.Message);
+            return ExitCode.Failure;
+        }
+        catch (ConversationNotInRawVaultException ex)
+        {
+            context.WriteError(CliErrorCode.ConversationNotFound, ex.Message);
             return ExitCode.Failure;
         }
 
-        var request = new ImportRequest
+        // Capture-side findings (a full-snapshot fallback, a completeness downgrade, …) are human
+        // diagnostics on stderr. They are never part of the stdout machine document, and the
+        // canonical coverage contract remains owned by Issue #51.
+        foreach (var diagnostic in outcome.CaptureDiagnostics)
         {
-            SourceProfileId = account.SourceProfileId,
-            SourceConversationId = source.SourceConversationId,
-            Kind = source.Kind,
-            PeerSourceUserId = source.PeerSourceUserId,
-            ConversationTitle = source.Title,
-            TotalHint = detail.MessageCount,
-        };
-
-        var progress = new CliProgress<OperationProgress>(context, FormatProgress);
-        var outcome = await _importer
-            .ImportConversationAsync(request, progress, cancellationToken)
-            .ConfigureAwait(false);
-
-        // A Fatal source-coverage failure is returned (not thrown) by ImportService with
-        // Status=Failed after the whole conversation transaction was rolled back (R2, FR-14).
-        // The CLI surfaces it as a runtime failure (exit 1); the archive keeps the exact state
-        // it had before the run, so no partial conversation is published.
-        if (outcome.Run.Status != ImportRunStatus.Completed)
-        {
-            var fatal = outcome.Diagnostics.LastOrDefault(d => d.Severity == DiagnosticSeverity.Fatal);
-            var message = fatal?.Message
-                ?? $"Import did not complete (status: {outcome.Run.Status}).";
-            context.WriteError(CliErrorCode.Failure, message);
-            return ExitCode.Failure;
+            CliReporting.Progress(
+                context, $"capture {diagnostic.Severity} {diagnostic.Code}: {diagnostic.Message}");
         }
 
-        var accountId = StableIds.Account(_catalog.AdapterName, account.SourceProfileId);
         var result = new SyncResultDto
         {
             ConversationId = outcome.ConversationId,
-            AccountId = accountId,
-            SourceProfileId = account.SourceProfileId,
+            AccountId = outcome.AccountId,
+            SourceProfileId = outcome.SourceProfileId,
             SourceConversationId = source.SourceConversationId,
-            RecordsScanned = outcome.Run.RecordsScanned,
-            Counters = new SyncCountersDto
-            {
-                Inserted = outcome.Run.RecordsInserted,
-                Updated = outcome.Run.RecordsUpdated,
-                Unchanged = outcome.Run.RecordsSkipped,
-                Unknown = outcome.Run.UnknownCount,
-                Partial = outcome.Run.PartialCount,
-            },
-            FirstMessageAt = FormatTimestamp(outcome.FirstMessageAt),
-            LastMessageAt = FormatTimestamp(outcome.LastMessageAt),
-            Diagnostics = [.. outcome.Diagnostics.Select(CliDiagnosticDto.From)],
+            Status = FormatStatus(outcome.Status),
+            ConversationsIngested = outcome.ConversationsIngested,
+            GenerationId = outcome.GenerationId,
+            CaptureMode = outcome.CaptureMode.ToString().ToLowerInvariant(),
+            PreviousGenerationId = outcome.PreviousGenerationId,
         };
 
-        WriteResult(context, result, accountId);
+        WriteResult(context, result);
         return ExitCode.Success;
     }
 
@@ -192,7 +192,7 @@ public sealed class SyncCommand : ICliCommand
             context.WriteError(CliErrorCode.CollectionNotFound, ex.Message);
             return ExitCode.Failure;
         }
-        catch (CollectionCaptureException ex)
+        catch (SyncCaptureException ex)
         {
             // Capture is account-scoped and mandatory for a Collection sync, so a capture that
             // publishes nothing fails the operation instead of fabricating per-member failures.
@@ -278,7 +278,7 @@ public sealed class SyncCommand : ICliCommand
 
     // ---- rendering ---------------------------------------------------------
 
-    private static void WriteResult(CliContext context, SyncResultDto result, string accountId)
+    private static void WriteResult(CliContext context, SyncResultDto result)
     {
         if (context.Options.Json)
         {
@@ -287,20 +287,13 @@ public sealed class SyncCommand : ICliCommand
         }
 
         context.Stdout.WriteLine($"Synced conversation {result.ConversationId}");
-        context.Stdout.WriteLine($"  account:  {accountId}");
+        context.Stdout.WriteLine($"  account:    {result.AccountId} ({result.SourceProfileId})");
+        context.Stdout.WriteLine($"  source:     {result.SourceConversationId}");
+        context.Stdout.WriteLine($"  generation: {result.GenerationId} ({result.CaptureMode})");
         context.Stdout.WriteLine(
-            $"  records:  {result.Counters.Inserted} new, {result.Counters.Updated} updated, {result.Counters.Unchanged} unchanged");
-        context.Stdout.WriteLine(
-            $"  coverage: {result.Counters.Unknown} unknown, {result.Counters.Partial} partial");
-
-        if (result.Diagnostics.Count > 0)
-        {
-            context.Stdout.WriteLine("  diagnostics:");
-            foreach (var d in result.Diagnostics)
-            {
-                context.Stdout.WriteLine($"    {d.Severity} {d.Code}: {d.Message}");
-            }
-        }
+            result.Status == FormatStatus(SyncPublicationStatus.NoChange)
+                ? "  result:     no_change (evidence already covered; nothing republished)"
+                : $"  result:     succeeded ({result.ConversationsIngested} conversation published)");
     }
 
     private static void WriteCollectionResult(CliContext context, CollectionSyncResultDto result)
@@ -321,13 +314,9 @@ public sealed class SyncCommand : ICliCommand
             $"  summary: {result.Summary.Succeeded} succeeded, {result.Summary.NoChange} unchanged, {result.Summary.Failed} failed of {result.Summary.Requested}");
     }
 
-    private static string FormatProgress(OperationProgress p) =>
-        p.Total > 0
-            ? $"{p.Stage}: {p.Processed}/{p.Total}"
-            : string.IsNullOrEmpty(p.Stage) ? string.Empty : p.Stage;
-
-    private static string? FormatTimestamp(DateTimeOffset? value) =>
-        value is null ? null : value.Value.ToString("yyyy-MM-dd'T'HH:mm:sszzz", System.Globalization.CultureInfo.InvariantCulture);
+    /// <summary>Stable wire name of a publication outcome, shared by the JSON and human renderings.</summary>
+    private static string FormatStatus(SyncPublicationStatus status) =>
+        status == SyncPublicationStatus.NoChange ? "no_change" : "succeeded";
 
     /// <summary>
     /// Forwards application progress to the human diagnostics stream synchronously (unlike

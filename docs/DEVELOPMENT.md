@@ -405,6 +405,14 @@ checkpoint unchanged; already committed conversations remain published. Process-
 the normal SQLite committed/uncommitted transaction behavior described above, with no application
 journal or separate recovery state.
 
+Conversation-scoped live sync (`sync --conversation`) and Collection-scoped sync
+(`sync --collection`) both publish through that same Raw Vault ingestion path on one application
+boundary (Issue #49). Capture is R1 and each conversation's canonical publication is R2, so
+`sync --conversation` cancellation follows the ingest semantics above: the in-flight conversation
+and its checkpoint roll back together, and a Raw Vault generation that was already published
+before the ingest phase is retained rather than rolled back. This deliberately replaces the older
+direct-live `sync` behavior, which kept already-read records on cancellation.
+
 ### 10.5 R3+ — Explicit crash-recovery protocol
 
 Any requirement that needs recovery across process crash/restart through persistent journals, commit markers, rollback state, multi-file transaction protocols or recovery state machines is **not a default engineering improvement**. It is a separate reliability feature and requires explicit PRD/Issue/milestone authorization before implementation.

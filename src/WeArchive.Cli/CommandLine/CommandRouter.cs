@@ -58,7 +58,7 @@ public sealed class CommandRouter
                 "List conversations or show one (list | show <id-or-alias>)."),
             ["sync"] = new(sp => new Commands.SyncCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
-                sp.GetRequiredService<ImportService>(),
+                sp.GetRequiredService<ConversationSyncService>(),
                 sp.GetRequiredService<CollectionSyncService>()),
                 "Import one conversation or a Collection into the archive."),
             ["export"] = new(sp => new Commands.ExportCommand(
