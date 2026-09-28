@@ -112,14 +112,19 @@ Delivered:
 
 Still missing:
 
-- **Canonical second-sync path.** Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and live-source capture checkpoints plus explicit partition-coverage reporting are delivered by Issue #25; incremental canonical synchronization over the live adapter is still open.
-- **Full partition-coverage reporting on the canonical import path.** Capture-side expected/captured/reused/unavailable/unsupported coverage is delivered by Issue #25; the canonical import path still diagnoses missing/unreadable partitions without a complete expected/read rollup.
+- **Canonical second-sync path** — the gap Issue #49 (M1a) owns. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and live-source capture checkpoints plus explicit partition-coverage reporting are delivered by Issue #25; incremental canonical synchronization over the live adapter is still open.
+- **Full partition-coverage reporting on the canonical import path** — the gap Issue #51 (M1b) owns. Capture-side expected/captured/reused/unavailable/unsupported coverage is delivered by Issue #25; the canonical import path still diagnoses missing/unreadable partitions without a complete expected/read rollup.
 
-Acceptance criteria still outstanding (tracked by Issue #49, the next product P0 after the `v0.3.1`
-Stable baseline):
+Acceptance criteria still outstanding — the next product P0 after the `v0.3.1` Stable baseline is one
+M1 release slice made of two non-overlapping capability Issues, one per remaining criterion:
 
-- a second sync imports only new/changed records where supported;
-- canonical source coverage reporting is explicit enough to distinguish complete and incomplete reads.
+- a second sync imports only new/changed records where supported — owned by **Issue #49** (M1a
+  canonical incremental second-sync orchestration);
+- canonical source coverage reporting is explicit enough to distinguish complete and incomplete reads
+  — owned by **Issue #51** (M1b canonical source-neutral partition/evidence coverage reporting).
+
+M1 is complete only after both Issues are accepted: `#48 → #49 → #51 → M1 complete`. Neither Issue
+alone closes the milestone and neither may take on the other's acceptance criterion.
 
 ## M1.5 — Raw Vault preservation (incremental capture delivered; milestone incomplete)
 
@@ -142,7 +147,7 @@ Delivered:
 - automatic widening to a full consistent snapshot whenever incremental safety cannot be proven (Issue #25).
 
 Still missing (non-goals of the rebuild slice, and open/deferred rather than prerequisites for the
-M1 canonical sync loop tracked by Issue #49):
+M1 canonical sync loop tracked by Issues #49 and #51):
 
 - physical cross-generation storage-dedup optimization;
 - Raw Vault encryption-at-rest.
@@ -340,11 +345,16 @@ and closed — the CI credibility work (Issue #40) and the deferred hardening th
 `capture --account` stable-id defect (Issue #39) — so it is historical context, not an active
 priority. `AGENTS.md` "Current priority" states the same order.
 
-1. **M1 completion is the next product P0** (Issue #49): the canonical incremental second-sync path
-   over the live workflow — `sync --conversation` converged on the shared
-   `CaptureService` → Raw Vault → conversation-scoped ingest orchestration — plus canonical
-   partition-coverage reporting. M1 stays incomplete until its two outstanding acceptance criteria
-   are demonstrably met.
+1. **The next product P0 is one M1 release slice with two non-overlapping capability Issues, in
+   order.** **Issue #49 (M1a)** converges the canonical incremental second-sync path over the live
+   workflow — `sync --conversation` on the shared `CaptureService` → Raw Vault → conversation-scoped
+   ingest orchestration already shipped for Collection sync — and owns the acceptance criterion *"a
+   second sync imports only new/changed records where supported"*. **Issue #51 (M1b)** then adds
+   canonical source-neutral partition/evidence coverage reporting on the stable sync-result boundary
+   Issue #49 hands over, and owns the acceptance criterion *"canonical source coverage reporting is
+   explicit enough to distinguish complete and incomplete reads"*. The graph is
+   `#48 → #49 → #51 → M1 complete`; M1 stays incomplete until both criteria are demonstrably met by
+   their owning Issues, and neither Issue may absorb the other's criterion.
 2. The remaining M1.5 items — physical cross-generation storage deduplication and Raw Vault
    encryption-at-rest — stay open/deferred optimization and protection work. They are **not**
    prerequisites for closing the M1 canonical sync loop, and M1.5 itself remains incomplete. The
@@ -354,15 +364,17 @@ priority. `AGENTS.md` "Current priority" states the same order.
 4. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.
 
 FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest are all
-outside the M1 implementation scope; do not pull them into Issue #49.
+outside the M1 implementation scope; do not pull them into Issue #49 or Issue #51.
 
 **Issue #47** (profile-id selector case-sensitivity across `capture`/`conversation`, plus the PR #44
 fail-closed test-gap hardening) is a post-`v0.3.1` **P2 non-blocking hardening follow-up**. It is not
-the next P0 product line and it does not gate M1.
+the next P0 product line, it does not gate M1, and it is parallelizable with Issues #49 and #51.
 
 Issue #24 delivered conversation-scoped Raw Vault ingest checkpoints and Issue #25 delivered
-incremental live-source capture with explicit partition coverage; both are shipped and are the
-foundation Issue #49 builds on rather than work to repeat.
+incremental live-source capture with explicit capture-side partition coverage; both are shipped and
+are the foundation Issue #49 builds on rather than work to repeat. The capture-side coverage of
+Issue #25 and the source-partition support policy of Issue #37 are likewise the evidence source
+Issue #51 maps into canonical coverage semantics — without redefining either of them.
 
 Issue #26 delivered the M4 Collection sync foundation (Collection catalog, `collection list`/`show`,
 `sync --collection`); Collection-scoped query/search and export selection remain follow-up work.
