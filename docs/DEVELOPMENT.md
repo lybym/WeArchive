@@ -166,6 +166,35 @@ docs/update-data-model
 
 Avoid mixing unrelated refactors with product changes.
 
+### 6.1 Release branching
+
+Releases follow one normative flow:
+
+```text
+Feature Issue
+   ↓
+Feature PR → main
+   ↓
+main verified
+   ↓
+release/vX.Y.Z branched from main
+   ↓
+Release PR: version bump / release notes / packaging metadata only
+   ↓
+Release review
+   ↓
+merge → main
+   ↓
+tag / stable release
+```
+
+**Hard rule: a Release PR must not introduce product feature code.** Feature PRs must be merged to `main` first; a release branch is created from `main` and its Release PR only converges version numbers, release notes and packaging metadata. Fixes discovered during release review follow the same path: they land on `main` first and the release branch is then refreshed or re-created, so `--generate-notes`, PR audits, release diffs and rollbacks stay traceable.
+
+Branch lifecycle:
+
+- Release PRs are squash-merged, so a merged release branch (for example `release/v0.3.0`) is expected to remain historically divergent from `main` even when the content is identical. That divergence is never reconciled with ceremony merges.
+- A merged release branch is closed history. It is never used as the baseline for the next development round; the next release (for example `release/v0.3.1`) is branched fresh from `main` at or after the previous tag.
+
 ## 7. Testing policy
 
 ### Unit tests

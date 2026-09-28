@@ -34,6 +34,7 @@ Layout and dependency direction are normative in `docs/ARCHITECTURE.md` and `doc
 - Every feature must map to a PRD requirement and Roadmap milestone.
 - **Every non-trivial PR must have a pre-existing GitHub Issue created before the PR is opened.** The Issue must define the goal/scope/acceptance criteria, and the PR must reference it with `Closes #N` or `Refs #N` as appropriate.
 - **Creating an Issue after a PR has already been opened does not satisfy the Issue-first rule.** If that happens, close the invalid PR, establish the Issue, then open a replacement PR referencing it.
+- **A Release PR must not introduce product feature code.** Feature PRs must be merged to `main` first; `release/vX.Y.Z` is branched from `main` and its Release PR only converges version numbers, release notes and packaging metadata (see `docs/DEVELOPMENT.md` §6.1). A merged release branch is closed history and is never the next development baseline.
 - The PR must stay within the predecessor Issue scope. Materially new product/reliability/architecture scope requires updating/approving the Issue or creating another Issue before implementation expands.
 - Source/client-specific behavior must remain behind the adapter boundary.
 - Normalizer output must follow `docs/MESSAGE_SCHEMA.md`.
@@ -137,7 +138,13 @@ wearchive capture [--account <id>]
 
 Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 
-Current priority is **M1.5 — Raw Vault capture and canonical rebuild** (Issues #22/#23/#25; foundation and incremental capture delivered, milestone remains incomplete), then remaining M1 work. Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit partition-coverage reporting. Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Issue #27 delivers the M3a minimum structured retrieval slice: `ArchiveQueryService` plus the `message list` / `context` CLI contract, read-only over the canonical archive with no FTS index and no schema migration. Continue to M2/M3/M4 after M1 completion.
+**v0.3.0 is the current stable baseline** (Release Issue #35): the M1.5 capture slice and the Raw-Vault-only canonical rebuild are verified in the real environment (complete baseline → incremental reuse → Raw-Vault-only rebuild → 216662 messages). Post-release priorities, in order:
+
+1. **CI credibility**: restore Actions artifact quota hygiene and make the portable-ZIP upload non-blocking (Issue #40) so `main` does not run red on convenience-artifact failures.
+2. **Issue #39** ([post-0.3.0] deferred hardening and the `capture --account` stable-id defect): the first batch of 0.3.1 work.
+3. Then the remaining milestone order: M1.5 remainder (cross-generation dedup and encryption-at-rest stay open), M1 completion, then M2/M3/M4.
+
+Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit partition-coverage reporting. Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Issue #27 delivers the M3a minimum structured retrieval slice: `ArchiveQueryService` plus the `message list` / `context` CLI contract, read-only over the canonical archive with no FTS index and no schema migration. Continue to M2/M3/M4 after M1 completion.
 
 Collection remains the one scope abstraction: do not add a `sync-group`, `watch-list` or `harness-dataset` model, and do not make the derived export-package `collections.yaml` authoritative for product behavior.
 
