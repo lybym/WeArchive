@@ -294,6 +294,114 @@ public sealed class RebuildServiceTests
     }
 
     [Fact]
+    public async Task ReusedRequiredMessageShardStillProvesRequiredMessageEvidence()
+    {
+        // Issue #47 (PR #44 test-gap hardening): an incremental run re-verifies partition
+        // fingerprints and reuses unchanged preserved artifacts, so in the shipped shape the
+        // Required message shard of every generation after the baseline is recorded as `reused`,
+        // not `captured`. The rebuild must accept that evidence — otherwise every incremental
+        // generation would lose the provably-empty verdict and regress to Fatal — because
+        // RawVaultGenerationSession.ReuseArtifactAsync materializes the reused bytes inside the new
+        // generation, so only the coverage status differs from a captured shard.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true,
+            messageShardCoverageStatus: RawPartitionStatus.Reused);
+        var archivePath = temp.Combine("archive", "wearchive.db");
+
+        var result = await new RebuildService(vault, archivePath, new FixedClock())
+            .RebuildAsync(null, CancellationToken.None);
+
+        Assert.Equal(2, result.Stats.ConversationCount);
+        Assert.Equal(1, result.Stats.MessageCount);
+        Assert.Empty(result.SkippedAccounts);
+    }
+
+    [Fact]
+    public async Task ReusedRequiredMessageShardWithoutCheckpointEvidenceDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #47 (PR #44 test-gap hardening): `reused` is accepted by the predicate exactly as
+        // `captured` is, so it must fail closed the same way. A reused Required message shard whose
+        // fingerprint is absent from the checkpoint's captured/reused set proves nothing about this
+        // generation, and the table-less conversation keeps the Fatal semantics rather than being
+        // published as legitimately empty.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+
+        await AssertEvidenceNotProvenAsync(
+            temp, vault, profile, accountId,
+            omitMessageShardFromCheckpoint: true,
+            messageShardCoverageStatus: RawPartitionStatus.Reused);
+    }
+
+    [Fact]
+    public async Task CheckpointOfAnotherVersionDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #47 (PR #44 test-gap hardening): the predicate only understands checkpoint
+        // version 1. A future or hand-built version is not "close enough" — its field meanings are
+        // not defined for this reader, so it proves nothing (docs/RAW_VAULT.md section 7).
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+
+        await AssertEvidenceNotProvenAsync(temp, vault, profile, accountId, checkpointVersion: 2);
+    }
+
+    [Fact]
+    public async Task CheckpointOfAnotherGenerationDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #47 (PR #44 test-gap hardening): the checkpoint is this generation's capture
+        // cursor. A checkpoint naming a different generation could only prove evidence for that
+        // other generation, so coverage cross-checked against it is rejected.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+
+        await AssertEvidenceNotProvenAsync(
+            temp, vault, profile, accountId, checkpointGenerationId: "gen_" + new string('0', 16));
+    }
+
+    [Fact]
+    public async Task CheckpointOfAnotherCaptureAdapterFamilyDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #47 (PR #44 test-gap hardening): mirroring WeChatCaptureAdapter.BuildPriorMap, a
+        // checkpoint written by a different capture adapter family is not evidence for this
+        // generation's partitions, even though its coverage names the Required message shards.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+
+        await AssertEvidenceNotProvenAsync(
+            temp, vault, profile, accountId, checkpointCaptureAdapterFamily: "other-adapter");
+    }
+
+    [Fact]
+    public async Task CheckpointOfAnotherCaptureAdapterVersionDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #47 (PR #44 test-gap hardening): the capture adapter version is part of the
+        // checkpoint identity; a disagreement means the fingerprint semantics counted by coverage
+        // are not the ones the checkpoint recorded, so the generation fails closed.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+
+        await AssertEvidenceNotProvenAsync(
+            temp, vault, profile, accountId, checkpointCaptureAdapterVersion: "0.2.0");
+    }
+
+    [Fact]
     public async Task AccountDirectoryWithoutAPublishedGenerationIsReportedAndSkipped()
     {
         using var temp = new TempDirectory();
@@ -1036,6 +1144,50 @@ public sealed class RebuildServiceTests
         Assert.Empty(await archive.ListConversationsAsync(accountId, CancellationToken.None));
     }
 
+    /// <summary>
+    /// Publishes a complete generation whose coverage names every Required message shard, applies
+    /// the given checkpoint defect to it, and asserts that the captured reader refuses to treat
+    /// that evidence as proof: reading the table-less conversation keeps the existing Fatal
+    /// <c>partition_missing</c> outcome instead of publishing it as legitimately empty
+    /// (Issue #47, PR #44 fail-closed follow-ups). Such manifests are not reachable through the
+    /// shipped capture path and are rejected by `RawManifestSerializer` on read; the predicate is
+    /// the second line of defence for hand-built or future manifests.
+    /// </summary>
+    private static async Task AssertEvidenceNotProvenAsync(
+        TempDirectory temp,
+        RawVaultStore vault,
+        string profile,
+        string accountId,
+        int checkpointVersion = 1,
+        string? checkpointGenerationId = null,
+        string? checkpointCaptureAdapterFamily = null,
+        string? checkpointCaptureAdapterVersion = null,
+        bool omitMessageShardFromCheckpoint = false,
+        RawPartitionStatus messageShardCoverageStatus = RawPartitionStatus.Captured)
+    {
+        var generation = await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true,
+            checkpointVersion: checkpointVersion,
+            checkpointGenerationId: checkpointGenerationId,
+            checkpointCaptureAdapterFamily: checkpointCaptureAdapterFamily,
+            checkpointCaptureAdapterVersion: checkpointCaptureAdapterVersion,
+            omitMessageShardFromCheckpoint: omitMessageShardFromCheckpoint,
+            messageShardCoverageStatus: messageShardCoverageStatus);
+
+        using var adapter = CapturedWeChatSourceAdapter.Create(generation);
+        var error = await Assert.ThrowsAsync<SourceCoverageException>(async () =>
+        {
+            await foreach (var _ in adapter.ReadMessagesAsync(
+                profile, "wxid_never_messaged", CancellationToken.None))
+            {
+            }
+        });
+        Assert.Equal(DiagnosticCodes.PartitionMissing, error.Code);
+    }
+
     private static async Task<RawGeneration> PublishGenerationAsync(
         RawVaultStore vault,
         string scratch,
@@ -1058,7 +1210,13 @@ public sealed class RebuildServiceTests
         bool publishCoverage = false,
         bool omitMessageShardFromCoverage = false,
         bool publishCheckpoint = true,
-        string? checkpointFingerprintOverride = null)
+        string? checkpointFingerprintOverride = null,
+        int checkpointVersion = 1,
+        string? checkpointGenerationId = null,
+        string? checkpointCaptureAdapterFamily = null,
+        string? checkpointCaptureAdapterVersion = null,
+        bool omitMessageShardFromCheckpoint = false,
+        RawPartitionStatus messageShardCoverageStatus = RawPartitionStatus.Captured)
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
@@ -1124,20 +1282,29 @@ public sealed class RebuildServiceTests
                     .Select(a => new RawPartitionCoverage
                     {
                         PartitionId = a.Metadata!["source_relative_path"],
-                        Status = RawPartitionStatus.Captured,
+                        Status = a.Metadata!["source_relative_path"] == messageShardRelativePath
+                            ? messageShardCoverageStatus
+                            : RawPartitionStatus.Captured,
                         SourceFingerprint = a.Sha256,
                         ArtifactSha256 = a.Sha256,
                     }),
             ];
+            var fingerprints = coverage.ToDictionary(
+                c => c.PartitionId,
+                c => checkpointFingerprintOverride ?? c.SourceFingerprint!,
+                StringComparer.Ordinal);
+            if (omitMessageShardFromCheckpoint)
+            {
+                fingerprints.Remove(messageShardRelativePath);
+            }
+
             checkpoint = new RawCaptureCheckpoint
             {
-                GenerationId = session.GenerationId,
-                CaptureAdapterFamily = WeChatCaptureAdapter.Family,
-                CaptureAdapterVersion = readerVersion,
-                PartitionFingerprints = coverage.ToDictionary(
-                    c => c.PartitionId,
-                    c => checkpointFingerprintOverride ?? c.SourceFingerprint!,
-                    StringComparer.Ordinal),
+                Version = checkpointVersion,
+                GenerationId = checkpointGenerationId ?? session.GenerationId,
+                CaptureAdapterFamily = checkpointCaptureAdapterFamily ?? WeChatCaptureAdapter.Family,
+                CaptureAdapterVersion = checkpointCaptureAdapterVersion ?? readerVersion,
+                PartitionFingerprints = fingerprints,
             };
             if (!publishCheckpoint)
             {
