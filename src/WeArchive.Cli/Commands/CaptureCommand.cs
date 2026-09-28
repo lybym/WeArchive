@@ -168,10 +168,12 @@ public sealed class CaptureCommand : ICliCommand
 
     /// <summary>
     /// Resolves the requested <c>--account</c> selector. Resolution never prompts, so it is safe
-    /// under <c>--no-input</c>: an explicit selector matches the account's canonical stable id
-    /// (<c>a_...</c>) or its source profile id, mirroring the conversation commands' documented
-    /// contract (docs/CLI.md); a missing selector resolves deterministically to the current
-    /// account, falling back to the first profile (Issue #39).
+    /// under <c>--no-input</c>: an explicit selector is matched by the shared
+    /// <see cref="AccountSelector"/> contract — the exact (case-sensitive) canonical stable account
+    /// id (<c>a_...</c>) or source profile id, the same contract the conversation commands use
+    /// (docs/CLI.md, Issue #47). A missing selector resolves deterministically to the current
+    /// account, falling back to the first profile (Issue #39); an unmatched selector is an
+    /// <c>account_not_found</c> failure, never a fallback.
     /// </summary>
     private static SourceAccount? ResolveAccount(
         string adapterName,
@@ -183,9 +185,7 @@ public sealed class CaptureCommand : ICliCommand
             return accounts.FirstOrDefault(a => a.IsCurrent) ?? accounts[0];
         }
 
-        return accounts.FirstOrDefault(a =>
-            string.Equals(a.SourceProfileId, requestedProfileId, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(StableIds.Account(adapterName, a.SourceProfileId), requestedProfileId, StringComparison.Ordinal));
+        return accounts.FirstOrDefault(a => AccountSelector.Matches(adapterName, a, requestedProfileId));
     }
 
     private static void WriteResult(CliContext context, CaptureResultDto result)

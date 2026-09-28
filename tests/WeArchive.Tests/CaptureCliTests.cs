@@ -326,4 +326,47 @@ public sealed class CaptureCliTests
             provider, ["capture", "--account", FixtureSourceAdapter.FixtureAccountId, "--json"]);
         Assert.Equal(ExitCode.Success, profileExit);
     }
+
+    [Fact]
+    public async Task CaptureAccountSelectorIsMatchedExactlyAndIsCaseSensitive()
+    {
+        // Issue #47: `capture` used to match the source profile id ignoring case while the
+        // conversation commands matched it exactly, so the same selector resolved in one command
+        // and not the other. One contract now covers both: a selector is matched case-sensitively
+        // against the profile id and the canonical stable account id, and a differently cased
+        // value fails closed as account_not_found instead of silently capturing an account whose
+        // derived stable id is not the one the caller named (docs/CLI.md, account selector
+        // contract).
+        using var temp = new TempDirectory();
+        using var provider = BuildProvider(temp);
+
+        var (exit, stdout, _) = await RunAsync(
+            provider, ["capture", "--account", "FIXTURE_ACCOUNT", "--json"]);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        var doc = JsonDocument.Parse(stdout.TrimEnd());
+        Assert.Equal("account_not_found", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        // The mixed-case selector must not fall through to the current account either.
+        Assert.False(stdout.Contains("generation_id", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CaptureWellFormedButUnknownStableAccountSelectorFailsClosed()
+    {
+        // Issue #47 test-gap hardening (PR #44 follow-up): an `a_...`-shaped selector is a
+        // plausible stable account id, so a prefix/tolerant match or an implicit fallback to the
+        // current account would capture the wrong account under a selector the caller believes it
+        // named. A well-formed but unmatched stable id is an account_not_found failure.
+        using var temp = new TempDirectory();
+        using var provider = BuildProvider(temp);
+        var unknownStableId = StableIds.Account("fixture", "fixture_never_captured");
+        Assert.StartsWith("a_", unknownStableId, StringComparison.Ordinal);
+
+        var (exit, stdout, _) = await RunAsync(
+            provider, ["capture", "--account", unknownStableId, "--json"]);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        var doc = JsonDocument.Parse(stdout.TrimEnd());
+        Assert.Equal("account_not_found", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
 }
