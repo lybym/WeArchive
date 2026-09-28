@@ -390,6 +390,13 @@ also reports and skips an account directory that has no published generation ins
 every other account. Neither rule changes the R2 anchor: the per-conversation transaction boundary,
 the rollback-on-Fatal behaviour and the absence of a recovery journal are unchanged.
 
+That completeness proof exists only on the captured-rebuild path. The live source path has no
+generation manifest or capture checkpoint from which Required message-evidence completeness could
+be proven, so a live read of a table-less conversation stays a Fatal source-coverage failure. The
+asymmetry between the two paths is deliberate and documented in `docs/RAW_VAULT.md` section 1
+(Issue #39); the proof itself is cross-checked against the generation's capture checkpoint, so
+coverage entries alone never establish it.
+
 Checkpoint advancement must occur only after the corresponding import publication boundary required by the checkpoint design.
 
 Raw Vault ingestion uses the same R2 per-conversation SQLite transaction for canonical records and

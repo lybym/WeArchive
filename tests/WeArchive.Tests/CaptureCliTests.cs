@@ -301,4 +301,29 @@ public sealed class CaptureCliTests
         var doc = JsonDocument.Parse(stdout.TrimEnd());
         Assert.Equal("account_not_found", doc.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
+
+    [Fact]
+    public async Task CaptureAccountSelectorResolvesBothTheStableIdAndTheProfileId()
+    {
+        // Issue #39: docs/CLI.md documents that `capture --account <id>` accepts the canonical
+        // stable account id (`a_...`) or the source profile id, mirroring the conversation
+        // commands. Both selectors must resolve to the same account and capture it.
+        using var temp = new TempDirectory();
+        var clock = new FixedClock();
+        using var provider = BuildProvider(temp, new FixtureCaptureAdapter(), clock);
+        var stableId = StableIds.Account("fixture", FixtureSourceAdapter.FixtureAccountId);
+
+        var (stableExit, stableStdout, _) = await RunAsync(
+            provider, ["capture", "--account", stableId, "--json"]);
+        Assert.Equal(ExitCode.Success, stableExit);
+        using var doc = JsonDocument.Parse(stableStdout.TrimEnd());
+        Assert.Equal(stableId, doc.RootElement.GetProperty("account_id").GetString());
+        Assert.Equal(FixtureSourceAdapter.FixtureAccountId, doc.RootElement.GetProperty("source_profile_id").GetString());
+
+        // A second capture needs a new capture instant to publish a new generation.
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var (profileExit, _, _) = await RunAsync(
+            provider, ["capture", "--account", FixtureSourceAdapter.FixtureAccountId, "--json"]);
+        Assert.Equal(ExitCode.Success, profileExit);
+    }
 }

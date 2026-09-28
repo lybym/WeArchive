@@ -91,7 +91,7 @@ public sealed class CaptureCommand : ICliCommand
             return ExitCode.Failure;
         }
 
-        var account = ResolveAccount(accounts, requestedProfileId);
+        var account = ResolveAccount(_catalog.AdapterName, accounts, requestedProfileId);
         if (account is null)
         {
             context.WriteError(CliErrorCode.AccountNotFound,
@@ -166,7 +166,15 @@ public sealed class CaptureCommand : ICliCommand
         return account;
     }
 
+    /// <summary>
+    /// Resolves the requested <c>--account</c> selector. Resolution never prompts, so it is safe
+    /// under <c>--no-input</c>: an explicit selector matches the account's canonical stable id
+    /// (<c>a_...</c>) or its source profile id, mirroring the conversation commands' documented
+    /// contract (docs/CLI.md); a missing selector resolves deterministically to the current
+    /// account, falling back to the first profile (Issue #39).
+    /// </summary>
     private static SourceAccount? ResolveAccount(
+        string adapterName,
         IReadOnlyList<SourceAccount> accounts,
         string? requestedProfileId)
     {
@@ -176,7 +184,8 @@ public sealed class CaptureCommand : ICliCommand
         }
 
         return accounts.FirstOrDefault(a =>
-            string.Equals(a.SourceProfileId, requestedProfileId, StringComparison.OrdinalIgnoreCase));
+            string.Equals(a.SourceProfileId, requestedProfileId, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(StableIds.Account(adapterName, a.SourceProfileId), requestedProfileId, StringComparison.Ordinal));
     }
 
     private static void WriteResult(CliContext context, CaptureResultDto result)

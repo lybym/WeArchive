@@ -236,6 +236,64 @@ public sealed class RebuildServiceTests
     }
 
     [Fact]
+    public async Task CompleteCoverageWithoutACaptureCheckpointDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #39 hardening: coverage alone is not proof. A complete version-2 shape that names
+        // every Required message shard but carries no capture checkpoint cannot be cross-validated
+        // against artifacts, so it is not accepted as evidence and the table-less conversation
+        // stays Fatal instead of being published as legitimately empty.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var generation = await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true,
+            publishCheckpoint: false);
+
+        using var adapter = CapturedWeChatSourceAdapter.Create(generation);
+        var error = await Assert.ThrowsAsync<SourceCoverageException>(async () =>
+        {
+            await foreach (var _ in adapter.ReadMessagesAsync(
+                profile, "wxid_never_messaged", CancellationToken.None))
+            {
+            }
+        });
+        Assert.Equal(DiagnosticCodes.PartitionMissing, error.Code);
+    }
+
+    [Fact]
+    public async Task CheckpointEvidenceDisagreeingWithCoverageDoesNotProveRequiredMessageEvidence()
+    {
+        // Issue #39 hardening: every counted shard must appear in the checkpoint with the same
+        // source fingerprint its coverage entry records. A checkpoint that names a different
+        // source state proves nothing about this generation's coverage, so the captured reader
+        // keeps the Fatal source-coverage semantics for a table-less conversation.
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        var profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var generation = await PublishGenerationAsync(
+            vault, temp.Path, profile, accountId, "with data", "0.1.0", CapturedAt,
+            additionalConversationId: "wxid_never_messaged",
+            additionalHasMessageTable: false,
+            publishCoverage: true,
+            checkpointFingerprintOverride: "0000000000000000000000000000000000000000000000000000000000000000");
+
+        using var adapter = CapturedWeChatSourceAdapter.Create(generation);
+        var error = await Assert.ThrowsAsync<SourceCoverageException>(async () =>
+        {
+            await foreach (var _ in adapter.ReadMessagesAsync(
+                profile, "wxid_never_messaged", CancellationToken.None))
+            {
+            }
+        });
+        Assert.Equal(DiagnosticCodes.PartitionMissing, error.Code);
+    }
+
+    [Fact]
     public async Task AccountDirectoryWithoutAPublishedGenerationIsReportedAndSkipped()
     {
         using var temp = new TempDirectory();
@@ -998,7 +1056,9 @@ public sealed class RebuildServiceTests
         string messageShardRelativePath = "message/message_0.db",
         bool walMode = false,
         bool publishCoverage = false,
-        bool omitMessageShardFromCoverage = false)
+        bool omitMessageShardFromCoverage = false,
+        bool publishCheckpoint = true,
+        string? checkpointFingerprintOverride = null)
     {
         var dbRoot = Path.Combine(scratch, "db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dbRoot);
@@ -1075,8 +1135,14 @@ public sealed class RebuildServiceTests
                 CaptureAdapterFamily = WeChatCaptureAdapter.Family,
                 CaptureAdapterVersion = readerVersion,
                 PartitionFingerprints = coverage.ToDictionary(
-                    c => c.PartitionId, c => c.SourceFingerprint!, StringComparer.Ordinal),
+                    c => c.PartitionId,
+                    c => checkpointFingerprintOverride ?? c.SourceFingerprint!,
+                    StringComparer.Ordinal),
             };
+            if (!publishCheckpoint)
+            {
+                checkpoint = null;
+            }
         }
 
         var manifest = new RawManifest
