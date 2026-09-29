@@ -59,4 +59,18 @@ public sealed record ConversationSyncResult
     /// canonical partition/evidence coverage contract.
     /// </summary>
     public IReadOnlyList<RawManifestDiagnostic> CaptureDiagnostics { get; init; } = [];
+
+    /// <summary>
+    /// The source-neutral canonical coverage rollup of the verified generation this run
+    /// synchronized from: whether the supported evidence required by the canonical result was
+    /// available and complete (Issue #51). It is a completeness statement over the committed
+    /// evidence, not acquisition metadata — the capture-side <c>captured</c> versus
+    /// <c>reused</c> split stays in the capture contract, and the ingest-progress
+    /// <c>conversation_coverage</c> checkpoint cursor is never read as a completeness statement.
+    /// A <c>succeeded</c>/<c>no_change</c> result is always <c>complete</c> here, because the R2
+    /// ingest path refuses any generation whose evidence is not complete; an incomplete read is
+    /// reported by <see cref="RawVault.IncompleteCanonicalCoverageException"/> on the failure
+    /// path instead.
+    /// </summary>
+    public required CanonicalCoverage Coverage { get; init; }
 }

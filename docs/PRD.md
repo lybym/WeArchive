@@ -272,6 +272,13 @@ Replay/re-ingest over the same preserved source evidence must not create duplica
 
 Capture and ingest operations record enough metadata/counters/diagnostics to establish what evidence was acquired and what canonical records were published.
 
+Shipped by Issue #51 for the canonical read side: `sync --conversation` results and the shared
+Raw Vault ingest refusal path carry the source-neutral `canonical_coverage` rollup
+(expected/available/unavailable, known-unsupported vs unclassified, complete/incomplete verdict)
+deterministically derived from the verified generation's manifest, so a caller can distinguish
+complete from incomplete reads without inspecting manifests, paths or checkpoints
+([`CLI.md`](CLI.md), [`RAW_VAULT.md`](RAW_VAULT.md) section 4.4).
+
 ### FR-14 Separate checkpoints
 
 Preservation progress and canonical-ingest progress are independent.

@@ -245,7 +245,9 @@ Reliability — capture is **R1** and the selected conversation's canonical publ
   verifies the conversation's preserved evidence fingerprint and publishes nothing: deterministic
   `no_change`, no duplicate canonical records, unchanged content checkpoint.
 
-Exits `1` with `failure` (a runtime ingest/parser failure), `capture_failed` (no usable Raw Vault
+Exits `1` with `failure` (a runtime ingest/parser failure), `incomplete_coverage` (the verified
+generation's evidence coverage is not complete, so the R2 ingest refused the canonical read; the
+JSON error document carries the `canonical_coverage` rollup), `capture_failed` (no usable Raw Vault
 generation was published), `source_unavailable`, `no_accounts`, `conversation_list_failed` or
 `conversation_not_found` (the selector resolved to nothing, or the captured evidence cannot
 produce it); `2` on a usage error; `130` on cancellation.
@@ -262,7 +264,15 @@ JSON shape (exit 0):
   "conversations_ingested": 1,
   "generation_id": "gen_<16-hex>",
   "capture_mode": "incremental",
-  "previous_generation_id": "gen_<16-hex>"
+  "previous_generation_id": "gen_<16-hex>",
+  "canonical_coverage": {
+    "verdict": "complete",
+    "expected": 25,
+    "available": 24,
+    "unavailable": 0,
+    "known_unsupported": 1,
+    "unclassified": 0
+  }
 }
 ```
 
@@ -277,13 +287,52 @@ no_change    the conversation was verified and nothing changed; nothing was repu
 supported source was read) or `incremental` (verified evidence was reused).
 `previous_generation_id` is `null` for the first published generation. Capture-side findings (for
 example a full-snapshot fallback diagnostic) are human diagnostics on stderr, never part of the
-stdout document; canonical partition/evidence coverage reporting remains owned by Issue #51.
+stdout document.
+
+`canonical_coverage` (Issue #51) is the source-neutral completeness rollup of the verified
+generation the result was published from — a deterministic application-level rollup of that
+generation's manifest (completeness verdict, coverage entries and policy diagnostics,
+[RAW_VAULT.md](RAW_VAULT.md) section 4.3). A human-readable summary of the same semantics is part
+of the non-JSON output (`coverage:   complete (…)`):
+
+```text
+verdict            complete when every supported evidence domain the verified generation accounts
+                   for was available and read, and no unclassified evidence remains; incomplete
+                   otherwise. A succeeded/no_change sync is always complete here, because the R2
+                   ingest refuses any generation whose evidence is not complete; incomplete
+                   appears on the incomplete_coverage failure document instead.
+expected           every evidence domain the verified generation accounts for — the same rule as
+                   capture's expected count, not a claim that every theoretical source partition
+                   was observed.
+available          expected supported evidence that was available and read for the canonical
+                   result. The capture-side captured/reused split is acquisition metadata and is
+                   deliberately merged here: canonical coverage answers whether the evidence was
+                   available, not how it was reacquired.
+unavailable        expected supported evidence that could not be read or was absent from the
+                   source (always 0 for a complete verdict).
+known_unsupported  discovered evidence explicitly classified outside the adapter's supported
+                   contract (the partition_unsupported info diagnostic). It stays explicit and
+                   does not by itself prevent a complete verdict.
+unclassified       evidence without an approved classification (partition_unclassified) or that
+                   the rollup cannot attribute to a policy diagnostic. Conservative: its presence
+                   keeps the verdict incomplete.
+```
+
+The field never exposes Raw Vault paths, WeChat partition ids as requirements, checkpoint JSON or
+keys — coverage detail stays in the capture contract and the manifest. It is also distinct from the
+ingest-progress `conversation_coverage` checkpoint cursor (docs/DATA_MODEL.md section 14.1): the
+cursor records that a newer generation was verified unchanged; `canonical_coverage` states whether
+the evidence behind the canonical result was complete.
 
 **Contract change (Issue #49).** The pre-existing import-counter result
 (`records_scanned`, `counters`, `first_message_at`, `last_message_at`, `diagnostics`) described the
 removed direct-live importer and is replaced by the preservation-first fields above. A machine
 caller that consumed those counters must switch to `status`, `conversations_ingested` and
 `capture_mode`; committed-state counters of the direct-live path no longer exist for this command.
+
+**Contract addition (Issue #51).** `canonical_coverage` extends the Issue #49 result without
+changing its orchestration or `succeeded`/`no_change` semantics; the ingest-progress
+`conversation_coverage` checkpoint is unchanged and is never reinterpreted as completeness.
 
 ### `wearchive export --conversation <id-or-alias> [--output <dir>]`
 
@@ -763,6 +812,7 @@ Stable `error.code` values:
 | `collection_not_found` | 1 | The Collection name is not defined by the authoritative configuration |
 | `collection_config_invalid` | 2 | The user-maintained Collection configuration exists but is invalid |
 | `capture_failed` | 1 | `sync --conversation`/`sync --collection` could not capture usable live-source evidence |
+| `incomplete_coverage` | 1 | The published Raw Vault generation's evidence coverage is not complete, so the R2 ingest refused the canonical read; the error document carries the source-neutral `canonical_coverage` rollup (Issue #51) |
 | `message_not_found` | 1 | A stable message id resolved to no archived message |
 | `cursor_invalid` | 2 | A pagination cursor is malformed, unsupported or belongs to a different query |
 | `archive_unavailable` | 1 | The canonical archive could not be read (a missing archive file is created as an empty archive, exactly as `doctor` reports it) |
@@ -834,7 +884,10 @@ wearchive ingest --account <raw-vault-account-id> [--conversation <stable-or-sou
 ```
 
 JSON success emits one object with `succeeded` and `conversations_ingested`. Failures use the
-standard JSON error envelope; cancellation exits `130`.
+standard JSON error envelope; cancellation exits `130`. When direct ingest reads a published
+generation whose evidence coverage is not complete, it fails closed with `incomplete_coverage`
+(exit 1) and the error document carries the same source-neutral `canonical_coverage` rollup as
+`sync --conversation` (Issue #51) — the coverage model is shared, not duplicated per command.
 
 ## Not yet implemented
 

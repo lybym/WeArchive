@@ -352,6 +352,163 @@ public sealed class ConversationSyncTests
         Assert.Empty(await harness.ConversationsAsync());
     }
 
+    // ---- canonical coverage (Issue #51) --------------------------------------
+
+    // The Issue #51 acceptance cases, over synthetic Raw Vault generations: the canonical
+    // coverage rollup distinguishes complete from incomplete reads, keeps known-unsupported
+    // evidence explicit, stays conservative for unclassified evidence, and never confuses the
+    // ingest-progress conversation_coverage cursor with the completeness model.
+
+    [Fact]
+    public async Task CaseAKnownUnsupportedEvidenceIsExplicitButComplete()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A", MessageCount = 2 });
+
+        const string reason = "Source partition 'migrate/unspportmsg.db' is outside this adapter " +
+            "version's supported evidence contract; it is recorded as unsupported and is not " +
+            "required for a complete capture.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "migrate/unspportmsg.db",
+            Status = RawPartitionStatus.Unsupported,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Info(DiagnosticCodes.PartitionUnsupported, reason));
+
+        var result = await SyncAsync(harness, WeChatSyncHarness.DirectId("a"));
+
+        Assert.Equal(SyncPublicationStatus.Succeeded, result.Status);
+        Assert.Equal(CanonicalCoverageVerdict.Complete, result.Coverage.Verdict);
+        Assert.Equal(4, result.Coverage.Expected);
+        Assert.Equal(3, result.Coverage.Available);
+        Assert.Equal(0, result.Coverage.Unavailable);
+        Assert.Equal(1, result.Coverage.KnownUnsupported);
+        Assert.Equal(0, result.Coverage.Unclassified);
+
+        // Deterministic: the rollup the sync reported is exactly the rollup of the persisted
+        // manifest for the same generation and reader policy.
+        var reopened = await harness.Vault
+            .OpenGenerationAsync(harness.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(reopened);
+        Assert.Equal(CanonicalCoverage.From(reopened!.Manifest), result.Coverage);
+    }
+
+    [Fact]
+    public async Task CaseBUnavailableRequiredEvidenceFailsClosedWithIncompleteCoverage()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A" });
+
+        const string reason = "The message shard could not be read.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "message/message_1.db",
+            Status = RawPartitionStatus.Unavailable,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Partial(DiagnosticCodes.PartitionUnreadable, reason));
+        harness.Capture.CompletenessOverride = RawGenerationCompleteness.Partial;
+
+        var error = await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(
+            () => SyncAsync(harness, WeChatSyncHarness.DirectId("a")));
+
+        // The partial generation was published by capture (R1) but refused by the ingest (R2):
+        // the refusal carries the incomplete coverage and never a complete verdict.
+        Assert.Equal(CanonicalCoverageVerdict.Incomplete, error.Coverage.Verdict);
+        Assert.Equal(4, error.Coverage.Expected);
+        Assert.Equal(3, error.Coverage.Available);
+        Assert.Equal(1, error.Coverage.Unavailable);
+        Assert.Equal(0, error.Coverage.KnownUnsupported);
+
+        // Nothing was published canonically; the published generation itself is retained.
+        Assert.Empty(await harness.ConversationsAsync());
+        Assert.Single(await harness.GenerationsAsync());
+
+        // A retry stays fail-closed while the evidence is incomplete.
+        harness.AdvanceClock();
+        await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(
+            () => SyncAsync(harness, WeChatSyncHarness.DirectId("a")));
+        Assert.Empty(await harness.ConversationsAsync());
+    }
+
+    [Fact]
+    public async Task CaseCUnclassifiedEvidenceFailsConservativelyAsIncomplete()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A" });
+
+        const string reason = "Source partition 'general/newdb.db' has no approved support " +
+            "classification for this adapter version; the generation cannot be complete until " +
+            "that partition is classified.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "general/newdb.db",
+            Status = RawPartitionStatus.Unsupported,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Partial(DiagnosticCodes.PartitionUnclassified, reason));
+        harness.Capture.CompletenessOverride = RawGenerationCompleteness.Partial;
+
+        var error = await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(
+            () => SyncAsync(harness, WeChatSyncHarness.DirectId("a")));
+
+        Assert.Equal(CanonicalCoverageVerdict.Incomplete, error.Coverage.Verdict);
+        Assert.Equal(1, error.Coverage.Unclassified);
+        Assert.Equal(0, error.Coverage.KnownUnsupported);
+        Assert.Equal(0, error.Coverage.Unavailable);
+
+        // Unknown/unclassified evidence never silently produced a complete canonical result.
+        Assert.Empty(await harness.ConversationsAsync());
+    }
+
+    [Fact]
+    public async Task CaseDUnchangedSecondSyncReportsCompleteCoverageWithoutConfusingTheCursor()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A" });
+
+        const string reason = "Source partition 'migrate/unspportmsg.db' is outside this adapter " +
+            "version's supported evidence contract; it is recorded as unsupported and is not " +
+            "required for a complete capture.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "migrate/unspportmsg.db",
+            Status = RawPartitionStatus.Unsupported,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Info(DiagnosticCodes.PartitionUnsupported, reason));
+
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var first = await SyncAsync(harness, WeChatSyncHarness.DirectId("a"));
+        Assert.Equal(SyncPublicationStatus.Succeeded, first.Status);
+
+        harness.AdvanceClock();
+        var second = await SyncAsync(harness, WeChatSyncHarness.DirectId("a"));
+
+        // No_change still reports the canonical completeness derived from the verified evidence
+        // of the newer generation — the conversation_coverage cursor is ingest progress, not a
+        // completeness statement (docs/DATA_MODEL.md section 14.1, Issue #51).
+        Assert.Equal(SyncPublicationStatus.NoChange, second.Status);
+        Assert.Equal(CanonicalCoverageVerdict.Complete, second.Coverage.Verdict);
+        Assert.Equal(4, second.Coverage.Expected);
+        Assert.Equal(3, second.Coverage.Available);
+        Assert.Equal(1, second.Coverage.KnownUnsupported);
+
+        // Progress and completeness stay distinct concepts: the content checkpoint kept its
+        // generation while the transactional coverage cursor moved to the newer one.
+        Assert.Equal(first.GenerationId, GenerationOf(await harness.ConversationCheckpointAsync(idA)));
+        Assert.Equal(second.GenerationId, GenerationOf(await harness.ConversationCoverageCheckpointAsync(idA)));
+    }
+
     // ---- no R3+ recovery machinery ------------------------------------------
 
     [Fact]

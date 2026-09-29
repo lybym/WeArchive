@@ -3,6 +3,7 @@ using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
+using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
 
 namespace WeArchive.Cli.Commands;
@@ -121,6 +122,19 @@ public sealed class SyncCommand : ICliCommand
             context.WriteError(CliErrorCode.CaptureFailed, ex.Message);
             return ExitCode.Failure;
         }
+        catch (IncompleteCanonicalCoverageException ex)
+        {
+            // The verified generation's evidence is not complete, so the R2 ingest refused to
+            // publish a canonical result that could be mistaken for a complete one
+            // (docs/PRD.md FR-20, docs/RAW_VAULT.md section 7). The failure document carries the
+            // source-neutral coverage rollup so a machine caller can distinguish an incomplete
+            // read from other failures (docs/CLI.md, Issue #51).
+            context.WriteError(
+                CliErrorCode.IncompleteCoverage,
+                ex.Message,
+                CanonicalCoverageDto.From(ex.Coverage));
+            return ExitCode.Failure;
+        }
         catch (ConversationNotInRawVaultException ex)
         {
             context.WriteError(CliErrorCode.ConversationNotFound, ex.Message);
@@ -128,8 +142,9 @@ public sealed class SyncCommand : ICliCommand
         }
 
         // Capture-side findings (a full-snapshot fallback, a completeness downgrade, …) are human
-        // diagnostics on stderr. They are never part of the stdout machine document, and the
-        // canonical coverage contract remains owned by Issue #51.
+        // diagnostics on stderr. They are never part of the stdout machine document; the canonical
+        // coverage contract itself is the `canonical_coverage` field of the result document
+        // (docs/CLI.md, Issue #51).
         foreach (var diagnostic in outcome.CaptureDiagnostics)
         {
             CliReporting.Progress(
@@ -147,6 +162,7 @@ public sealed class SyncCommand : ICliCommand
             GenerationId = outcome.GenerationId,
             CaptureMode = outcome.CaptureMode.ToString().ToLowerInvariant(),
             PreviousGenerationId = outcome.PreviousGenerationId,
+            CanonicalCoverage = CanonicalCoverageDto.From(outcome.Coverage),
         };
 
         WriteResult(context, result);
@@ -290,6 +306,11 @@ public sealed class SyncCommand : ICliCommand
         context.Stdout.WriteLine($"  account:    {result.AccountId} ({result.SourceProfileId})");
         context.Stdout.WriteLine($"  source:     {result.SourceConversationId}");
         context.Stdout.WriteLine($"  generation: {result.GenerationId} ({result.CaptureMode})");
+        var coverage = result.CanonicalCoverage;
+        context.Stdout.WriteLine(
+            $"  coverage:   {coverage.Verdict} ({coverage.Expected} expected, {coverage.Available} available, " +
+            $"{coverage.Unavailable} unavailable, {coverage.KnownUnsupported} known unsupported, " +
+            $"{coverage.Unclassified} unclassified)");
         context.Stdout.WriteLine(
             result.Status == FormatStatus(SyncPublicationStatus.NoChange)
                 ? "  result:     no_change (evidence already covered; nothing republished)"

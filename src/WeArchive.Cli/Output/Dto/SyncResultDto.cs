@@ -46,4 +46,13 @@ public sealed record SyncResultDto
     /// <summary>The generation this one extends; null for the first published generation.</summary>
     [JsonPropertyName("previous_generation_id")]
     public string? PreviousGenerationId { get; init; }
+
+    /// <summary>
+    /// Source-neutral canonical coverage of this result: whether the supported evidence required
+    /// by the canonical result was available and complete (docs/CLI.md, Issue #51). A
+    /// <c>succeeded</c>/<c>no_change</c> result is always <c>complete</c> here; an incomplete
+    /// read is reported by the <c>incomplete_coverage</c> failure document instead.
+    /// </summary>
+    [JsonPropertyName("canonical_coverage")]
+    public required CanonicalCoverageDto CanonicalCoverage { get; init; }
 }

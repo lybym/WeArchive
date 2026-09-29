@@ -484,7 +484,7 @@ Rules:
 
 Migration 2 records Raw Vault to canonical progress independently for each account, adapter family and scope. Conversation content rows use `scope_kind=conversation`; `scope_id` is the stable canonical conversation ID. Their opaque, versioned cursor contains the last generation whose conversation evidence changed and was published, a fingerprint of that conversation's source metadata and messages, and the executing reader version. It contains no source database key or message content. A reader upgrade invalidates older cursors; `wearchive ingest --replay` also allows parser repair to replay preserved generations without live recapture.
 
-Scoped scans also use `scope_kind=conversation_coverage` with the same stable conversation ID. This cursor records newer generations that were fully verified but contained unchanged conversation evidence. It is committed in a conversation transaction without a second message import pass or a new import-run audit row. Keeping coverage separate allows repeat scoped imports to skip verified generations while the content cursor advances only when evidence changes. A reader upgrade invalidates older cursors.
+Scoped scans also use `scope_kind=conversation_coverage` with the same stable conversation ID. This cursor records newer generations that were fully verified but contained unchanged conversation evidence. It is committed in a conversation transaction without a second message import pass or a new import-run audit row. Keeping coverage separate allows repeat scoped imports to skip verified generations while the content cursor advances only when evidence changes. A reader upgrade invalidates older cursors. This cursor is **ingest-progress semantics only** (Issue #51): it must never be read as a statement of canonical evidence completeness — completeness is the source-neutral canonical coverage rollup over the verified generation's manifest (section 21.5, [RAW_VAULT.md](RAW_VAULT.md) section 4.4) — and no checkpoint schema is overloaded to serve that reporting.
 
 Account scope rows use `scope_kind=account` and the stable account ID as `scope_id`. This cursor records the set of generation identities fully scanned by an account-wide ingest, after every conversation in each generation was either published or found unchanged. A scoped `--conversation` ingest never advances it. This lets a later account-wide run discover conversations not yet imported and lets completed generations be skipped even when one unchanged conversation's publication checkpoint remains at an older generation. Generations are processed in manifest publication-lineage order, not inferred from capture timestamps.
 
@@ -673,6 +673,15 @@ canonical SQLite migration is involved.
 
 `unavailable` is a report, never a deletion instruction: a partition that disappears from the
 live source cannot remove an earlier generation or any artifact it requires.
+
+The application-level canonical coverage rollup (Issue #51) is an **in-memory contract over this
+persisted manifest** — a deterministic source-neutral summary (verdict plus
+expected/available/unavailable/known-unsupported/unclassified counts, docs/RAW_VAULT.md
+section 4.4) carried by the conversation sync result and the shared ingest refusal path. It adds
+no persistent structure, no checkpoint and no canonical SQLite migration, and it must not be
+confused with the `conversation_coverage` ingest-progress cursor (section 14.1): the cursor
+records that a newer generation was verified unchanged so ingest work can be skipped, while the
+coverage rollup states whether the evidence behind a canonical result was complete.
 
 ### 21.6 Raw Vault format-version tests
 

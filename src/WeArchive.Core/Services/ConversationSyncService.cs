@@ -1,3 +1,5 @@
+using WeArchive.Core.RawVault;
+
 namespace WeArchive.Core.Services;
 
 /// <summary>
@@ -18,7 +20,10 @@ namespace WeArchive.Core.Services;
 /// canonical write (<see cref="SyncCaptureException"/>); an ingest that publishes nothing means the
 /// conversation's evidence was verified unchanged and reports
 /// <see cref="SyncPublicationStatus.NoChange"/>; anything else publishes the conversation and
-/// advances only that conversation's ingest checkpoint.
+/// advances only that conversation's ingest checkpoint. The result carries the source-neutral
+/// canonical coverage rollup of the verified generation (Issue #51); a generation whose evidence
+/// is not complete is refused by the ingest path and surfaces as
+/// <see cref="RawVault.IncompleteCanonicalCoverageException"/>, never as a successful result.
 /// </para>
 /// <para>
 /// Reliability is unchanged: capture is R1 and the conversation ingest is R2. The selected
@@ -78,6 +83,12 @@ public sealed class ConversationSyncService(SyncOrchestrationService orchestrati
             CaptureMode = capture.Mode,
             PreviousGenerationId = capture.PreviousGenerationId,
             CaptureDiagnostics = capture.Diagnostics,
+            // The capture result is the published generation's manifest data, so the rollup is
+            // exactly what the verified generation produces — deterministic for the same
+            // generation and reader policy (Issue #51). It describes committed evidence only:
+            // this line is unreachable for a generation the ingest path refused.
+            Coverage = CanonicalCoverage.From(
+                capture.Completeness, capture.Coverage, capture.Diagnostics),
         };
     }
 }

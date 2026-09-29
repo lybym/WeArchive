@@ -143,16 +143,16 @@ Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 - **Issue #40 — CI credibility** (closed): Actions artifact retention lowered and the portable-ZIP upload made non-blocking, so `main` does not run red on convenience-artifact failures.
 - **Issue #39 — post-`v0.3.0` deferred hardening** (closed): the first batch of `0.3.1` work, including the `capture --account` stable-id defect surfaced by Issue #37.
 
-The next product **P0 is one M1 release slice made of two non-overlapping capability Issues**, in this order:
+The next product **P0 is the completion of the M1 release slice made of two non-overlapping capability Issues**, in this order:
 
-1. **Issue #49 — M1a canonical incremental second-sync orchestration**: converge `sync --conversation` on the shared `CaptureService` → Raw Vault → conversation-scoped ingest path already shipped for Collection sync, and own the Roadmap acceptance criterion *"a second sync imports only new/changed records where supported"*.
-2. **Issue #51 — M1b canonical source-neutral partition/evidence coverage reporting**: add the canonical coverage rollup over the stable sync-result boundary handed to it by Issue #49, and own the Roadmap acceptance criterion *"canonical source coverage reporting is explicit enough to distinguish complete and incomplete reads"*.
+1. **Issue #49 — M1a canonical incremental second-sync orchestration**: converge `sync --conversation` on the shared `CaptureService` → Raw Vault → conversation-scoped ingest path already shipped for Collection sync, and own the Roadmap acceptance criterion *"a second sync imports only new/changed records where supported"*. Delivered by PR #53.
+2. **Issue #51 — M1b canonical source-neutral partition/evidence coverage reporting**: add the canonical coverage rollup over the stable sync-result boundary handed to it by Issue #49, and own the Roadmap acceptance criterion *"canonical source coverage reporting is explicit enough to distinguish complete and incomplete reads"*. Both capability Issues are now delivered: the `canonical_coverage` rollup rides on `sync --conversation` (and the shared ingest refusal path), and an incomplete read fails closed as a structured `incomplete_coverage` document.
 
 ```text
-#48 docs state alignment → #49 M1a canonical second-sync → #51 M1b canonical coverage reporting → M1 complete
+#48 docs state alignment → #49 M1a canonical second-sync → #51 M1b canonical coverage reporting → real-environment acceptance → M1 complete
 ```
 
-The two Issues must not own overlapping acceptance criteria: Issue #49 does not define the canonical coverage contract and does not complete M1 alone, and Issue #51 must not re-open the sync orchestration owned by Issue #49. M1 stays incomplete until both outstanding Roadmap acceptance criteria are demonstrably met by their owning Issues; no other Issue may mark M1 complete, and nothing in this priority alignment marks M1 or M1.5 complete.
+The two Issues must not own overlapping acceptance criteria: Issue #49 does not define the canonical coverage contract and does not complete M1 alone, and Issue #51 must not re-open the sync orchestration owned by Issue #49. M1 stays incomplete until the real-environment acceptance of the #49 + #51 canonical second-sync + coverage chain — required by both Issues' release slices — exists and is verified; no other Issue may mark M1 complete, and nothing in this priority alignment marks M1 or M1.5 complete.
 
 The remaining M1.5 items — **physical cross-generation storage deduplication** and **Raw Vault encryption-at-rest** — are open/deferred optimization and protection work. They are **not** prerequisites for closing the M1 canonical sync loop of Issues #49 + #51, and they must not be pulled into the M1 implementation scope.
 

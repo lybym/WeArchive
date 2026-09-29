@@ -51,6 +51,15 @@ public sealed class CliContext
         CliErrors.Write(Stdout, Stderr, Options, code, message);
 
     /// <summary>
+    /// Reports a failure that also carries structured coverage detail — the incomplete-coverage
+    /// refusal (<c>incomplete_coverage</c>): the same human diagnostic on stderr, and in
+    /// <c>--json</c> mode the source-neutral <c>canonical_coverage</c> rollup inside the one
+    /// stdout error document. docs/CLI.md, docs/PRD.md FR-20, Issue #51.
+    /// </summary>
+    public void WriteError(string code, string message, Output.Dto.CanonicalCoverageDto canonicalCoverage) =>
+        CliErrors.Write(Stdout, Stderr, Options, code, message, canonicalCoverage);
+
+    /// <summary>
     /// Throws <see cref="CliUsageException"/> when <c>--no-input</c> is set, because the
     /// command would need to prompt and the contract forbids prompting in that mode.
     /// docs/PRD.md FR-22, docs/ARCHITECTURE.md section 3.1.1.
