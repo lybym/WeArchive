@@ -239,7 +239,12 @@ public sealed class ConversationCommand : ICliCommand
     /// <summary>
     /// Resolves the source profile to enumerate. Returns the profile id on success, or null
     /// after writing a structured error (caller returns <see cref="ExitCode.Failure"/>).
-    /// Resolution never prompts, so it is safe under <c>--no-input</c>.
+    /// Resolution never prompts, so it is safe under <c>--no-input</c>. An explicit selector is
+    /// matched by the shared <see cref="AccountSelector"/> contract — the exact (case-sensitive)
+    /// canonical stable account id (<c>a_...</c>) or source profile id — the same contract
+    /// <c>capture</c> uses (docs/CLI.md, Issue #47). A missing selector resolves deterministically
+    /// to the current account, falling back to the first profile; an unmatched selector is an
+    /// <c>account_not_found</c> failure, never a fallback.
     /// </summary>
     private async Task<string?> ResolveAccountAsync(
         CliContext context,
@@ -281,9 +286,7 @@ public sealed class ConversationCommand : ICliCommand
 
         foreach (var candidate in accounts)
         {
-            var stableId = StableIds.Account(_catalog.AdapterName, candidate.SourceProfileId);
-            if (string.Equals(candidate.SourceProfileId, account, StringComparison.Ordinal) ||
-                string.Equals(stableId, account, StringComparison.Ordinal))
+            if (AccountSelector.Matches(_catalog.AdapterName, candidate, account))
             {
                 return candidate.SourceProfileId;
             }

@@ -267,6 +267,52 @@ public sealed class CliDiscoveryTests
     }
 
     [Fact]
+    public async Task ConversationListAccountSelectorIsMatchedExactlyAndIsCaseSensitive()
+    {
+        // Issue #47: the account selector contract is shared with `capture` and matches the source
+        // profile id and the stable account id exactly (case-sensitively), because both are opaque
+        // source-derived identifiers printed by `account list` and the stable id is a digest of the
+        // exact profile id (docs/CLI.md, account selector contract).
+        var adapter = FakeAdapter();
+        var command = new ConversationCommand(new SourceCatalogService(adapter));
+        var stdout = new StringWriter();
+        var context = new CliContext(stdout, TextWriter.Null, new GlobalOptions { Json = true });
+
+        var exit = await command.ExecuteAsync(
+            context, ["list", "--account", "WXID_BOB"], CancellationToken.None);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var doc = JsonDocument.Parse(stdout.ToString().TrimEnd());
+        Assert.Equal(
+            CliErrorCode.AccountNotFound,
+            doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task ConversationListWellFormedButUnknownStableAccountExitsOneWithAccountNotFound()
+    {
+        // Issue #47 test-gap hardening (PR #44 follow-up): an `a_...`-shaped selector that belongs
+        // to no enumerated account is a typed failure, not an empty listing and not a silent
+        // fallback to the current account — an empty result would be indistinguishable from a
+        // genuinely conversation-free profile.
+        var adapter = FakeAdapter();
+        var command = new ConversationCommand(new SourceCatalogService(adapter));
+        var stdout = new StringWriter();
+        var context = new CliContext(stdout, TextWriter.Null, new GlobalOptions { Json = true });
+        var unknownStableId = StableIds.Account(adapter.AdapterName, "wxid_never_seen");
+        Assert.StartsWith("a_", unknownStableId, StringComparison.Ordinal);
+
+        var exit = await command.ExecuteAsync(
+            context, ["list", "--account", unknownStableId], CancellationToken.None);
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var doc = JsonDocument.Parse(stdout.ToString().TrimEnd());
+        Assert.Equal(
+            CliErrorCode.AccountNotFound,
+            doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task ConversationListNoAccountsExitsOneWithNoAccounts()
     {
         var adapter = FakeAdapter();

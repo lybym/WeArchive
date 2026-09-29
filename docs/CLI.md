@@ -38,6 +38,29 @@ Global options are recognized before and after the command name by `CommandLineP
 `--account <id>` is **command-specific** to the conversation commands (see below), not a global
 option, so global option parsing stays generic.
 
+### Account selector contract
+
+One contract covers every command that resolves a **source account** with `--account <id>`
+(`conversation list`, `conversation show`, `capture`), so the same selector cannot mean different
+things in different commands (Issue #47):
+
+- The selector is matched **exactly and case-sensitively** against either the account's source
+  profile id or its canonical stable account id (`a_...` = `StableIds.Account(adapter_name,
+  source_profile_id)`).
+- Both identifiers are opaque source-derived strings, printed verbatim by `account list`; callers
+  pass them verbatim. A differently cased value is **not** a match: a stable account id is a digest
+  of the exact profile id, so a case-insensitive profile-id match could select a profile whose
+  derived stable id is not the one the caller named, and two profiles differing only in casing
+  would resolve ambiguously.
+- An unmatched selector — including a well-formed but unknown `a_...` value — fails as
+  `account_not_found`. Resolution never falls back to the current account and never prompts, so it
+  stays safe under `--no-input`.
+- A **missing** selector is resolved deterministically: the current account (`is_current`),
+  falling back to the first account.
+
+`wearchive ingest --account <id>` is a different selector: it names an existing Raw Vault account
+directory by its stable account id and is not resolved against the live source account list.
+
 ## Exit codes
 
 ```text
@@ -125,8 +148,10 @@ Enumerates conversations for a source profile with stable conversation identifie
 source-neutral metadata.
 
 **Account resolution** (never prompts, safe under `--no-input`): `--account <id>` selects
-explicitly by the account's stable id (`a_...`) **or** its source profile id; otherwise the
-current account (`is_current`) is used, falling back to the first account.
+explicitly by the account's stable id (`a_...`) **or** its source profile id, matched exactly and
+case-sensitively as defined by the [account selector contract](#account-selector-contract);
+otherwise the current account (`is_current`) is used, falling back to the first account. An
+unmatched selector is `account_not_found`.
 
 Exits `1` with `source_unavailable`, `no_accounts`, `account_not_found` or
 `conversation_list_failed` on the corresponding failure.
@@ -432,9 +457,11 @@ publishes a new generation only after checking the current source partitions, an
 coverage explicitly.
 
 Account resolution (never prompts, safe under `--no-input`): `--account <id>` selects explicitly
-by the account's canonical stable account id (`a_...`) **or** its source profile id — the same
-resolution contract as the conversation commands; otherwise the current account (`is_current`) is
-used, falling back to the first account. An unmatched selector is reported as `account_not_found`.
+by the account's canonical stable account id (`a_...`) **or** its source profile id — matched
+exactly and case-sensitively under the same
+[account selector contract](#account-selector-contract) the conversation commands use; otherwise
+the current account (`is_current`) is used, falling back to the first account. An unmatched
+selector is reported as `account_not_found`.
 
 Options:
 
@@ -805,7 +832,7 @@ Stable `error.code` values:
 | `cancelled` | 130 | User interrupt/cancellation |
 | `source_unavailable` | 1 | The source could not be reached (account listing failed) |
 | `no_accounts` | 1 | Source available but no profiles exist, so a conversation profile cannot be resolved |
-| `account_not_found` | 1 | The `--account` selector matched no profile |
+| `account_not_found` | 1 | The `--account` selector matched no profile exactly (see the [account selector contract](#account-selector-contract)) |
 | `conversation_list_failed` | 1 | Enumerating conversations for a profile failed |
 | `conversation_not_found` | 1 | The conversation identifier resolved to nothing |
 | `conversation_describe_failed` | 1 | Describing a resolved conversation failed |
