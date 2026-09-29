@@ -27,8 +27,6 @@ The 0.2.x implementation already provides:
 
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
-- canonical partition-coverage rollup (the incremental conversation-scoped second-sync path is
-  shipped by Issue #49; the canonical expected/read coverage contract remains Issue #51's gap);
 - FTS/keyword search and a CLI archive-status command (`message list` and `context` ship as the
   M3a structured-retrieval slice; the FTS index and full-text search remain open);
 - Collection-scoped query/search and export selection;
@@ -39,9 +37,18 @@ coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #2
 application-level Collection catalog plus Collection-scoped `sync` foundation (Issue #26), the
 M3a minimum structured retrieval slice: `ArchiveQueryService` with the `message list` / `context`
 CLI contract (Issue #27), the WeChat source-partition completeness policy with its
-real-environment verification (Issue #37), and the canonical incremental conversation second-sync
+real-environment verification (Issue #37), the canonical incremental conversation second-sync
 path — `sync --conversation` converged on the shared `CaptureService` → Raw Vault →
-conversation-scoped ingest workflow (Issue #49).
+conversation-scoped ingest workflow (Issue #49 / PR #53) — and the source-neutral canonical
+coverage contract: the `canonical_coverage` rollup on the sync result and shared Raw Vault ingest
+refusal path, with an incomplete read failing closed as a structured `incomplete_coverage` result
+(Issue #51 / PR #54).
+
+M1 acceptance is complete: both M1 acceptance criteria are implemented and tested by their owning
+Issues, and the real-environment acceptance of the combined #49 + #51 canonical second-sync +
+coverage chain passed under Issue #49
+([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). The delivered
+M1 code landed on `main` **after** Stable `v0.3.1`, so it is not part of that release.
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 
@@ -539,9 +546,9 @@ Canonical models, migration-1 SQLite, fixture imports, stable IDs and JSONL expo
 
 CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portable packaging are delivered.
 
-### M1 — Live WeChat source adapter (partial)
+### M1 — Live WeChat source adapter (met)
 
-Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. The canonical second-sync path and the remaining M1 milestones stay open.
+Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. Both Roadmap M1 acceptance criteria are now met: the canonical incremental conversation second-sync path is delivered by Issue #49 (PR #53), the source-neutral canonical coverage rollup with fail-closed `incomplete_coverage` is delivered by Issue #51 (PR #54), and Issue #49's real-environment acceptance of the combined #49 + #51 chain passed on a supported Windows/WeChat 4.x installation ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). M1 is complete on `main`; the delivered code is post-`v0.3.1` and is not part of Stable `v0.3.1`. M1.5 is unaffected and remains incomplete.
 
 ### M1.5 — Preservation/rebuild foundation (partial delivery)
 

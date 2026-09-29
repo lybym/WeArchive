@@ -93,7 +93,7 @@ wearchive export --conversation <id-or-alias>
 - MCP/server mode;
 - adding new archive/search semantics only to justify the migration.
 
-## M1 — Windows local-source adapter (MVP slice delivered; milestone incomplete)
+## M1 — Windows local-source adapter (complete)
 
 **Goal:** support the first real Windows WeChat 4.x local-data workflow while preserving generic architecture.
 
@@ -120,22 +120,27 @@ Delivered:
   incomplete read fails closed as a structured `incomplete_coverage` document instead of ever
   being reported as a successful complete sync (docs/RAW_VAULT.md section 4.4, docs/CLI.md).
 
-Still missing for M1 completion:
+Real-environment acceptance — passed:
 
-- the real-environment acceptance of the canonical second-sync + coverage chain required by
-  Issues #49 and #51 before M1 may be marked complete (Issue #51's release slice).
+- the canonical second-sync + coverage chain required by Issues #49 and #51 was accepted in the
+  real environment on Windows 11 25H2 with WeChat for Windows 4.1.15.13, covering baseline sync,
+  unchanged incremental sync (`no_change`), a real source change, changed incremental sync,
+  ingest-checkpoint advance, `canonical_coverage` ↔ Raw Vault manifest cross-check, and
+  idempotency/stable-ID/Raw Vault immutability checks;
+- evidence: [Issue #49 real-environment acceptance](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417).
 
-Acceptance criteria — both M1 criteria are now implemented and tested by their owning Issues:
+Acceptance criteria — met:
 
-- ~~a second sync imports only new/changed records where supported~~ — delivered by **Issue #49**
-  (M1a canonical incremental second-sync orchestration);
-- ~~canonical source coverage reporting is explicit enough to distinguish complete and incomplete
-  reads~~ — delivered by **Issue #51** (M1b canonical source-neutral partition/evidence coverage
-  reporting).
+- `a second sync imports only new/changed records where supported` — implemented and tested by
+  **Issue #49** (M1a canonical incremental second-sync orchestration, delivered by PR #53) and
+  covered by the real-environment acceptance above;
+- `canonical source coverage reporting is explicit enough to distinguish complete and incomplete
+  reads` — implemented and tested by **Issue #51** (M1b canonical source-neutral partition/evidence
+  coverage reporting, delivered by PR #54) and covered by the real-environment acceptance above.
 
-M1 is complete only after the real-environment acceptance evidence for the #49 + #51 release slice
-exists and the milestone is marked complete through that verification; this Issue (#51) does not
-mark M1 complete by itself, and the two Issues' acceptance criteria remain non-overlapping.
+The two Issues' acceptance criteria are non-overlapping. **M1 is complete on `main`.** The delivered
+M1 code landed after Stable `v0.3.1`, so it is not part of that release; publishing it is separate
+release work.
 
 ## M1.5 — Raw Vault preservation (incremental capture delivered; milestone incomplete)
 
@@ -158,7 +163,7 @@ Delivered:
 - automatic widening to a full consistent snapshot whenever incremental safety cannot be proven (Issue #25).
 
 Still missing (non-goals of the rebuild slice, and open/deferred rather than prerequisites for the
-M1 canonical sync loop tracked by Issues #49 and #51):
+delivered M1 canonical sync loop):
 
 - physical cross-generation storage-dedup optimization;
 - Raw Vault encryption-at-rest.
@@ -356,39 +361,43 @@ and closed — the CI credibility work (Issue #40) and the deferred hardening th
 `capture --account` stable-id defect (Issue #39) — so it is historical context, not an active
 priority. `AGENTS.md` "Current priority" states the same order.
 
-1. **The next product P0 is the completion of the M1 release slice.** **Issue #49 (M1a)** has
-   converged the canonical incremental second-sync path over the live workflow — `sync
-   --conversation` on the shared `CaptureService` → Raw Vault → conversation-scoped ingest
-   orchestration already shipped for Collection sync — and owns the acceptance criterion *"a
-   second sync imports only new/changed records where supported"*. **Issue #51 (M1b)** has added
-   the canonical source-neutral partition/evidence coverage reporting on the stable sync-result
-   boundary Issue #49 handed over — `canonical_coverage` on `sync --conversation`, the shared
-   coverage model for direct Raw Vault ingest, and the structured `incomplete_coverage` failure —
-   and owns the acceptance criterion *"canonical source coverage reporting is explicit enough to
-   distinguish complete and incomplete reads"*. With both capability Issues delivered, M1
-   completion now awaits the real-environment acceptance of the canonical second-sync + coverage
-   chain that both Issues require; nothing else may mark M1 complete, and the two Issues'
-   acceptance criteria remain non-overlapping.
+**M1 — Windows local-source adapter is complete on `main` and has moved into delivered/completed
+history.** Its release slice was delivered by **Issue #49 (M1a)**, which converged the canonical
+incremental second-sync path over the live workflow — `sync --conversation` on the shared
+`CaptureService` → Raw Vault → conversation-scoped ingest orchestration already shipped for
+Collection sync — and by **Issue #51 (M1b)**, which added the canonical source-neutral
+partition/evidence coverage reporting on the stable sync-result boundary Issue #49 handed over:
+`canonical_coverage` on `sync --conversation`, the shared coverage model for direct Raw Vault ingest,
+and the structured `incomplete_coverage` failure. Issue #49's real-environment acceptance of the
+combined #49 + #51 chain passed
+([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)), so both M1
+acceptance criteria are met. The delivered M1 code landed on `main` **after** Stable `v0.3.1` and is
+therefore not part of that release; shipping it is separate release work.
+
+1. **The next product P0 is M2 — message semantics / semantic depth** (docs/ROADMAP.md M2):
+   more reliable special-message semantics, better unknown-type diagnostics, reply-target resolution
+   improvements and metadata refresh/merge correctness, without changing the canonical export
+   contract.
 2. The remaining M1.5 items — physical cross-generation storage deduplication and Raw Vault
    encryption-at-rest — stay open/deferred optimization and protection work. They are **not**
-   prerequisites for closing the M1 canonical sync loop, and M1.5 itself remains incomplete. The
-   delivered M1.5 capture slice (Issues #22/#25/#37) is verified in the real environment: versioned
-   immutable generations, safe incremental capture and explicit partition coverage.
-3. Continue M2 semantic depth.
-4. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.
+   completed by M1 completion, they are **not** prerequisites for the delivered M1 canonical sync
+   loop, and M1.5 itself remains incomplete. The delivered M1.5 capture slice (Issues #22/#25/#37) is
+   verified in the real environment: versioned immutable generations, safe incremental capture and
+   explicit partition coverage.
+3. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.
 
-FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest are all
-outside the M1 implementation scope; do not pull them into Issue #49 or Issue #51.
+FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest all
+remain outside the delivered M1 scope; M1 completion does not cover them.
 
 **Issue #47** (profile-id selector case-sensitivity across `capture`/`conversation`, plus the PR #44
-fail-closed test-gap hardening) is a post-`v0.3.1` **P2 non-blocking hardening follow-up**. It is not
-the next P0 product line, it does not gate M1, and it is parallelizable with Issues #49 and #51.
+fail-closed test-gap hardening) remains an open post-`v0.3.1` **P2 non-blocking hardening follow-up**.
+It is not the next P0 product line and it is not a release blocker.
 
 Issue #24 delivered conversation-scoped Raw Vault ingest checkpoints and Issue #25 delivered
 incremental live-source capture with explicit capture-side partition coverage; both are shipped and
-are the foundation Issue #49 builds on rather than work to repeat. The capture-side coverage of
+are the foundation Issue #49 built on rather than work to repeat. The capture-side coverage of
 Issue #25 and the source-partition support policy of Issue #37 are likewise the evidence source
-Issue #51 maps into canonical coverage semantics — without redefining either of them.
+Issue #51 mapped into canonical coverage semantics — without redefining either of them.
 
 Issue #26 delivered the M4 Collection sync foundation (Collection catalog, `collection list`/`show`,
 `sync --collection`); Collection-scoped query/search and export selection remain follow-up work.
