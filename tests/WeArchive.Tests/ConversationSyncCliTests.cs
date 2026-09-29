@@ -2,6 +2,8 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.CommandLine;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Domain;
+using WeArchive.Core.RawVault;
 using WeArchive.Infrastructure;
 using WeArchive.Tests.Support;
 
@@ -341,6 +343,174 @@ public sealed class ConversationSyncCliTests
         // The capture had already published before the selected conversation failed to resolve.
         Assert.Single(await harness.GenerationsAsync());
         Assert.Empty(await harness.ConversationsAsync());
+    }
+
+    // ---- canonical coverage contract (Issue #51) ----------------------------
+
+    [Fact]
+    public async Task SyncJsonReportsCanonicalCoverage()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A", MessageCount = 2 });
+
+        var run = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a"), "--json", "--no-input"]);
+
+        Assert.Equal(ExitCode.Success, run.ExitCode);
+        Assert.Empty(run.Stderr);
+        using var document = ParseSingleJson(run.Stdout);
+        var coverage = document.RootElement.GetProperty("canonical_coverage");
+        Assert.Equal("complete", coverage.GetProperty("verdict").GetString());
+        Assert.Equal(3, coverage.GetProperty("expected").GetInt32());
+        Assert.Equal(3, coverage.GetProperty("available").GetInt32());
+        Assert.Equal(0, coverage.GetProperty("unavailable").GetInt32());
+        Assert.Equal(0, coverage.GetProperty("known_unsupported").GetInt32());
+        Assert.Equal(0, coverage.GetProperty("unclassified").GetInt32());
+
+        // Field stability: the canonical contract is exactly these fields and nothing else.
+        var names = coverage.EnumerateObject().Select(property => property.Name).ToArray();
+        Assert.Equal(
+            new[] { "verdict", "expected", "available", "unavailable", "known_unsupported", "unclassified" },
+            names);
+    }
+
+    [Fact]
+    public async Task KnownUnsupportedEvidenceIsCompleteInTheJsonAndExplicitOnStderr()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A" });
+
+        const string reason = "Source partition 'migrate/unspportmsg.db' is outside this adapter " +
+            "version's supported evidence contract; it is recorded as unsupported and is not " +
+            "required for a complete capture.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "migrate/unspportmsg.db",
+            Status = RawPartitionStatus.Unsupported,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Info(DiagnosticCodes.PartitionUnsupported, reason));
+
+        var human = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a")]);
+        Assert.Equal(ExitCode.Success, human.ExitCode);
+        Assert.Contains("coverage:   complete", human.Stdout, StringComparison.Ordinal);
+        Assert.Contains("1 known unsupported", human.Stdout, StringComparison.Ordinal);
+        Assert.Contains("partition_unsupported", human.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("partition_unsupported", human.Stdout, StringComparison.Ordinal);
+
+        // The machine document carries the rollup, not the capture-side diagnostic prose.
+        harness.AdvanceClock();
+        var json = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a"), "--json"]);
+        Assert.Equal(ExitCode.Success, json.ExitCode);
+        Assert.Empty(json.Stderr);
+        using var document = ParseSingleJson(json.Stdout);
+        var coverage = document.RootElement.GetProperty("canonical_coverage");
+        Assert.Equal("complete", coverage.GetProperty("verdict").GetString());
+        Assert.Equal(1, coverage.GetProperty("known_unsupported").GetInt32());
+        Assert.Equal(0, coverage.GetProperty("unclassified").GetInt32());
+        Assert.DoesNotContain("unspportmsg", document.RootElement.GetProperty("canonical_coverage").GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnchangedSecondSyncReportsCompleteCoverageWithoutConfusingTheCursor()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A", MessageCount = 2 });
+
+        await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a"), "--json"]);
+        harness.AdvanceClock();
+
+        var run = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a"), "--json"]);
+
+        Assert.Equal(ExitCode.Success, run.ExitCode);
+        using var document = ParseSingleJson(run.Stdout);
+        var root = document.RootElement;
+        Assert.Equal("no_change", root.GetProperty("status").GetString());
+        Assert.Equal("complete", root.GetProperty("canonical_coverage").GetProperty("verdict").GetString());
+        Assert.Equal(
+            root.GetProperty("canonical_coverage").GetProperty("expected").GetInt32(),
+            root.GetProperty("canonical_coverage").GetProperty("available").GetInt32());
+
+        // Human output summarizes the same semantics on one line.
+        var human = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a")]);
+        Assert.Equal(ExitCode.Success, human.ExitCode);
+        Assert.Contains("coverage:   complete", human.Stdout, StringComparison.Ordinal);
+        Assert.Contains("result:     no_change", human.Stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task IncompleteRequiredEvidenceFailsWithAStructuredIncompleteCoverageDocument()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A" });
+
+        const string reason = "The message shard could not be read.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "message/message_1.db",
+            Status = RawPartitionStatus.Unavailable,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Partial(DiagnosticCodes.PartitionUnreadable, reason));
+        harness.Capture.CompletenessOverride = RawGenerationCompleteness.Partial;
+
+        var run = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a"), "--json"]);
+
+        // Exit 1 with the stable incomplete-coverage code; exactly one JSON document on stdout and
+        // the human diagnostic on stderr.
+        Assert.Equal(ExitCode.Failure, run.ExitCode);
+        using var document = ParseSingleJson(run.Stdout);
+        var error = document.RootElement.GetProperty("error");
+        Assert.Equal(CliErrorCode.IncompleteCoverage, error.GetProperty("code").GetString());
+        Assert.Contains("incomplete", run.Stderr, StringComparison.OrdinalIgnoreCase);
+        Assert.False(error.TryGetProperty("status", out _));
+
+        // The refusal carries the source-neutral coverage rollup: an incomplete read is
+        // machine-distinguishable from any other failure (docs/CLI.md, Issue #51).
+        var coverage = error.GetProperty("canonical_coverage");
+        Assert.Equal("incomplete", coverage.GetProperty("verdict").GetString());
+        Assert.Equal(1, coverage.GetProperty("unavailable").GetInt32());
+        Assert.Equal(0, coverage.GetProperty("known_unsupported").GetInt32());
+
+        // R2: no canonical conversation was published; the published generation is retained.
+        Assert.Empty(await harness.ConversationsAsync());
+        Assert.Single(await harness.GenerationsAsync());
+    }
+
+    [Fact]
+    public async Task TheCanonicalCoverageContractExposesNoSourcePathsOrCheckpointDetail()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("a"), Text = "A" });
+
+        const string reason = "Source partition 'migrate/unspportmsg.db' is outside this adapter " +
+            "version's supported evidence contract.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "migrate/unspportmsg.db",
+            Status = RawPartitionStatus.Unsupported,
+            Diagnostic = reason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Info(DiagnosticCodes.PartitionUnsupported, reason));
+
+        var run = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a"), "--json"]);
+
+        Assert.Equal(ExitCode.Success, run.ExitCode);
+        using var document = ParseSingleJson(run.Stdout);
+        var raw = document.RootElement.GetProperty("canonical_coverage").GetRawText();
+        Assert.DoesNotContain("unspportmsg", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain(".db", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("partition", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("fingerprint", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("checkpoint", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("artifact", raw, StringComparison.Ordinal);
     }
 
     // ---- helpers ------------------------------------------------------------

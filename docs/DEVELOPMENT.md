@@ -413,6 +413,13 @@ and its checkpoint roll back together, and a Raw Vault generation that was alrea
 before the ingest phase is retained rather than rolled back. This deliberately replaces the older
 direct-live `sync` behavior, which kept already-read records on cancellation.
 
+The same boundary reports canonical coverage (Issue #51): the sync result carries the
+source-neutral coverage rollup of the verified generation, and a generation whose evidence is not
+complete is refused before any canonical write — the CLI reports it as the structured
+`incomplete_coverage` failure with the coverage rollup in the JSON error document, never as a
+successful complete sync. The rollup is a stateless report over already-published evidence; it
+adds no journal, checkpoint or recovery protocol, and the R2 anchor is unchanged.
+
 ### 10.5 R3+ — Explicit crash-recovery protocol
 
 Any requirement that needs recovery across process crash/restart through persistent journals, commit markers, rollback state, multi-file transaction protocols or recovery state machines is **not a default engineering improvement**. It is a separate reliability feature and requires explicit PRD/Issue/milestone authorization before implementation.

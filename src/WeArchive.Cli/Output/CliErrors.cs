@@ -20,7 +20,8 @@ public static class CliErrors
         TextWriter stderr,
         GlobalOptions options,
         string code,
-        string message)
+        string message,
+        CanonicalCoverageDto? canonicalCoverage = null)
     {
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
@@ -41,6 +42,7 @@ public static class CliErrors
             {
                 Code = code,
                 Message = message,
+                CanonicalCoverage = canonicalCoverage,
             },
         }));
     }

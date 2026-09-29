@@ -1,5 +1,7 @@
 using WeArchive.Cli.CommandLine;
 using WeArchive.Cli.Output;
+using WeArchive.Cli.Output.Dto;
+using WeArchive.Core.RawVault;
 using WeArchive.Infrastructure;
 
 namespace WeArchive.Cli.Commands;
@@ -39,6 +41,17 @@ public sealed class IngestCommand(RawVaultIngestService ingest) : ICliCommand
         {
             context.WriteError(CliErrorCode.Cancelled, "ingest was cancelled; the current conversation and its checkpoint were rolled back.");
             return ExitCode.Cancelled;
+        }
+        catch (IncompleteCanonicalCoverageException ex)
+        {
+            // Direct ingest reuses the same source-neutral coverage refusal as sync --conversation:
+            // a generation whose evidence is not complete cannot establish a complete canonical
+            // read, and the failure document carries the coverage rollup (docs/CLI.md, Issue #51).
+            context.WriteError(
+                CliErrorCode.IncompleteCoverage,
+                ex.Message,
+                CanonicalCoverageDto.From(ex.Coverage));
+            return ExitCode.Failure;
         }
         catch (Exception ex)
         {

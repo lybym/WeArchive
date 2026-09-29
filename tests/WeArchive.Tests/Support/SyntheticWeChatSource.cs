@@ -178,6 +178,26 @@ internal sealed class SyntheticWeChatCaptureAdapter : IIncrementalSourceCaptureA
     /// <summary>When set, capture fails instead of publishing evidence.</summary>
     public Exception? Failure { get; set; }
 
+    /// <summary>
+    /// Extra coverage entries a test injects to model partitions outside the healthy baseline —
+    /// known-unsupported, unclassified or unavailable evidence (Issue #51). They are appended to
+    /// the capture result exactly as a real adapter records them; the capture checkpoint still
+    /// covers only the captured/reused evidence (docs/RAW_VAULT.md section 4.3).
+    /// </summary>
+    public List<RawPartitionCoverage> ExtraCoverage { get; } = [];
+
+    /// <summary>Diagnostics paired with <see cref="ExtraCoverage"/> — for example the
+    /// <c>partition_unsupported</c> (info) and <c>partition_unclassified</c> (partial) codes the
+    /// source-partition policy records (Issue #37).</summary>
+    public List<RawManifestDiagnostic> ExtraDiagnostics { get; } = [];
+
+    /// <summary>
+    /// Overrides the completeness verdict the adapter reports, so a test can model a generation
+    /// the capture policy publishes as partial (an unavailable or unclassified partition) instead
+    /// of the healthy <c>complete</c> baseline.
+    /// </summary>
+    public RawGenerationCompleteness? CompletenessOverride { get; set; }
+
     public string CaptureAdapterFamily => WeChatCaptureAdapter.Family;
 
     /// <summary>
@@ -241,6 +261,7 @@ internal sealed class SyntheticWeChatCaptureAdapter : IIncrementalSourceCaptureA
 
         var artifacts = new List<RawArtifactDescriptor>();
         var coverage = new List<RawPartitionCoverage>();
+        var diagnostics = new List<RawManifestDiagnostic>();
         for (var i = 0; i < databases.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -319,9 +340,10 @@ internal sealed class SyntheticWeChatCaptureAdapter : IIncrementalSourceCaptureA
         return new SourceCaptureResult
         {
             Artifacts = artifacts,
-            Coverage = coverage,
+            Diagnostics = [.. diagnostics, .. ExtraDiagnostics],
+            Coverage = [.. coverage, .. ExtraCoverage],
             Mode = previous is null ? RawCaptureMode.Baseline : RawCaptureMode.Incremental,
-            Completeness = RawGenerationCompleteness.Complete,
+            Completeness = CompletenessOverride ?? RawGenerationCompleteness.Complete,
             SourceProductName = "WeChat for Windows",
             SourceVersion = "4.1.13.12",
         };

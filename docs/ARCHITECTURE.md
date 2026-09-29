@@ -138,7 +138,10 @@ do not reach a command:
 - the command surface itself (`--help --json`, and a bare `wearchive --json`) rendered as a
   help document (`usage`, `commands`, `options`);
 - a failure (usage error, runtime failure, cancellation) rendered as an error document
-  (`error.code`, `error.message`), where `error.code` mirrors the exit-code family below.
+  (`error.code`, `error.message`), where `error.code` mirrors the exit-code family below;
+  a refusal for incomplete evidence coverage additionally carries the source-neutral
+  `canonical_coverage` rollup in the error document (`incomplete_coverage`, Issue #51), so an
+  incomplete canonical read is machine-distinguishable from other failures.
 
 Human diagnostics — including help text printed because a command was missing or unknown —
 stay on stderr, and `--quiet` never suppresses a failure. The process exit code remains the
@@ -193,6 +196,14 @@ over captured evidence (section 10), and the export path re-imports from the liv
 `ConversationSyncService` adds no second incremental-ingest implementation; it sequences the
 documented boundaries. Capture is **R1** and one conversation's publication is **R2**, unchanged
 (docs/DEVELOPMENT.md section 10).
+
+The stable application result boundary carries the source-neutral canonical coverage rollup
+(Issue #51): `ConversationSyncResult.Coverage` is a deterministic `CanonicalCoverage` interpretation
+of the verified generation's manifest (docs/RAW_VAULT.md section 4.4) — evidence completeness, not
+acquisition metadata, and never a reinterpretation of the ingest-progress `conversation_coverage`
+cursor. A generation the ingest refuses for incomplete coverage surfaces as a typed failure
+carrying the same rollup, so the CLI can report an incomplete read structurally instead of only as
+prose; the rollup itself is stateless and adds no reliability mechanism.
 
 #### 3.2.1 Import publication
 

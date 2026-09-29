@@ -33,7 +33,17 @@ internal static class CapturedWeChatSourceAdapter
             throw new NotSupportedException("No captured-source reader supports this Raw Vault source family/version.");
 
         if (manifest.Capture.Completeness != RawGenerationCompleteness.Complete)
-            throw new InvalidDataException("A partial or incomplete Raw Vault generation cannot establish a complete canonical rebuild.");
+        {
+            // The completeness gate is the source-neutral R2 rule, so the refusal carries the
+            // source-neutral coverage rollup instead of a bare string: ingest, sync and rebuild
+            // all fail closed, and a machine caller can read what was missing without opening the
+            // manifest (docs/PRD.md FR-20, docs/RAW_VAULT.md section 7, Issue #51).
+            var completeness = manifest.Capture.Completeness.ToString().ToLowerInvariant();
+            throw new IncompleteCanonicalCoverageException(
+                CanonicalCoverage.From(manifest),
+                $"Raw Vault generation '{manifest.GenerationId}' is {completeness}; a partial or " +
+                "incomplete Raw Vault generation cannot establish a complete canonical rebuild.");
+        }
 
         var databases = manifest.Artifacts
             .Where(a => a.Role == "source-database"

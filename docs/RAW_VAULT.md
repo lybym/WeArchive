@@ -328,6 +328,42 @@ expected live partition before and after the snapshot, and re-hashes every reuse
 generation. That work is what makes reuse trustworthy, so `mode = incremental` must not be read as
 "cheap" for a multi-GB account.
 
+### 4.4 Canonical coverage interpretation (Issue #51)
+
+The manifest's coverage entries are the evidence source for one source-neutral,
+application-level rollup (`CanonicalCoverage`, `WeArchive.Core.RawVault`). It answers the
+canonical question — *was the supported evidence required by the canonical result actually
+available and complete?* — for humans, scripts and agents, without inspecting WeChat tables, Raw
+Vault paths, manifest internals or checkpoint rows. It maps the persisted manifest as follows:
+
+| Field | Meaning |
+|---|---|
+| `verdict` | `complete` only when the generation is `complete`, no `unavailable` evidence and no unclassified evidence remain; `incomplete` otherwise. Unknown/unclassified evidence can never silently produce a complete verdict, even if a manifest claimed one. |
+| `expected` | Every coverage entry the generation accounts for — the same rule as the capture CLI's `expected`. |
+| `available` | `captured` plus `reused` entries. The split is acquisition metadata and is deliberately merged: canonical coverage answers whether the evidence was available, not how it was reacquired. |
+| `unavailable` | `unavailable` entries. |
+| `known_unsupported` | `unsupported` entries accounted for by the informational `partition_unsupported` diagnostic. Explicit, and never by itself incomplete. |
+| `unclassified` | `unsupported` entries accounted for by the partial `partition_unclassified` diagnostic, plus any unsupported entry the rollup cannot attribute to a policy diagnostic. Conservative. |
+
+Rules the interpretation preserves:
+
+- known-unsupported and unknown/unclassified evidence are distinguished by the diagnostic codes
+  the source-partition policy already records (section 4.3), never by re-classifying source
+  partitions outside the source/preservation boundary;
+- the rollup is a pure function of the manifest, so the same verified generation and reader policy
+  always produce the same coverage;
+- it is distinct from the ingest-progress `conversation_coverage` checkpoint cursor
+  ([DATA_MODEL.md](DATA_MODEL.md) section 14.1): the cursor records that a newer generation was
+  verified unchanged so future ingest work can skip it; canonical coverage states whether the
+  evidence behind a canonical result was complete. Neither is ever inferred from the other;
+- the R2 ingest path refuses a generation whose coverage is not complete before any canonical
+  write (`IncompleteCanonicalCoverageException`, carrying the coverage rollup), so a
+  `succeeded`/`no_change` canonical result is always `complete` and an incomplete read surfaces as
+  a structured failure (docs/CLI.md `incomplete_coverage`), never as a successful complete result;
+- the rollup introduces no persistent state: it is a report over already-published evidence, not a
+  checkpoint, journal or R3+ mechanism, and no coverage-reporting failure mutates canonical
+  messages or checkpoints.
+
 ## 5. Consistent snapshot strategy
 
 WeChat 4.x keeps its databases open in SQLCipher/WAL mode. An ordinary file copy of the `.db`
