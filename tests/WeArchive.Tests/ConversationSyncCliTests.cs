@@ -434,7 +434,9 @@ public sealed class ConversationSyncCliTests
             root.GetProperty("canonical_coverage").GetProperty("expected").GetInt32(),
             root.GetProperty("canonical_coverage").GetProperty("available").GetInt32());
 
-        // Human output summarizes the same semantics on one line.
+        // Human output summarizes the same semantics on one line. The clock moves first: two
+        // captures at one instant would collide by generation identity (docs/DATA_MODEL.md 21.1).
+        harness.AdvanceClock();
         var human = await RunAsync(harness, ["sync", "--conversation", WeChatSyncHarness.DirectId("a")]);
         Assert.Equal(ExitCode.Success, human.ExitCode);
         Assert.Contains("coverage:   complete", human.Stdout, StringComparison.Ordinal);
