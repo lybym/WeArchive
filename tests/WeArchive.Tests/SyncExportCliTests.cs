@@ -16,10 +16,13 @@ using WeArchive.Tests.Support;
 namespace WeArchive.Tests;
 
 /// <summary>
-/// CLI integration + reliability-semantics tests for <c>wearchive sync</c> and
+/// CLI integration + reliability-semantics tests for <c>wearchive sync</c> resolution/usage and
 /// <c>wearchive export</c>. Commands are exercised through <see cref="CliHost.RunAsync"/>
 /// against a temporary SQLite archive and the fixture source, so import/export semantics
 /// stay in Core/Infrastructure and the CLI is measured only as a transport adapter.
+/// <c>sync --conversation</c> publication is covered by <c>ConversationSyncCliTests</c>, which
+/// runs the preservation-first capture -&gt; Raw Vault -&gt; ingest path over the synthetic WeChat
+/// source (Issue #49).
 /// docs/PRD.md FR-04/FR-08/FR-09/FR-12/FR-14/FR-22, docs/DEVELOPMENT.md sections 7 and 10
 /// (Reliability Levels: Import R2, Export R1).
 /// </summary>
@@ -90,167 +93,13 @@ public sealed class SyncExportCliTests
             StableIds.Account(adapter.AdapterName, FixtureSourceAdapter.FixtureAccountId),
             FixtureSourceAdapter.GroupConversation);
 
-    // ---- sync: happy path, human + JSON, archive state ----
 
-    [Fact]
-    public async Task SyncSuccessPublishesToArchiveAndExitsZero()
-    {
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation],
-            stdout, stderr);
-
-        Assert.Equal(ExitCode.Success, exit);
-
-        var conversationId = GroupStableId(harness.Adapter);
-        var conversation = await harness.Store.GetConversationAsync(conversationId, CancellationToken.None);
-        Assert.NotNull(conversation);
-        var messages = await harness.Store.ReadMessagesAsync(conversationId, CancellationToken.None);
-        Assert.Equal(
-            FixtureSourceAdapter.BuildMessages(FixtureSourceAdapter.GroupConversation).Count,
-            messages.Count);
-    }
-
-    [Fact]
-    public async Task SyncJsonEmitsOneDocumentWithCountersAndDiagnostics()
-    {
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
-            stdout, stderr);
-
-        Assert.Equal(ExitCode.Success, exit);
-
-        using var doc = ParseSingleJson(stdout);
-        var root = doc.RootElement;
-        Assert.Equal(GroupStableId(harness.Adapter), root.GetProperty("conversation_id").GetString());
-        Assert.StartsWith("a_", root.GetProperty("account_id").GetString());
-        Assert.True(root.GetProperty("counters").GetProperty("inserted").GetInt32() > 0);
-        Assert.True(root.GetProperty("records_scanned").GetInt32() > 0);
-
-        var diagnostics = root.GetProperty("diagnostics").EnumerateArray().ToList();
-        Assert.Contains(diagnostics, d => d.GetProperty("code").GetString() == "unknown_message_type");
-        Assert.All(diagnostics, d => Assert.True(d.GetProperty("count").GetInt32() >= 1));
-
-        // Progress stays on stderr; stdout carries only the result document.
-        Assert.Empty(stderr.ToString());
-    }
-
-    [Fact]
-    public async Task SyncHumanWritesProgressToStderrAndResultToStdout()
-    {
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation],
-            stdout, stderr);
-
-        Assert.Equal(ExitCode.Success, exit);
-        var stdoutContent = stdout.ToString();
-        var stderrContent = stderr.ToString();
-
-        Assert.Contains("Synced conversation", stdoutContent);
-        Assert.Contains("Resolving", stderrContent);
-        Assert.DoesNotContain("Resolving", stdoutContent);
-        Assert.DoesNotContain("{", stdoutContent);
-    }
-
-    [Fact]
-    public async Task SyncUsesTheSameStableIdMechanismAsTheImporter()
-    {
-        // The CLI must not introduce a second identity/alias store: the conversation id it
-        // reports is exactly the stable id ImportService derives from the source profile and
-        // the upstream conversation id.
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
-
-        await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
-            stdout, TextWriter.Null);
-
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(GroupStableId(harness.Adapter), doc.RootElement.GetProperty("conversation_id").GetString());
-    }
-
-    [Fact]
-    public async Task SyncIsIdempotentAcrossRuns()
-    {
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-
-        await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
-            new StringWriter(), TextWriter.Null);
-        var afterFirst = await harness.Store.GetArchiveStatsAsync(CancellationToken.None);
-
-        var stdout = new StringWriter();
-        await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
-            stdout, TextWriter.Null);
-        var afterSecond = await harness.Store.GetArchiveStatsAsync(CancellationToken.None);
-
-        Assert.Equal(afterFirst.MessageCount, afterSecond.MessageCount);
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(afterFirst.MessageCount, doc.RootElement.GetProperty("counters").GetProperty("unchanged").GetInt32());
-    }
-
-    // ---- sync: R2 fatal source-coverage failure -> full rollback, exit 1 ----
-
-    [Fact]
-    public async Task SyncFatalSourceCoverageRollsBackTheConversationAndExitsOne()
-    {
-        using var temp = new TempDirectory();
-        var adapter = new UnreadableShardSource();
-        using var harness = CreateHarness(temp, adapter);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", UnreadableShardSource.ConversationId, "--json"],
-            stdout, stderr);
-
-        Assert.Equal(ExitCode.Failure, exit);
-
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(CliErrorCode.Failure, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
-        Assert.Contains("unreadable", doc.RootElement.GetProperty("error").GetProperty("message").GetString()!, StringComparison.OrdinalIgnoreCase);
-
-        // R2: a Fatal source-coverage failure rolls back the entire conversation transaction.
-        // The archive holds no conversation row, no messages, and no aggregates counting data
-        // it does not have. This is re-verified against a freshly reopened store.
-        var conversationId = StableIds.GroupConversation(
-            StableIds.Account(adapter.AdapterName, UnreadableShardSource.ProfileId),
-            UnreadableShardSource.ConversationId);
-
-        await AssertArchiveHasNoConversationAsync(harness.Store, conversationId);
-        var reopened = new SqliteArchiveStore(harness.ArchivePath, harness.Clock);
-        await AssertArchiveHasNoConversationAsync(reopened, conversationId);
-
-        Assert.Contains("error:", stderr.ToString());
-    }
-
-    private static async Task AssertArchiveHasNoConversationAsync(IArchiveStore store, string conversationId)
-    {
-        Assert.Null(await store.GetConversationAsync(conversationId, CancellationToken.None));
-        Assert.Empty(await store.ReadMessagesAsync(conversationId, CancellationToken.None));
-        var stats = await store.GetArchiveStatsAsync(CancellationToken.None);
-        Assert.Equal(0, stats.ConversationCount);
-        Assert.Equal(0, stats.MessageCount);
-    }
-
-    // ---- sync: exit codes, --no-input, cancellation ----
+    // ---- sync: resolution and usage contract --------------------------------
+    //
+    // `sync --conversation` publication runs the preservation-first capture -> Raw Vault -> ingest
+    // path and is covered by ConversationSyncCliTests over the synthetic WeChat source (Issue #49).
+    // The cases here never reach publication: they pin selector resolution error codes and the
+    // usage contract, which are independent of the publication path.
 
     [Fact]
     public async Task SyncMissingConversationFlagExitsTwo()
@@ -281,43 +130,7 @@ public sealed class SyncExportCliTests
         Assert.Equal(CliErrorCode.UsageError, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
-    [Fact]
-    public async Task SyncNoInputNeverPromptsAndSucceeds()
-    {
-        // The command auto-selects the current source account, so --no-input has no prompt
-        // path to take and a normal sync still succeeds.
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
 
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--no-input", "--json"],
-            stdout, TextWriter.Null);
-
-        Assert.Equal(ExitCode.Success, exit);
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(GroupStableId(harness.Adapter), doc.RootElement.GetProperty("conversation_id").GetString());
-    }
-
-    [Fact]
-    public async Task SyncResolvesByStableArchiveId()
-    {
-        // `--conversation` must accept the canonical stable archive id (g_/u_) the discovery
-        // surface reports, not only the upstream source id — consistent with `conversation show`
-        // and "Stable IDs determine canonical identity" (docs/DATA_MODEL.md section 16).
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
-
-        var stableId = GroupStableId(harness.Adapter);
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", stableId, "--json"], stdout, TextWriter.Null);
-
-        Assert.Equal(ExitCode.Success, exit);
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(stableId, doc.RootElement.GetProperty("conversation_id").GetString());
-    }
 
     [Fact]
     public async Task SyncNoAccountsEmitsNoAccountsCode()
@@ -367,79 +180,8 @@ public sealed class SyncExportCliTests
         Assert.Equal(CliErrorCode.ConversationNotFound, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
-    [Fact]
-    public async Task SyncDescribeFailureEmitsConversationDescribeFailedCode()
-    {
-        // The metadata probe above the import is not the operation's real read, but when it
-        // fails after the conversation resolved the documented code is the granular
-        // `conversation_describe_failed` — the same one `conversation show` emits — rather than
-        // a generic `failure`.
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp, new DescribeFailingSource());
-        var stdout = new StringWriter();
 
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", DescribeFailingSource.ConversationId, "--json"],
-            stdout, TextWriter.Null);
 
-        Assert.Equal(ExitCode.Failure, exit);
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(
-            CliErrorCode.ConversationDescribeFailed,
-            doc.RootElement.GetProperty("error").GetProperty("code").GetString());
-    }
-
-    [Fact]
-    public async Task SyncCancellationExits130()
-    {
-        using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
-            stdout, stderr, cts.Token);
-
-        Assert.Equal(ExitCode.Cancelled, exit);
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(CliErrorCode.Cancelled, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
-    }
-
-    [Fact]
-    public async Task SyncMidStreamCancellationKeepsAlreadyReadRecordsAndExits130()
-    {
-        // Unlike the pre-cancelled-token test, this cancels *after* the importer has flushed a
-        // full batch, exercising the R2 "keeps already-read records" path through the CLI:
-        // cancellation exits 130 and the already-flushed records survive in the archive, so a
-        // later full re-read completes without duplicates.
-        using var temp = new TempDirectory();
-        using var cts = new CancellationTokenSource();
-        var source = new LargeMessageSource(() => cts.Cancel());
-        using var harness = CreateHarness(temp, source);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await RunAsync(harness.Provider,
-            ["sync", "--conversation", LargeMessageSource.ConversationId, "--json"],
-            stdout, stderr, cts.Token);
-
-        Assert.Equal(ExitCode.Cancelled, exit);
-        using var doc = ParseSingleJson(stdout);
-        Assert.Equal(CliErrorCode.Cancelled, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
-
-        var conversationId = StableIds.GroupConversation(
-            StableIds.Account(source.AdapterName, LargeMessageSource.ProfileId),
-            LargeMessageSource.ConversationId);
-
-        // The conversation row and the flushed batch survive a cooperative cancellation.
-        Assert.NotNull(await harness.Store.GetConversationAsync(conversationId, CancellationToken.None));
-        var kept = await harness.Store.ReadMessagesAsync(conversationId, CancellationToken.None);
-        Assert.Equal(LargeMessageSource.FlushedBeforeCancellation, kept.Count);
-    }
 
     // ---- export: happy path, documented package, JSON ----
 
@@ -886,19 +628,19 @@ public sealed class SyncExportCliTests
     // ---- no R3+ recovery machinery ----
 
     [Fact]
-    public async Task NoPersistentRecoveryStateIsCreatedBySyncOrExport()
+    public async Task NoPersistentRecoveryStateIsCreatedByExport()
     {
         // The hard-stop rule forbids journals, commit markers, recovery ledgers or cross-file
         // transaction protocols beyond SQLite's own documented boundary. This test asserts
-        // that after a successful sync+export, only SQLite's own files and the documented
+        // that after a successful import+export, only SQLite's own files and the documented
         // export package remain — no new persistent recovery state.
+        //
+        // The same assertion for the preservation-first sync path (capture + Raw Vault + ingest)
+        // lives in ConversationSyncTests, which owns that path's archive and Raw Vault layout.
         using var temp = new TempDirectory();
         using var harness = CreateHarness(temp);
         var output = temp.Combine("out");
 
-        await RunAsync(harness.Provider,
-            ["sync", "--conversation", FixtureSourceAdapter.GroupConversation, "--json"],
-            new StringWriter(), TextWriter.Null);
         await RunAsync(harness.Provider,
             ["export", "--conversation", FixtureSourceAdapter.GroupConversation, "--output", output, "--json"],
             new StringWriter(), TextWriter.Null);
@@ -978,7 +720,7 @@ public sealed class SyncExportCliTests
             new ConversationCommand(sp.GetRequiredService<SourceCatalogService>()),
             new SyncCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
-                sp.GetRequiredService<ImportService>(),
+                sp.GetRequiredService<ConversationSyncService>(),
                 sp.GetRequiredService<CollectionSyncService>()),
             new ExportCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
@@ -1133,140 +875,4 @@ public sealed class SyncExportCliTests
             });
     }
 
-    /// <summary>
-    /// A source whose conversation resolves but whose metadata probe fails, so <c>sync</c> must
-    /// emit the granular <c>conversation_describe_failed</c> code rather than a generic failure.
-    /// </summary>
-    private sealed class DescribeFailingSource : ISourceAdapter
-    {
-        public const string ProfileId = "describe_account";
-        public const string ConversationId = "describe_conv";
-
-        public string AdapterName => "describe";
-        public string AdapterVersion => "1.0.0";
-
-        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(new SourceDescriptor
-            {
-                AdapterName = AdapterName,
-                AdapterVersion = AdapterVersion,
-                SourceVersion = "describe-1",
-                SourceProductName = "describe source",
-                IsAvailable = true,
-            });
-
-        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceAccount>>(
-            [
-                new SourceAccount { SourceProfileId = ProfileId, DisplayName = "describe account", IsCurrent = true },
-            ]);
-
-        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
-            string sourceProfileId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceConversation>>(
-            [
-                new SourceConversation { SourceConversationId = ConversationId, Kind = ConversationKind.Group, Title = "describe" },
-            ]);
-
-        public Task<SourceConversationDetail> DescribeConversationAsync(
-            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("source became unavailable while describing");
-        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
-            string sourceProfileId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceParticipant>>([]);
-
-        public IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
-            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
-            throw new NotImplementedException();
-    }
-
-    /// <summary>
-    /// A source with more messages than one import batch, so a cooperative cancellation after
-    /// the first batch is flushed exercises the R2 "keeps already-read records" path through
-    /// the CLI: the flushed batch survives a mid-stream cancellation and the CLI exits 130.
-    /// </summary>
-    private sealed class LargeMessageSource : ISourceAdapter
-    {
-        // Matches ImportService.BatchSize so exactly one full batch is flushed before the
-        // cancellation is signalled.
-        public const int BatchSize = 2048;
-        public const int TotalMessages = BatchSize + 2;
-        public const int FlushedBeforeCancellation = BatchSize;
-
-        public const string ProfileId = "large_account";
-        public const string ConversationId = "large_conv";
-
-        private readonly Action _cancelAfterFlush;
-
-        public LargeMessageSource(Action cancelAfterFlush) => _cancelAfterFlush = cancelAfterFlush;
-
-        public string AdapterName => "large";
-        public string AdapterVersion => "1.0.0";
-
-        public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(new SourceDescriptor
-            {
-                AdapterName = AdapterName,
-                AdapterVersion = AdapterVersion,
-                SourceVersion = "large-1",
-                SourceProductName = "large fixture source",
-                IsAvailable = true,
-            });
-
-        public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceAccount>>(
-            [
-                new SourceAccount { SourceProfileId = ProfileId, DisplayName = "large account", IsCurrent = true },
-            ]);
-
-        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
-            string sourceProfileId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceConversation>>(
-            [
-                new SourceConversation { SourceConversationId = ConversationId, Kind = ConversationKind.Group, Title = "large" },
-            ]);
-
-        public Task<SourceConversationDetail> DescribeConversationAsync(
-            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
-            Task.FromResult(new SourceConversationDetail
-            {
-                SourceConversationId = sourceConversationId,
-                MessageCount = TotalMessages,
-                ParticipantCount = 1,
-            });
-
-        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
-            string sourceProfileId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceParticipant>>([new SourceParticipant { SourceUserId = ProfileId, Nickname = "large" }]);
-
-        public async IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
-            string sourceProfileId,
-            string sourceConversationId,
-            [EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            for (var i = 1; i <= TotalMessages; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return new SourceMessage
-                {
-                    SourceConversationId = sourceConversationId,
-                    SenderSourceUserId = ProfileId,
-                    OccurredAt = FixtureSourceAdapter.Base.AddSeconds(i),
-                    SourceType = "1",
-                    SourcePartition = "large_0",
-                    SourceMessageId = $"l:large_0:{i}",
-                    SourceOrderKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    Content = SourceMessageContent.PlainText($"message {i}"),
-                };
-
-                // After the (BatchSize+1)th message is consumed, the first full batch has been
-                // flushed into the import session. Signal the test to cancel so the importer's
-                // cancellation path commits the already-read records (R2) and the CLI exits 130.
-                if (i == BatchSize + 1)
-                    _cancelAfterFlush();
-
-                await Task.Yield();
-            }
-        }
-    }
 }

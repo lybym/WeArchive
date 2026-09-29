@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
+using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
 using WeArchive.Infrastructure;
 using WeArchive.Infrastructure.Archive;
@@ -11,18 +12,20 @@ using WeArchive.Infrastructure.WeChat;
 namespace WeArchive.Tests.Support;
 
 /// <summary>
-/// A Collection-scope test environment: the real composition root plus a synthetic WeChat capture
-/// source, so a Collection sync runs the production path end to end — authoritative configuration
-/// file, catalog resolution, <see cref="CaptureService"/>, Raw Vault publication and the real
-/// Raw Vault ingest — without a live client or a database key (docs/PRD.md NFR-06).
+/// The shared synthetic-WeChat synchronization environment for conversation-scoped
+/// (<c>sync --conversation</c>) and Collection-scoped (<c>sync --collection</c>) tests: the real
+/// composition root plus a synthetic WeChat capture source, so a sync runs the production path end
+/// to end — selector resolution over the live surface, <see cref="CaptureService"/>, Raw Vault
+/// publication and the real Raw Vault ingest — without a live client or a database key
+/// (docs/PRD.md NFR-06).
 /// <para>
 /// The provider is built through <c>AddWeArchiveCore</c>, so these tests also cover the shipped
 /// dependency wiring rather than a hand-assembled object graph.
 /// </para>
 /// </summary>
-internal sealed class CollectionHarness : IDisposable
+internal sealed class WeChatSyncHarness : IDisposable
 {
-    private CollectionHarness(
+    private WeChatSyncHarness(
         ServiceProvider provider,
         SyntheticWeChatSourceAdapter source,
         SyntheticWeChatCaptureAdapter capture,
@@ -40,6 +43,8 @@ internal sealed class CollectionHarness : IDisposable
         AccountId = accountId;
         Catalog = provider.GetRequiredService<CollectionCatalogService>();
         Sync = provider.GetRequiredService<CollectionSyncService>();
+        ConversationSync = provider.GetRequiredService<ConversationSyncService>();
+        SourceCatalog = provider.GetRequiredService<SourceCatalogService>();
         Archive = (SqliteArchiveStore)provider.GetRequiredService<IArchiveStore>();
         Vault = provider.GetRequiredService<IRawVaultStore>();
     }
@@ -57,6 +62,11 @@ internal sealed class CollectionHarness : IDisposable
 
     public CollectionSyncService Sync { get; }
 
+    public ConversationSyncService ConversationSync { get; }
+
+    /// <summary>The live discovery surface the CLI's selector resolution reads.</summary>
+    public SourceCatalogService SourceCatalog { get; }
+
     public SqliteArchiveStore Archive { get; }
 
     public IRawVaultStore Vault { get; }
@@ -70,11 +80,26 @@ internal sealed class CollectionHarness : IDisposable
 
     public static string ProfileId => SyntheticWeChatSourceAdapter.ProfileId;
 
-    public static CollectionHarness Create(
+    public static WeChatSyncHarness Create(
         TempDirectory temp,
-        params SyntheticCaptureConversation[] conversations)
+        params SyntheticCaptureConversation[] conversations) =>
+        Create(temp, conversations, configure: null);
+
+    /// <summary>
+    /// Creates the environment and lets one test adjust the shipped DI graph before it is built
+    /// (for example to wrap <c>IConversationIngestService</c> so a cancellation point is
+    /// deterministic). Later explicit registrations win on resolution, exactly as the clock and
+    /// synthetic source overrides do.
+    /// </summary>
+    public static WeChatSyncHarness Create(
+        TempDirectory temp,
+        SyntheticCaptureConversation[] conversations,
+        Action<IServiceCollection>? configure)
     {
-        var source = new SyntheticWeChatSourceAdapter();
+        ArgumentNullException.ThrowIfNull(temp);
+        ArgumentNullException.ThrowIfNull(conversations);
+
+        var source = new SyntheticWeChatSourceAdapter { Conversations = conversations };
         var capture = new SyntheticWeChatCaptureAdapter(conversations);
         var archivePath = temp.Combine("archive", "wearchive.db");
         var configurationPath = temp.Combine("collections.yaml");
@@ -88,9 +113,10 @@ internal sealed class CollectionHarness : IDisposable
         services.AddSingleton<IClock>(clock);
         services.AddSingleton<ISourceAdapter>(source);
         services.AddSingleton<ISourceCaptureAdapter>(capture);
+        configure?.Invoke(services);
 
         var provider = services.BuildServiceProvider();
-        return new CollectionHarness(provider, source, capture, clock, archivePath, configurationPath, accountId);
+        return new WeChatSyncHarness(provider, source, capture, clock, archivePath, configurationPath, accountId);
     }
 
     /// <summary>
@@ -148,8 +174,16 @@ internal sealed class CollectionHarness : IDisposable
         Archive.GetIngestCheckpointAsync(
             AccountId, WeChatCaptureAdapter.Family, "conversation", stableConversationId, CancellationToken.None);
 
+    public Task<IngestCheckpoint?> ConversationCoverageCheckpointAsync(string stableConversationId) =>
+        Archive.GetIngestCheckpointAsync(
+            AccountId, WeChatCaptureAdapter.Family, "conversation_coverage", stableConversationId, CancellationToken.None);
+
     public Task<IReadOnlyList<CanonicalMessage>> MessagesAsync(string stableConversationId) =>
         Archive.ReadMessagesAsync(stableConversationId, CancellationToken.None);
+
+    /// <summary>The published Raw Vault generations for this account, oldest first.</summary>
+    public Task<IReadOnlyList<RawGenerationSummary>> GenerationsAsync() =>
+        Vault.ListGenerationsAsync(AccountId, CancellationToken.None);
 
     public void Dispose() => Provider.Dispose();
 }

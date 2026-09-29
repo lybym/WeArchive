@@ -68,4 +68,14 @@ public static class CliErrorCode
     /// reports it.
     /// </summary>
     public const string ArchiveUnavailable = "archive_unavailable";
+
+    // ---- Canonical coverage (Issue #51 / M1b) ----
+
+    /// <summary>
+    /// The published Raw Vault generation's evidence coverage is not complete, so the R2 ingest
+    /// refused the canonical read instead of publishing a result that could be mistaken for a
+    /// complete one (docs/PRD.md FR-20, docs/RAW_VAULT.md section 7). Runtime failure (exit 1);
+    /// the JSON error document carries the source-neutral <c>canonical_coverage</c> rollup.
+    /// </summary>
+    public const string IncompleteCoverage = "incomplete_coverage";
 }

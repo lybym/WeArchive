@@ -561,7 +561,9 @@ public sealed class RebuildServiceTests
         var before = await FileHashAsync(archivePath);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "partial data", "reader-2", CapturedAt.AddHours(1), completeness: RawGenerationCompleteness.Partial);
 
-        await Assert.ThrowsAsync<InvalidDataException>(() =>
+        // Rebuild reuses the shared source-neutral coverage refusal: the typed exception carries
+        // the incomplete-coverage rollup (Issue #51) and the fail-closed rule is unchanged.
+        await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(() =>
             new RebuildService(vault, archivePath, new FixedClock()).RebuildAsync(null, CancellationToken.None));
 
         Assert.Equal(before, await FileHashAsync(archivePath));

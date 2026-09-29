@@ -3,9 +3,11 @@ using System.Text.Json.Serialization;
 namespace WeArchive.Cli.Output.Dto;
 
 /// <summary>
-/// JSON result of <c>wearchive sync</c>. Reports the import-run audit counters and
-/// diagnostics the <c>ImportService</c> produced, without re-deriving any archive
-/// semantics (docs/PRD.md FR-04/FR-09, docs/ARCHITECTURE.md section 3.1.1).
+/// JSON result of <c>wearchive sync --conversation</c>. It mirrors the application-level
+/// <c>ConversationSyncResult</c> without re-deriving any archive semantics: the documented
+/// <c>succeeded</c>/<c>no_change</c> outcome, the generation the conversation was ingested from and
+/// the capture mode, so a caller can see that a repeat sync reused verified evidence instead of
+/// republishing it (docs/PRD.md G4/FR-14/FR-28, docs/CLI.md, Issue #49).
 /// </summary>
 public sealed record SyncResultDto
 {
@@ -21,40 +23,36 @@ public sealed record SyncResultDto
     [JsonPropertyName("source_conversation_id")]
     public required string SourceConversationId { get; init; }
 
-    [JsonPropertyName("records_scanned")]
-    public int RecordsScanned { get; init; }
+    /// <summary>
+    /// Stable wire name of the outcome: <c>succeeded</c> (evidence changed and this
+    /// conversation's canonical publication committed) or <c>no_change</c> (the conversation was
+    /// verified and nothing changed, so nothing was republished and its checkpoint kept its value).
+    /// </summary>
+    [JsonPropertyName("status")]
+    public required string Status { get; init; }
 
-    [JsonPropertyName("counters")]
-    public required SyncCountersDto Counters { get; init; }
+    /// <summary>Conversations published by this run (0 or 1).</summary>
+    [JsonPropertyName("conversations_ingested")]
+    public int ConversationsIngested { get; init; }
 
-    [JsonPropertyName("first_message_at")]
-    public string? FirstMessageAt { get; init; }
+    /// <summary>The Raw Vault generation this run's evidence came from.</summary>
+    [JsonPropertyName("generation_id")]
+    public required string GenerationId { get; init; }
 
-    [JsonPropertyName("last_message_at")]
-    public string? LastMessageAt { get; init; }
+    /// <summary><c>baseline</c> when the whole supported source was read, <c>incremental</c> when verified evidence was reused.</summary>
+    [JsonPropertyName("capture_mode")]
+    public required string CaptureMode { get; init; }
 
-    [JsonPropertyName("diagnostics")]
-    public IReadOnlyList<CliDiagnosticDto> Diagnostics { get; init; } = [];
-}
+    /// <summary>The generation this one extends; null for the first published generation.</summary>
+    [JsonPropertyName("previous_generation_id")]
+    public string? PreviousGenerationId { get; init; }
 
-/// <summary>
-/// Counters a completed sync published to the archive. A rolled-back (Fatal) run produces no
-/// result document, so these always describe committed state.
-/// </summary>
-public sealed record SyncCountersDto
-{
-    [JsonPropertyName("inserted")]
-    public int Inserted { get; init; }
-
-    [JsonPropertyName("updated")]
-    public int Updated { get; init; }
-
-    [JsonPropertyName("unchanged")]
-    public int Unchanged { get; init; }
-
-    [JsonPropertyName("unknown")]
-    public int Unknown { get; init; }
-
-    [JsonPropertyName("partial")]
-    public int Partial { get; init; }
+    /// <summary>
+    /// Source-neutral canonical coverage of this result: whether the supported evidence required
+    /// by the canonical result was available and complete (docs/CLI.md, Issue #51). A
+    /// <c>succeeded</c>/<c>no_change</c> result is always <c>complete</c> here; an incomplete
+    /// read is reported by the <c>incomplete_coverage</c> failure document instead.
+    /// </summary>
+    [JsonPropertyName("canonical_coverage")]
+    public required CanonicalCoverageDto CanonicalCoverage { get; init; }
 }

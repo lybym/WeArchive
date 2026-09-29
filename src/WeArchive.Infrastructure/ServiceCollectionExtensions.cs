@@ -59,6 +59,10 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ArchiveWorkflow>();
         services.TryAddSingleton<ArchiveQueryService>();
         services.TryAddSingleton<CaptureService>();
+        // The one preservation-first sync boundary every scope depends on: capture -> Raw Vault ->
+        // conversation-scoped incremental ingest (docs/ARCHITECTURE.md sections 3.2 and 3.8).
+        services.TryAddSingleton<SyncOrchestrationService>();
+        services.TryAddSingleton<ConversationSyncService>();
         services.TryAddSingleton<ICollectionCatalogSource>(
             _ => new YamlCollectionCatalogSource(collectionConfigurationPath));
         services.TryAddSingleton<CollectionCatalogService>();

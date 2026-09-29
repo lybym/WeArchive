@@ -214,19 +214,34 @@ JSON shape (exit 0):
 ## Commands (sync/export family — Issue #8 / M0.5)
 
 These commands publish to the archive or to a derived dataset. They are thin transport
-adapters over `ImportService` (`sync`) and `ArchiveWorkflow` (`export`); they contain no
-source-format, normalization or transaction logic. Both reuse the documented R2 import and
-R1 export reliability levels — no R3+ crash-recovery machinery is introduced (see
-[DEVELOPMENT.md](DEVELOPMENT.md) “Reliability Levels”).
+adapters over the application sync services (`sync`) and `ArchiveWorkflow` (`export`); they
+contain no source-format, normalization or transaction logic.
+
+Both `sync` selectors publish through **one preservation-first workflow** (Issue #49):
+
+```text
+live source -> CaptureService -> immutable Raw Vault generation
+            -> conversation-scoped incremental ingest -> canonical SQLite + ingest checkpoint
+```
+
+so `sync --conversation` and `sync --collection` share the same capture, generation-selection and
+ingest-checkpoint semantics — there is no second direct-live canonical publication path. Capture is
+**R1** and one conversation's canonical publication is **R2**; no R3+ crash-recovery machinery is
+introduced (see [DEVELOPMENT.md](DEVELOPMENT.md) “Reliability Levels”).
 
 ### `wearchive sync --conversation <id-or-alias>`
 
-Imports one conversation from the local source into the SQLite archive (FR-04/FR-08/FR-09,
-FR-14). Resolution is identical to `conversation show`: the `<id-or-alias>` matches the
-canonical stable archive id (`g_…`/`u_…`) **or** the upstream `source_id`; the current source
-account is auto-selected (no prompt, safe under `--no-input`). `StableIds.Conversation` is
-the single derivation shared with `ImportService`, so a caller may refer to the same id before
-and after import.
+Synchronizes one conversation (FR-04/FR-08/FR-09, FR-14, G4). Resolution is identical to
+`conversation show`: the `<id-or-alias>` matches the canonical stable archive id (`g_…`/`u_…`)
+**or** the upstream `source_id`; the current source account is auto-selected (no prompt, safe
+under `--no-input`). `StableIds.Conversation` is the single derivation shared with the resolver
+and the ingest path, so a caller may refer to the same id before and after import.
+
+The command then captures the account's live evidence once through `CaptureService` and ingests
+**only the selected conversation** from the published generation through the existing
+conversation-scoped Raw Vault ingest path. It never advances another conversation's ingest
+progress, and a change in another conversation does not republish this one. The CLI owns neither
+capture policy, nor generation selection, nor normalization, nor the archive transaction.
 
 Options:
 
@@ -237,17 +252,30 @@ Options:
 The same command also accepts `--collection <name>`, which synchronizes every conversation a named
 Collection scopes; the two selectors are mutually exclusive (see “Collection scope” below).
 
-Reliability — **R2** (Import): a normal success commits under the existing conversation
-transaction. A Fatal source-coverage failure rolls back the entire conversation transaction,
-so no partial conversation is published; the CLI surfaces it as exit 1. A cooperative
-cancellation keeps the already-read records (they are committed by stable id and a later full
-re-read completes the conversation without duplicates) and exits 130. SQLite is the system of
-record.
+Reliability — capture is **R1** and the selected conversation's canonical publication is **R2**
+([DEVELOPMENT.md](DEVELOPMENT.md) sections 10.3.1 and 10.4):
 
-Exits `1` with `failure` (Fatal import did not complete), `source_unavailable`,
-`no_accounts`, `conversation_list_failed`, `conversation_not_found` or
-`conversation_describe_failed` on the corresponding failure; `2` on a usage error; `130` on
-cancellation.
+- A normal first sync publishes one immutable Raw Vault generation, then commits the conversation's
+  canonical records **and** its ingest checkpoint in the same SQLite transaction.
+- A Fatal canonical parsing/identity/source-evidence failure rolls the in-flight conversation and
+  its ingest checkpoint back together, so no partial conversation is published and no bogus
+  progress is recorded. The successfully published Raw Vault generation is **retained** — the
+  preservation store is never rolled back because later canonical ingest failed.
+- Cooperative cancellation follows the phase that was in flight. A cancelled capture publishes
+  nothing; a cancelled ingest rolls back the in-flight conversation and its checkpoint, and the
+  published generation stays usable for a retry. Both exit `130`. This replaces the historical
+  direct-live `sync --conversation` behavior (which kept already-read records on cancellation);
+  Issue #49 explicitly authorized aligning the command with the preservation-first path.
+- An unchanged repeat captures incrementally (unchanged partitions are reused, not reacquired),
+  verifies the conversation's preserved evidence fingerprint and publishes nothing: deterministic
+  `no_change`, no duplicate canonical records, unchanged content checkpoint.
+
+Exits `1` with `failure` (a runtime ingest/parser failure), `incomplete_coverage` (the verified
+generation's evidence coverage is not complete, so the R2 ingest refused the canonical read; the
+JSON error document carries the `canonical_coverage` rollup), `capture_failed` (no usable Raw Vault
+generation was published), `source_unavailable`, `no_accounts`, `conversation_list_failed` or
+`conversation_not_found` (the selector resolved to nothing, or the captured evidence cannot
+produce it); `2` on a usage error; `130` on cancellation.
 
 JSON shape (exit 0):
 
@@ -257,32 +285,79 @@ JSON shape (exit 0):
   "account_id": "a_<16-hex>",
   "source_profile_id": "wxid_...",
   "source_conversation_id": "100200300@chatroom",
-  "records_scanned": 24,
-  "counters": {
-    "inserted": 18,
-    "updated": 0,
-    "unchanged": 0,
-    "unknown": 1,
-    "partial": 0
-  },
-  "first_message_at": "2026-01-15T09:00:00+08:00",
-  "last_message_at": "2026-02-04T09:00:00+08:00",
-  "diagnostics": [
-    {
-      "severity": "warning",
-      "code": "unknown_message_type",
-      "message": "...",
-      "count": 1,
-      "source_type": "1000007",
-      "source_subtype": null
-    }
-  ]
+  "status": "succeeded",
+  "conversations_ingested": 1,
+  "generation_id": "gen_<16-hex>",
+  "capture_mode": "incremental",
+  "previous_generation_id": "gen_<16-hex>",
+  "canonical_coverage": {
+    "verdict": "complete",
+    "expected": 25,
+    "available": 24,
+    "unavailable": 0,
+    "known_unsupported": 1,
+    "unclassified": 0
+  }
 }
 ```
 
-`conversation_id` mirrors `StableIds.Conversation` exactly. `counters` describes committed
-state only (a rolled-back Fatal run produces an error document, not this result). A repeated
-sync is idempotent by stable id (`unchanged` grows on the second run).
+`status` is a stable wire name, shared with `sync --collection`'s per-conversation status:
+
+```text
+succeeded    evidence changed and this conversation's canonical publication committed
+no_change    the conversation was verified and nothing changed; nothing was republished
+```
+
+`conversation_id` mirrors `StableIds.Conversation` exactly. `capture_mode` is `baseline` (the whole
+supported source was read) or `incremental` (verified evidence was reused).
+`previous_generation_id` is `null` for the first published generation. Capture-side findings (for
+example a full-snapshot fallback diagnostic) are human diagnostics on stderr, never part of the
+stdout document.
+
+`canonical_coverage` (Issue #51) is the source-neutral completeness rollup of the verified
+generation the result was published from — a deterministic application-level rollup of that
+generation's manifest (completeness verdict, coverage entries and policy diagnostics,
+[RAW_VAULT.md](RAW_VAULT.md) section 4.3). A human-readable summary of the same semantics is part
+of the non-JSON output (`coverage:   complete (…)`):
+
+```text
+verdict            complete when every supported evidence domain the verified generation accounts
+                   for was available and read, and no unclassified evidence remains; incomplete
+                   otherwise. A succeeded/no_change sync is always complete here, because the R2
+                   ingest refuses any generation whose evidence is not complete; incomplete
+                   appears on the incomplete_coverage failure document instead.
+expected           every evidence domain the verified generation accounts for — the same rule as
+                   capture's expected count, not a claim that every theoretical source partition
+                   was observed.
+available          expected supported evidence that was available and read for the canonical
+                   result. The capture-side captured/reused split is acquisition metadata and is
+                   deliberately merged here: canonical coverage answers whether the evidence was
+                   available, not how it was reacquired.
+unavailable        expected supported evidence that could not be read or was absent from the
+                   source (always 0 for a complete verdict).
+known_unsupported  discovered evidence explicitly classified outside the adapter's supported
+                   contract (the partition_unsupported info diagnostic). It stays explicit and
+                   does not by itself prevent a complete verdict.
+unclassified       evidence without an approved classification (partition_unclassified) or that
+                   the rollup cannot attribute to a policy diagnostic. Conservative: its presence
+                   keeps the verdict incomplete.
+```
+
+The field never exposes Raw Vault paths, WeChat partition ids as requirements, checkpoint JSON or
+keys — coverage detail stays in the capture contract and the manifest. It is also distinct from the
+ingest-progress `conversation_coverage` checkpoint cursor (docs/DATA_MODEL.md section 14.1): the
+cursor records that a newer generation was verified unchanged; `canonical_coverage` states whether
+the evidence behind the canonical result was complete.
+
+**Contract change (Issue #49).** The pre-existing import-counter result
+(`records_scanned`, `counters`, `first_message_at`, `last_message_at`, `diagnostics`) described the
+removed direct-live importer and is replaced by the preservation-first fields above. A machine
+caller that consumed those counters must switch to `status`, `conversations_ingested` and
+`capture_mode`; committed-state counters of the direct-live path no longer exist for this command.
+
+**Contract addition (Issue #51).** `canonical_coverage` extends the Issue #49 result without
+changing its orchestration or `succeeded`/`no_change` semantics; the ingest-progress
+`conversation_coverage` checkpoint is unchanged and is never reinterpreted as completeness.
 
 ### `wearchive export --conversation <id-or-alias> [--output <dir>]`
 
@@ -529,8 +604,9 @@ or the configuration is invalid.
 
 Synchronizes a Collection: resolves its stable conversation IDs, captures required live-source
 evidence once through the shared `CaptureService`, then ingests each conversation from the Raw Vault.
-It reuses `sync --conversation`'s resolution semantics and the Raw Vault ingest path — no second
-scope abstraction, no JSONL scanning and no separate source parser.
+It reuses `sync --conversation`'s resolution semantics and the Raw Vault ingest path through the same
+application-level `SyncOrchestrationService` — no second scope abstraction, no JSONL scanning, no
+separate source parser, and no second sync pipeline.
 
 Options:
 
@@ -762,7 +838,8 @@ Stable `error.code` values:
 | `conversation_describe_failed` | 1 | Describing a resolved conversation failed |
 | `collection_not_found` | 1 | The Collection name is not defined by the authoritative configuration |
 | `collection_config_invalid` | 2 | The user-maintained Collection configuration exists but is invalid |
-| `capture_failed` | 1 | `sync --collection` could not capture usable live-source evidence |
+| `capture_failed` | 1 | `sync --conversation`/`sync --collection` could not capture usable live-source evidence |
+| `incomplete_coverage` | 1 | The published Raw Vault generation's evidence coverage is not complete, so the R2 ingest refused the canonical read; the error document carries the source-neutral `canonical_coverage` rollup (Issue #51) |
 | `message_not_found` | 1 | A stable message id resolved to no archived message |
 | `cursor_invalid` | 2 | A pagination cursor is malformed, unsupported or belongs to a different query |
 | `archive_unavailable` | 1 | The canonical archive could not be read (a missing archive file is created as an empty archive, exactly as `doctor` reports it) |
@@ -834,7 +911,10 @@ wearchive ingest --account <raw-vault-account-id> [--conversation <stable-or-sou
 ```
 
 JSON success emits one object with `succeeded` and `conversations_ingested`. Failures use the
-standard JSON error envelope; cancellation exits `130`.
+standard JSON error envelope; cancellation exits `130`. When direct ingest reads a published
+generation whose evidence coverage is not complete, it fails closed with `incomplete_coverage`
+(exit 1) and the error document carries the same source-neutral `canonical_coverage` rollup as
+`sync --conversation` (Issue #51) — the coverage model is shared, not duplicated per command.
 
 ## Not yet implemented
 

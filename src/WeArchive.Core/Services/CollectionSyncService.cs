@@ -7,9 +7,9 @@ namespace WeArchive.Core.Services;
 
 /// <summary>
 /// Collection-scoped synchronization: resolve a named Collection's stable conversation IDs,
-/// capture required live-source evidence once through the shared <see cref="CaptureService"/>, then
-/// ingest each conversation from the Raw Vault through <see cref="IConversationIngestService"/>.
-/// docs/PRD.md FR-23/FR-29/G4/G8, docs/ARCHITECTURE.md section 3.8.
+/// capture required live-source evidence once through the shared
+/// <see cref="SyncOrchestrationService"/>, then ingest each conversation from the Raw Vault through
+/// the same boundary. docs/PRD.md FR-23/FR-29/G4/G8, docs/ARCHITECTURE.md section 3.8.
 /// <para>
 /// Collection execution is deliberately multi-scope, not one transaction. Each conversation's
 /// canonical writes and ingest checkpoint commit in that conversation's own SQLite transaction, so
@@ -17,9 +17,10 @@ namespace WeArchive.Core.Services;
 /// service therefore collects a structured per-conversation result instead of aborting the run.
 /// </para>
 /// <para>
-/// It reuses the existing orchestration rather than adding a second one: evidence comes from
-/// <see cref="CaptureService"/> and canonical publication from the Raw Vault ingest path, so no
-/// JSONL scanning and no separate source parser is introduced.
+/// It reuses the existing orchestration rather than adding a second one: evidence and canonical
+/// publication both come from <see cref="SyncOrchestrationService"/>, the one preservation-first
+/// boundary <c>sync --conversation</c> uses, so no JSONL scanning and no separate source parser is
+/// introduced.
 /// </para>
 /// <para>
 /// Reliability is unchanged by this service. It adds no journal, commit marker, recovery state or
@@ -29,12 +30,11 @@ namespace WeArchive.Core.Services;
 /// </summary>
 public sealed class CollectionSyncService(
     CollectionCatalogService catalog,
-    CaptureService captureService,
-    IConversationIngestService ingest)
+    SyncOrchestrationService orchestration)
 {
     private readonly CollectionCatalogService _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
-    private readonly CaptureService _captureService = captureService ?? throw new ArgumentNullException(nameof(captureService));
-    private readonly IConversationIngestService _ingest = ingest ?? throw new ArgumentNullException(nameof(ingest));
+    private readonly SyncOrchestrationService _orchestration =
+        orchestration ?? throw new ArgumentNullException(nameof(orchestration));
 
     /// <summary>
     /// Synchronizes one named Collection. The capture is account-scoped and mandatory: a
@@ -83,16 +83,16 @@ public sealed class CollectionSyncService(
         }
 
         progress?.Report($"Capturing account evidence for collection '{definition.Name}'…");
-        var capture = await _captureService.CaptureAccountAsync(
-            new CaptureRequest { SourceProfileId = request.SourceProfileId },
-            progress is null ? null : new CaptureProgressAdapter(progress),
-            cancellationToken).ConfigureAwait(false);
-
-        if (!capture.Succeeded)
+        CaptureResult capture;
+        try
         {
-            throw new CollectionCaptureException(
-                definition.Name,
-                capture.FailureMessage ?? "the capture did not publish a usable Raw Vault generation.");
+            capture = await _orchestration
+                .CaptureAsync(request.SourceProfileId, progress, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SyncCaptureException ex)
+        {
+            throw new CollectionCaptureException(definition.Name, ex.Reason);
         }
 
         foreach (var conversationId in definition.ConversationIds)
@@ -102,7 +102,7 @@ public sealed class CollectionSyncService(
 
             try
             {
-                var ingested = await _ingest
+                var ingested = await _orchestration
                     .IngestConversationAsync(capture.AccountId, conversationId, progress, cancellationToken)
                     .ConfigureAwait(false);
 
@@ -111,8 +111,10 @@ public sealed class CollectionSyncService(
                     ConversationId = conversationId,
                     // Nothing published means the member was verified and unchanged; that is a
                     // successful outcome, not a failure, and its checkpoint keeps its value.
-                    Status = ingested > 0 ? CollectionSyncItemStatus.Succeeded : CollectionSyncItemStatus.NoChange,
-                    ConversationsIngested = ingested,
+                    Status = ingested.Status == SyncPublicationStatus.Succeeded
+                        ? CollectionSyncItemStatus.Succeeded
+                        : CollectionSyncItemStatus.NoChange,
+                    ConversationsIngested = ingested.ConversationsPublished,
                 });
             }
             catch (OperationCanceledException)
@@ -160,16 +162,4 @@ public sealed class CollectionSyncService(
         InvalidConversationIds = definition.InvalidConversationIds,
         DuplicateConversationIds = definition.DuplicateConversationIds,
     };
-
-    /// <summary>
-    /// Forwards capture progress as a human-readable line. It reports synchronously (unlike
-    /// <see cref="Progress{T}"/>), so progress order is deterministic for a caller that records it.
-    /// </summary>
-    private sealed class CaptureProgressAdapter(IProgress<string> target) : IProgress<CaptureProgress>
-    {
-        public void Report(CaptureProgress value) => target.Report(
-            value.Total > 0
-                ? $"Capturing: {value.Stage} {value.Processed}/{value.Total}"
-                : $"Capturing: {value.Stage}");
-    }
 }
