@@ -168,6 +168,17 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         return IngestAsync(accountId, conversationSelector, progress, cancellationToken);
     }
 
+    /// <summary>Ingests one conversation from the exact generation published by live sync.</summary>
+    public Task<int> IngestConversationFromGenerationAsync(string accountId, string conversationSelector,
+        string generationId, IProgress<string>? progress, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(accountId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationSelector);
+        ArgumentException.ThrowIfNullOrWhiteSpace(generationId);
+        return IngestAsync(accountId, conversationSelector, progress, cancellationToken,
+            generationId: generationId);
+    }
+
     /// <summary>
     /// Ingests Raw Vault evidence for one account.
     /// </summary>
@@ -180,7 +191,8 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
     /// <param name="cancellationToken">Cooperative cancellation; the in-flight conversation rolls back.</param>
     /// <param name="replay">Re-process preserved generations for parser repair instead of skipping covered ones.</param>
     public async Task<int> IngestAsync(string accountId, string? sourceConversationId,
-        IProgress<string>? progress, CancellationToken cancellationToken, bool replay = false)
+        IProgress<string>? progress, CancellationToken cancellationToken, bool replay = false,
+        string? generationId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(accountId);
         await _archive.InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -188,6 +200,14 @@ public sealed class RawVaultIngestService(IRawVaultStore rawVault, IArchiveStore
         if (generations.Count == 0)
             throw new InvalidOperationException("No published Raw Vault generations are available for this account.");
         var generationsById = generations.ToDictionary(generation => generation.GenerationId, StringComparer.Ordinal);
+        if (generationId is not null)
+        {
+            var selectedGeneration = generations.FirstOrDefault(generation =>
+                string.Equals(generation.GenerationId, generationId, StringComparison.Ordinal));
+            if (selectedGeneration is null)
+                throw new InvalidDataException($"Raw Vault generation '{generationId}' is not published for account '{accountId}'.");
+            generations = [selectedGeneration];
+        }
 
         // The checkpoint catalog lets an unchanged repeat return before any generation's
         // artifacts are opened. Per-conversation fingerprints below distinguish changed source

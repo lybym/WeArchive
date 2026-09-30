@@ -1,7 +1,10 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
+using WeArchive.Infrastructure;
 using WeArchive.Tests.Support;
 
 namespace WeArchive.Tests;
@@ -173,6 +176,71 @@ public sealed class ConversationSyncTests
         Assert.Equal(committed.Select(m => m.Id), (await harness.MessagesAsync(idA)).Select(m => m.Id));
         Assert.Null(await harness.FindConversationAsync(WeChatSyncHarness.DirectId("b")));
         Assert.Equal(2, (await harness.GenerationsAsync()).Count);
+    }
+
+    [Fact]
+    public async Task LiveSyncUsesItsCompleteGenerationWithoutRewritingOrDependingOnHistoricalPartialEvidence()
+    {
+        using var temp = new TempDirectory();
+        using var harness = WeChatSyncHarness.Create(temp,
+            new SyntheticCaptureConversation
+            {
+                SourceConversationId = WeChatSyncHarness.DirectId("a"),
+                Text = "current evidence",
+                MessageCount = 2,
+            });
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var captureService = harness.Provider.GetRequiredService<CaptureService>();
+
+        harness.Capture.CompletenessOverride = RawGenerationCompleteness.Partial;
+        var historicalPartial = await captureService.CaptureAccountAsync(
+            new CaptureRequest { SourceProfileId = WeChatSyncHarness.ProfileId }, null, CancellationToken.None);
+        Assert.True(historicalPartial.Succeeded);
+        var openedHistoricalPartial = await harness.Vault.OpenGenerationAsync(
+            harness.AccountId, historicalPartial.GenerationId, CancellationToken.None);
+        Assert.NotNull(openedHistoricalPartial);
+        var historicalPath = Path.Combine(openedHistoricalPartial!.GenerationDirectory, "manifest.json");
+        var historicalManifestHash = SHA256.HashData(await File.ReadAllBytesAsync(historicalPath));
+
+        harness.Capture.CompletenessOverride = null;
+        harness.AdvanceClock();
+        var completeEvidence = await captureService.CaptureAccountAsync(
+            new CaptureRequest { SourceProfileId = WeChatSyncHarness.ProfileId }, null, CancellationToken.None);
+        Assert.True(completeEvidence.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, completeEvidence.Completeness);
+
+        // The historical, explicit ingest/replay contracts still visit history and fail closed
+        // before publishing any canonical rows or checkpoint when the oldest generation is partial.
+        var ingester = harness.Provider.GetRequiredService<RawVaultIngestService>();
+        await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(() => ingester.IngestAsync(
+            harness.AccountId, WeChatSyncHarness.DirectId("a"), null, CancellationToken.None));
+        Assert.Empty(await harness.ConversationsAsync());
+        Assert.Null(await harness.ConversationCheckpointAsync(idA));
+        await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(() => ingester.IngestAsync(
+            harness.AccountId, WeChatSyncHarness.DirectId("a"), null, CancellationToken.None, replay: true));
+        Assert.Empty(await harness.ConversationsAsync());
+        Assert.Null(await harness.ConversationCheckpointAsync(idA));
+
+        // A live sync publishes another complete, self-contained snapshot and consumes only that
+        // exact generation; unrelated partial history cannot block the first canonical result.
+        harness.AdvanceClock();
+        var result = await SyncAsync(harness, WeChatSyncHarness.DirectId("a"));
+        Assert.Equal(SyncPublicationStatus.Succeeded, result.Status);
+        Assert.Equal(CanonicalCoverageVerdict.Complete, result.Coverage.Verdict);
+        Assert.Equal(0, result.Coverage.Unavailable);
+        Assert.Equal(0, result.Coverage.Unclassified);
+        Assert.Equal(result.GenerationId, GenerationOf(await harness.ConversationCheckpointAsync(idA)));
+        Assert.Equal(new[] { "current evidence 1", "current evidence 2" },
+            (await harness.MessagesAsync(idA)).Select(message => message.Text));
+        Assert.Equal(historicalManifestHash,
+            SHA256.HashData(await File.ReadAllBytesAsync(historicalPath)));
+
+        // Rebuild uses the latest complete generation and leaves historical partial evidence alone.
+        var rebuilt = await new RebuildService(harness.Vault, harness.ArchivePath, harness.Clock)
+            .RebuildAsync(null, CancellationToken.None);
+        Assert.Equal(2, rebuilt.Stats.MessageCount);
+        Assert.Equal(historicalManifestHash,
+            SHA256.HashData(await File.ReadAllBytesAsync(historicalPath)));
     }
 
     // ---- failure semantics --------------------------------------------------

@@ -103,7 +103,8 @@ public sealed class CollectionSyncService(
             try
             {
                 var ingested = await _orchestration
-                    .IngestConversationAsync(capture.AccountId, conversationId, progress, cancellationToken)
+                    .IngestConversationAsync(
+                        capture.AccountId, conversationId, capture.GenerationId, progress, cancellationToken)
                     .ConfigureAwait(false);
 
                 items.Add(new CollectionSyncItem
