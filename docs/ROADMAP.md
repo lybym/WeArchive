@@ -390,8 +390,8 @@ FTS/search, Collection export/query, MCP, a scheduler, deduplication and encrypt
 remain outside the delivered M1 scope; M1 completion does not cover them.
 
 **Issue #47** (profile-id selector case-sensitivity across `capture`/`conversation`, plus the PR #44
-fail-closed test-gap hardening) remains an open post-`v0.3.1` **P2 non-blocking hardening follow-up**.
-It is not the next P0 product line and it is not a release blocker.
+fail-closed test-gap hardening) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52.
+It is not active product work and does not change the M2 P0 priority.
 
 Issue #24 delivered conversation-scoped Raw Vault ingest checkpoints and Issue #25 delivered
 incremental live-source capture with explicit capture-side partition coverage; both are shipped and
