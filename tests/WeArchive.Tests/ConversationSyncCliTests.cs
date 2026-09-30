@@ -555,5 +555,17 @@ public sealed class ConversationSyncCliTests
             cancellation.Cancel();
             return inner.IngestConversationAsync(accountId, conversationSelector, progress, cancellationToken);
         }
+
+        public Task<int> IngestConversationFromGenerationAsync(
+            string accountId,
+            string conversationSelector,
+            string generationId,
+            IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            cancellation.Cancel();
+            return inner.IngestConversationFromGenerationAsync(
+                accountId, conversationSelector, generationId, progress, cancellationToken);
+        }
     }
 }

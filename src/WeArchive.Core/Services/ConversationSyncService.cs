@@ -69,7 +69,8 @@ public sealed class ConversationSyncService(SyncOrchestrationService orchestrati
         // this run's verified evidence. Ingesting one conversation cannot advance another
         // conversation's checkpoint, and a change in another conversation is invisible here.
         var ingested = await _orchestration
-            .IngestConversationAsync(capture.AccountId, request.ConversationId, progress, cancellationToken)
+            .IngestConversationAsync(
+                capture.AccountId, request.ConversationId, capture.GenerationId, progress, cancellationToken)
             .ConfigureAwait(false);
 
         return new ConversationSyncResult

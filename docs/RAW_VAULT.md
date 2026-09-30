@@ -56,13 +56,21 @@ account-scope scan cursor separately records generation identities only after a 
 account-wide scan, so retries can discover conversations left unimported and skip generations
 already fully examined. `--conversation` scopes the operation to one source conversation and
 does not advance the account scan cursor; `--replay` reprocesses preserved generations after a
-reader repair and invalidates prior scan coverage until the replay catches up.
+reader repair and invalidates prior scan coverage until the replay catches up. Both explicit
+`ingest` modes preserve historical traversal: an uncovered partial generation that the operation
+reaches fails closed before that conversation's canonical publication or checkpoint can commit.
 
-`wearchive sync --conversation` and `wearchive sync --collection` use this same ingest path: they
-capture once through `CaptureService` and then publish the selected conversation(s) from the
-published generation, so each conversation's ingest checkpoint advances exactly as described here
-and a successfully published generation is never rolled back because a later ingest failed
-(docs/CLI.md, Issue #49).
+`wearchive sync --conversation` and `wearchive sync --collection` capture once through
+`CaptureService`, then ingest each selected conversation from that run's exact published
+generation. A complete generation is self-contained: unchanged evidence is copied and verified
+into it, so an unrelated older partial generation is not part of the live sync's read. A partial
+or otherwise incomplete current generation still fails closed. The live path advances only the
+selected conversation checkpoint(s); it does not mark an account-wide historical scan complete.
+This selection rule is intentionally different from explicit `wearchive ingest`, which traverses
+uncovered history, and `wearchive ingest --replay`, which deliberately revisits that history.
+`wearchive rebuild` reads only the latest published generation for each account and requires that
+generation to prove complete coverage; it neither edits historical generations nor replays every
+ancestor (docs/CLI.md, Issue #49 / #63).
 
 ## 2. Entities
 

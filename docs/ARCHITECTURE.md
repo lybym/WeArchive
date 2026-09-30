@@ -188,13 +188,20 @@ and no CLI command owns capture policy, generation selection or checkpoint seman
 
 ```text
 live source -> CaptureService -> immutable Raw Vault generation
-            -> conversation-scoped incremental ingest -> canonical SQLite + ingest checkpoint
+            -> conversation-scoped ingest of that exact generation -> canonical SQLite + ingest checkpoint
 ```
 
 `ImportService` remains the per-conversation publication engine: the Raw Vault ingest path uses it
 over captured evidence (section 10), and the export path re-imports from the live source.
 `ConversationSyncService` adds no second incremental-ingest implementation; it sequences the
-documented boundaries. Capture is **R1** and one conversation's publication is **R2**, unchanged
+documented boundaries. For live sync, `SyncOrchestrationService` passes the capture result's
+generation id to the ingest boundary so only the just-published, self-contained snapshot is
+considered for that run. Historical `wearchive ingest` continues to traverse uncovered generations
+in lineage order, and `--replay` explicitly revisits them; those commands retain their existing
+fail-closed behavior for any incomplete generation they rely on. `wearchive rebuild` considers the
+latest published generation and requires it to be complete. This distinction prevents unrelated
+old partial evidence from blocking a live sync while preserving explicit historical replay
+semantics (Issue #63). Capture is **R1** and one conversation's publication is **R2**, unchanged
 (docs/DEVELOPMENT.md section 10).
 
 The stable application result boundary carries the source-neutral canonical coverage rollup
