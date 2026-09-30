@@ -97,11 +97,14 @@ public sealed class SyncOrchestrationService
     public async Task<SyncIngestOutcome> IngestConversationAsync(
         string accountId,
         string conversationSelector,
+        string generationId,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(generationId);
         var published = await _ingest
-            .IngestConversationAsync(accountId, conversationSelector, progress, cancellationToken)
+            .IngestConversationFromGenerationAsync(
+                accountId, conversationSelector, generationId, progress, cancellationToken)
             .ConfigureAwait(false);
 
         return new SyncIngestOutcome

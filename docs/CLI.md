@@ -221,13 +221,21 @@ Both `sync` selectors publish through **one preservation-first workflow** (Issue
 
 ```text
 live source -> CaptureService -> immutable Raw Vault generation
-            -> conversation-scoped incremental ingest -> canonical SQLite + ingest checkpoint
+            -> conversation-scoped ingest of that exact generation -> canonical SQLite + ingest checkpoint
 ```
 
 so `sync --conversation` and `sync --collection` share the same capture, generation-selection and
 ingest-checkpoint semantics — there is no second direct-live canonical publication path. Capture is
 **R1** and one conversation's canonical publication is **R2**; no R3+ crash-recovery machinery is
 introduced (see [DEVELOPMENT.md](DEVELOPMENT.md) “Reliability Levels”).
+
+Live sync consumes the exact generation published by that invocation. It does not first replay
+older history: the generation is self-contained, so a complete current snapshot can establish the
+selected canonical result even when an unrelated ancestor is partial. The current generation's own
+coverage must still be complete. Explicit `wearchive ingest` traverses uncovered generations in
+lineage order, and `wearchive ingest --replay` revisits preserved history; either operation fails
+closed when it reaches incomplete evidence. `wearchive rebuild` reads only each account's latest
+published generation and requires it to be complete (Issue #63).
 
 ### `wearchive sync --conversation <id-or-alias>`
 
@@ -846,8 +854,8 @@ Stable `error.code` values:
 
 ## `wearchive rebuild`
 
-Rebuilds every captured account's canonical data from each account's latest published complete Raw Vault
-generation. This command does not inspect or contact live WeChat, does not acquire a database key,
+Rebuilds every captured account's canonical data from each account's latest published Raw Vault
+generation, which must be complete. This command does not inspect or contact live WeChat, does not acquire a database key,
 and does not consume JSONL exports. Supported generations must contain decrypted WeChat 4.x SQLite
 evidence whose manifest and artifact checksums validate.
 
@@ -905,6 +913,12 @@ conversation missing from a later generation remains retained. A caught cancella
 the current conversation and leaves its checkpoint unchanged. `--replay` deliberately
 reprocesses preserved generations for parser repair without recapturing live source evidence. A
 reader-version change also invalidates existing ingest cursors.
+
+Explicit ingest and replay traverse uncovered generations in lineage order. An incomplete
+generation they reach fails closed; they do not silently skip historical partial evidence. Live
+`sync` uses the exact generation it just captured, while rebuild reads only the latest published
+generation (which must be complete). This intentional selection difference is specified in
+[`RAW_VAULT.md`](RAW_VAULT.md) section 1 (Issue #63).
 
 ```text
 wearchive ingest --account <raw-vault-account-id> [--conversation <stable-or-source-conversation-id>] [--replay] [--json] [--no-input] [--quiet]

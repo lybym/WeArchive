@@ -32,4 +32,21 @@ public interface IConversationIngestService
         string conversationSelector,
         IProgress<string>? progress,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Ingests one conversation from a specific verified Raw Vault generation. Live sync uses this
+    /// entry point for the generation it just captured; historical <c>ingest</c> continues to
+    /// traverse generation history according to its own replay/checkpoint rules.
+    /// </summary>
+    /// <param name="accountId">The stable account id whose vault is read.</param>
+    /// <param name="conversationSelector">Stable or source conversation id.</param>
+    /// <param name="generationId">The exact newly published generation to consume.</param>
+    /// <param name="progress">Optional human progress.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    Task<int> IngestConversationFromGenerationAsync(
+        string accountId,
+        string conversationSelector,
+        string generationId,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken);
 }
