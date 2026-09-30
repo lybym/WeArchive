@@ -160,7 +160,7 @@ The next product **P0 is M2 — message semantics / semantic depth**: more relia
 
 The remaining M1.5 items — **physical cross-generation storage deduplication** and **Raw Vault encryption-at-rest** — are open/deferred optimization and protection work. They are **not** completed by M1 completion, are **not** prerequisites for the delivered M1 canonical sync loop of Issues #49 + #51, and must not be pulled into the M1 implementation scope. M1.5 remains incomplete.
 
-**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) remains an open post-`v0.3.1` **P2 non-blocking hardening follow-up** (with PR #52). It is not the next P0 product line and it is not a release blocker.
+**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52. It is not active product work and does not change the M2 P0 priority.
 
 With M1 complete, the milestone order is the one in `docs/ROADMAP.md`: **M2 message semantics — the current product P0**, then M3 retrieval (the FTS index, keyword search, statistics/activity timeline and a CLI status command beyond the shipped M3a slice), then M4 Harness workflows (Collection-scoped query/search and export selection). FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest all stay outside the delivered M1 scope.
 
