@@ -348,7 +348,12 @@ public sealed class ExportSourceIsolationTests
             Text = "A",
             MessageCount = 2,
         };
-        using var harness = WeChatSyncHarness.Create(temp, conversation);
+        // The synthetic-WeChat harness exists for sync tests; the CLI export command additionally needs
+        // the host-supplied export defaults, so register them here (Issue #66).
+        using var harness = WeChatSyncHarness.Create(
+            temp,
+            [conversation],
+            services => services.AddSingleton(new CliExportDefaults { DefaultOutputDirectory = temp.Combine("exports") }));
         var stableId = harness.StableId(conversation.SourceConversationId);
 
         // An explicit sync publishes canonical state A.
@@ -386,7 +391,12 @@ public sealed class ExportSourceIsolationTests
             Text = "A",
             MessageCount = 2,
         };
-        using var harness = WeChatSyncHarness.Create(temp, conversation);
+        // The synthetic-WeChat harness exists for sync tests; the CLI export command additionally needs
+        // the host-supplied export defaults, so register them here (Issue #66).
+        using var harness = WeChatSyncHarness.Create(
+            temp,
+            [conversation],
+            services => services.AddSingleton(new CliExportDefaults { DefaultOutputDirectory = temp.Combine("exports") }));
         var stableId = harness.StableId(conversation.SourceConversationId);
 
         var firstSync = await RunAsync(harness.Provider,

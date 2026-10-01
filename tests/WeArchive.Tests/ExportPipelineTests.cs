@@ -472,10 +472,11 @@ public sealed class ExportPipelineTests
     {
         using var temp = new TempDirectory();
         var harness = await CreateHarnessAsync(temp);
-        var stages = new List<string>();
-        var progress = new Progress<OperationProgress>(p => stages.Add(p.Stage));
+        var collector = new StageCollector();
 
-        await harness.Workflow.ExportConversationAsync(GroupRequest(temp.Combine("export")), progress, CancellationToken.None);
+        await harness.Workflow.ExportConversationAsync(GroupRequest(temp.Combine("export")), collector, CancellationToken.None);
+
+        var stages = collector.Snapshot();
 
         // The canonical export boundary reports derivation stages only. A live-source probe or
         // import stage is no longer reachable from export (Issue #66).
@@ -821,6 +822,33 @@ public sealed class ExportPipelineTests
         Assert.True(result.Succeeded);
         Assert.Equal("keep", await File.ReadAllTextAsync(sentinel));
         Assert.True(File.Exists(Path.Combine(output, ".wearchive-transaction")));
+    }
+
+    /// <summary>
+    /// Records the stages an export reports. Reports are added under a lock and snapshotted under the
+    /// same lock, so asserting on them cannot observe a list that is being appended to concurrently:
+    /// the workflow forwards exporter progress through an async <see cref="Progress{T}"/> post.
+    /// </summary>
+    private sealed class StageCollector : IProgress<OperationProgress>
+    {
+        private readonly List<string> _stages = [];
+        private readonly object _gate = new();
+
+        public void Report(OperationProgress value)
+        {
+            lock (_gate)
+            {
+                _stages.Add(value.Stage);
+            }
+        }
+
+        public IReadOnlyList<string> Snapshot()
+        {
+            lock (_gate)
+            {
+                return [.. _stages];
+            }
+        }
     }
 
     /// <summary>
