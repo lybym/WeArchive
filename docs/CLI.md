@@ -369,10 +369,25 @@ changing its orchestration or `succeeded`/`no_change` semantics; the ingest-prog
 
 ### `wearchive export --conversation <id-or-alias> [--output <dir>]`
 
-Publishes one conversation's JSONL dataset (FR-12, [EXPORT_PRD.md](EXPORT_PRD.md)). Resolution
-is identical to `sync`. The command delegates the whole source → archive → dataset operation
-to `ArchiveWorkflow`, which re-imports idempotently (by stable id) and then exports from the
-SQLite archive, so the manifest carries ingested diagnostics.
+Publishes one conversation's JSONL dataset (FR-12, [EXPORT_PRD.md](EXPORT_PRD.md)).
+
+**Shipped status (Issue #65).** This section documents the shipped `v0.4.0` / current `main`
+behavior, which is **not** the accepted target. The command delegates the whole
+**source → archive → dataset** operation to `ArchiveWorkflow`: it resolves the requested
+conversation through the live source catalog, probes live source metadata and re-imports/upserts
+from the live source before exporting the dataset from the SQLite archive. Live WeChat/
+source-adapter access is therefore still required for this command even when the conversation is
+already present in the canonical archive.
+
+Target — not shipped: export is a source-independent derivation from the canonical archive
+(`Canonical SQLite → export → JSONL/YAML/JSON`), regenerable without live source access
+([PRD.md](PRD.md) G7/G10, [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md),
+[EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2 and 15). A follow-up runtime change is required before
+`wearchive export` can operate with no live WeChat/source-adapter access
+([Issue #66](https://github.com/lybym/WeArchive/issues/66)); until that change ships, the
+source-coupled behavior above is this command's shipped contract. Resolution is identical to
+`sync`: the selector accepts a canonical stable archive id (`g_…`/`u_…`) or the upstream
+`source_id`, and the manifest carries ingested diagnostics.
 
 Options:
 
@@ -398,8 +413,11 @@ at that root is meant to describe the conversation(s) of that single invocation.
 Reliability — **R1** (Export): a normal success publishes the complete documented output per
 [EXPORT_PRD.md](EXPORT_PRD.md) section 3. A caught cancellation or I/O failure attempts
 in-process restoration of the prior package where possible; process crash and OS/power loss
-are **not** guaranteed recovery classes. SQLite remains the system of record and re-export is
-the recovery path. No commit marker, journal or rollback ledger is persisted.
+are **not** guaranteed recovery classes. SQLite remains the system of record, and the export
+stage regenerates the dataset from it; as noted above, the shipped command still reaches that
+stage through live-source re-import, so fully offline re-export is the target
+([Issue #66](https://github.com/lybym/WeArchive/issues/66)), not shipped behavior. No commit
+marker, journal or rollback ledger is persisted.
 
 Exits `1` with `failure` (export operation failure, an exporter that reported
 `succeeded: false`, or a Fatal source-coverage failure during the re-import phase),
@@ -443,8 +461,8 @@ Re-export is deterministic except for the explicitly generated metadata: given t
 state, export configuration and exporter version, every field of the package is byte-identical
 between two successful exports **except** `manifest.json`'s `created_at` (and
 `exporter_version` across builds), matching [EXPORT_PRD.md](EXPORT_PRD.md) section 15. A
-repeated export never rewrites or corrupts a timeline partition, so re-export from the SQLite
-archive remains the recovery path.
+repeated export never rewrites or corrupts a timeline partition, so the exporter's regeneration
+of the dataset from SQLite remains deterministic and is the recovery path for the export stage.
 
 ## Commands (capture family — Issue #22 / M1.5)
 
