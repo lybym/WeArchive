@@ -214,8 +214,8 @@ JSON shape (exit 0):
 ## Commands (sync/export family — Issue #8 / M0.5)
 
 These commands publish to the archive or to a derived dataset. They are thin transport
-adapters over the application sync services (`sync`) and `ArchiveWorkflow` (`export`); they
-contain no source-format, normalization or transaction logic.
+adapters over the application sync services (`sync`) and the canonical-archive-only export
+workflow (`export`); they contain no source-format, normalization or transaction logic.
 
 Both `sync` selectors publish through **one preservation-first workflow** (Issue #49):
 
@@ -371,23 +371,29 @@ changing its orchestration or `succeeded`/`no_change` semantics; the ingest-prog
 
 Publishes one conversation's JSONL dataset (FR-12, [EXPORT_PRD.md](EXPORT_PRD.md)).
 
-**Shipped status (Issue #65).** This section documents the shipped `v0.4.0` / current `main`
-behavior, which is **not** the accepted target. The command delegates the whole
-**source → archive → dataset** operation to `ArchiveWorkflow`: it resolves the requested
-conversation through the live source catalog, probes live source metadata and re-imports/upserts
-from the live source before exporting the dataset from the SQLite archive. Live WeChat/
-source-adapter access is therefore still required for this command even when the conversation is
-already present in the canonical archive.
-
-Target — not shipped: export is a source-independent derivation from the canonical archive
-(`Canonical SQLite → export → JSONL/YAML/JSON`), regenerable without live source access
+**Shipped status (Issue #66).** This section documents the shipped `main` behavior, which is the
+accepted canonical-archive-only boundary. The command resolves the requested conversation from the
+**canonical archive** and delegates the whole **canonical archive → dataset** derivation
+(`Canonical SQLite → JSONL/YAML/JSON`) to the export workflow, with no live WeChat/source-adapter
+access, no capture, no Raw Vault ingest, no source metadata probe and no implicit import:
+refreshing canonical state is `sync`'s job, and export never mutates canonical tables, import-run
+rows, checkpoints or Raw Vault state. Export therefore succeeds while WeChat is stopped or
+unavailable, as long as the conversation is already archived
 ([PRD.md](PRD.md) G7/G10, [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md),
-[EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2 and 15). A follow-up runtime change is required before
-`wearchive export` can operate with no live WeChat/source-adapter access
-([Issue #66](https://github.com/lybym/WeArchive/issues/66)); until that change ships, the
-source-coupled behavior above is this command's shipped contract. Resolution is identical to
-`sync`: the selector accepts a canonical stable archive id (`g_…`/`u_…`) or the upstream
-`source_id`, and the manifest carries ingested diagnostics.
+[EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2 and 15). A user who wants the newest WeChat state runs
+`wearchive sync --conversation <id>` first and exports afterwards.
+
+**Historical status (`v0.4.0`).** The `v0.4.0` release shipped the superseded source-coupled
+workflow, which resolved through the live source catalog and re-imported/upserted from the live
+source before exporting. That behavior is no longer the contract of this command.
+
+Resolution is archive-backed: the selector accepts a canonical stable archive id (`g_…`/`u_…`),
+which is the primary unambiguous selector, or an upstream `source_id` that still resolves when it
+is unique among archived conversations. The same upstream id under more than one archived account
+fails deterministically as `conversation_ambiguous` (exit 1) with the ordered candidate list; it
+never picks an account arbitrarily and never falls back to the live source. The manifest carries
+the ingest diagnostics persisted for the conversation's canonical records; nothing in the export
+path re-reads the source to refresh them.
 
 Options:
 
@@ -413,18 +419,17 @@ at that root is meant to describe the conversation(s) of that single invocation.
 Reliability — **R1** (Export): a normal success publishes the complete documented output per
 [EXPORT_PRD.md](EXPORT_PRD.md) section 3. A caught cancellation or I/O failure attempts
 in-process restoration of the prior package where possible; process crash and OS/power loss
-are **not** guaranteed recovery classes. SQLite remains the system of record, and the export
-stage regenerates the dataset from it; as noted above, the shipped command still reaches that
-stage through live-source re-import, so fully offline re-export is the target
-([Issue #66](https://github.com/lybym/WeArchive/issues/66)), not shipped behavior. No commit
-marker, journal or rollback ledger is persisted.
+are **not** guaranteed recovery classes. SQLite remains the system of record, and export
+regenerates the dataset from it without re-importing. The canonical archive is read-only for
+this operation. No commit marker, journal or rollback ledger is persisted.
 
-Exits `1` with `failure` (export operation failure, an exporter that reported
-`succeeded: false`, or a Fatal source-coverage failure during the re-import phase),
-`source_unavailable`, `no_accounts`, `conversation_list_failed` or `conversation_not_found` on
-the corresponding failure; `2` on a usage error; `130` on cancellation. A failed export writes
-the failure document, never the result document above; the exporter's own `failure_reason`, when
-it supplies one, is carried in `error.message`.
+Exits `1` with `failure` (export operation failure, or an exporter that reported
+`succeeded: false`), `conversation_not_found` for a selector the canonical archive does not hold,
+or `conversation_ambiguous` for an upstream source id that matches more than one archived
+conversation; `2` on a usage error; `130` on cancellation. Source-availability, account-discovery
+and conversation-list failures are no longer reachable from this command (Issue #66). A failed
+export writes the failure document, never the result document above; the exporter's own
+`failure_reason`, when it supplies one, is carried in `error.message`.
 
 JSON shape (exit 0):
 
@@ -861,6 +866,7 @@ Stable `error.code` values:
 | `account_not_found` | 1 | The `--account` selector matched no profile exactly (see the [account selector contract](#account-selector-contract)) |
 | `conversation_list_failed` | 1 | Enumerating conversations for a profile failed |
 | `conversation_not_found` | 1 | The conversation identifier resolved to nothing |
+| `conversation_ambiguous` | 1 | An upstream source id matched more than one archived conversation, so the archive-backed export selector refused to choose one arbitrarily (Issue #66) |
 | `conversation_describe_failed` | 1 | Describing a resolved conversation failed |
 | `collection_not_found` | 1 | The Collection name is not defined by the authoritative configuration |
 | `collection_config_invalid` | 2 | The user-maintained Collection configuration exists but is invalid |
@@ -951,9 +957,11 @@ generation whose evidence coverage is not complete, it fails closed with `incomp
 ## Not yet implemented
 
 The `--conversation <id-or-alias>` selector resolves by the canonical stable archive id
-(`g_…`/`u_…`) or the upstream `source_id`; resolution by the export-catalog `alias` and
-time-range selection is a forward refinement layered on the same export engine
-([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5. See
+(`g_…`/`u_…`) or the upstream `source_id`; `export` resolves both **from the canonical archive**
+only, so an unarchived conversation is `conversation_not_found` and an upstream id that is not
+unique among archived conversations is `conversation_ambiguous` (Issue #66). Resolution by the
+export-catalog `alias` and time-range selection is a forward refinement layered on the same export
+engine ([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5. See
 [ROADMAP.md](ROADMAP.md) M0.5/M1.
 
 Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26). Collection-scoped

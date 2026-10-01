@@ -669,6 +669,10 @@ public sealed class CliContractTests
             string conversationId, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 
+        public Task<IReadOnlyList<ImportDiagnostic>> ReadConversationDiagnosticsAsync(
+            string conversationId, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
         public Task<int> ResolveReplyTargetsAsync(string conversationId, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 

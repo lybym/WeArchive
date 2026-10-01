@@ -56,6 +56,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IDatasetExporter, JsonlDatasetExporter>();
         services.TryAddSingleton<SourceCatalogService>();
         services.TryAddSingleton<ImportService>();
+        // Export is a canonical-archive-only derivation: the workflow reads the archive and the
+        // exporter and nothing else, and selectors resolve from archived conversations (Issue #66).
+        services.TryAddSingleton<ArchiveConversationResolver>();
         services.TryAddSingleton<ArchiveWorkflow>();
         services.TryAddSingleton<ArchiveQueryService>();
         services.TryAddSingleton<CaptureService>();

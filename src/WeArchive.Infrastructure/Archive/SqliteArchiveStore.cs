@@ -697,6 +697,44 @@ public sealed class SqliteArchiveStore : IArchiveStore
         return Task.FromResult(conversation);
     }
 
+    /// <summary>
+    /// Projects the persisted ingest diagnostics that belong to one conversation's canonical
+    /// records. Only audit rows an import run already wrote are read
+    /// (<c>import_runs.diagnostics_json</c> joined through <c>messages.import_run_id</c>), in a
+    /// deterministic run-id order, so export can populate <c>manifest.diagnostics</c> without any
+    /// live-source read (Issue #66, Gap D, docs/DATA_MODEL.md section 13).
+    /// </summary>
+    public Task<IReadOnlyList<ImportDiagnostic>> ReadConversationDiagnosticsAsync(
+        string conversationId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT r.diagnostics_json
+            FROM import_runs r
+            WHERE r.diagnostics_json IS NOT NULL
+              AND r.id IN (
+                  SELECT DISTINCT import_run_id
+                  FROM messages
+                  WHERE conversation_id = $conversation AND import_run_id IS NOT NULL)
+            ORDER BY r.id;
+            """;
+        command.Parameters.AddWithValue("$conversation", conversationId);
+
+        var diagnostics = new List<ImportDiagnostic>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            diagnostics.AddRange(DeserializeDiagnostics(reader.GetString(0)));
+        }
+
+        return Task.FromResult<IReadOnlyList<ImportDiagnostic>>(diagnostics);
+    }
+
     public Task<IReadOnlyList<ArchiveParticipant>> ListParticipantsAsync(
         string accountId,
         CancellationToken cancellationToken)
@@ -1310,6 +1348,53 @@ public sealed class SqliteArchiveStore : IArchiveStore
             source_type = d.SourceType,
             source_subtype = d.SourceSubtype,
         }));
+
+    /// <summary>
+    /// Reads back the projection written by <see cref="SerializeDiagnostics"/>. A malformed or
+    /// non-array payload cannot be interpreted and yields no diagnostics rather than inventing
+    /// entries; the canonical records themselves remain the export's source of truth.
+    /// </summary>
+    private static IReadOnlyList<ImportDiagnostic> DeserializeDiagnostics(string json)
+    {
+        var diagnostics = new List<ImportDiagnostic>();
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return diagnostics;
+        }
+
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return diagnostics;
+        }
+
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            diagnostics.Add(new ImportDiagnostic
+            {
+                Severity = ParseSeverity(ReadString(item, "severity")),
+                Code = ReadString(item, "code") ?? string.Empty,
+                Message = ReadString(item, "message") ?? string.Empty,
+                Count = item.TryGetProperty("count", out var count) && count.ValueKind == JsonValueKind.Number
+                    ? count.GetInt32()
+                    : 1,
+                SourceType = ReadString(item, "source_type"),
+                SourceSubtype = ReadString(item, "source_subtype"),
+            });
+        }
+
+        return diagnostics;
+    }
+
+    private static string? ReadString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static DiagnosticSeverity ParseSeverity(string? value) =>
+        Enum.TryParse<DiagnosticSeverity>(value, ignoreCase: true, out var severity)
+            ? severity
+            : DiagnosticSeverity.Info;
 
     private static string Format(DateTimeOffset value) =>
         value.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);

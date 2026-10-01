@@ -62,7 +62,7 @@ public sealed class CommandRouter
                 sp.GetRequiredService<CollectionSyncService>()),
                 "Import one conversation or a Collection into the archive."),
             ["export"] = new(sp => new Commands.ExportCommand(
-                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<ArchiveConversationResolver>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
                 sp.GetRequiredService<CliExportDefaults>()),
                 "Export one conversation to a JSONL dataset."),

@@ -2,41 +2,38 @@ using WeArchive.Cli.CommandLine;
 using WeArchive.Cli.Output;
 using WeArchive.Cli.Output.Dto;
 using WeArchive.Core.Abstractions;
-using WeArchive.Core.Domain;
 using WeArchive.Core.Services;
 
 namespace WeArchive.Cli.Commands;
 
 /// <summary>
-/// <c>wearchive export --conversation &lt;id-or-alias&gt;</c>: publishes one conversation's
+/// <c>wearchive export --conversation &lt;id-or-alias&gt;</c>: publishes one archived conversation's
 /// JSONL dataset (docs/PRD.md FR-12, docs/EXPORT_PRD.md, ROADMAP M0.5).
 /// <para>
-/// This is a thin transport adapter. It resolves the requested conversation through the source
-/// catalog (reusing the same stable upstream identifier <see cref="ImportService"/> consumes)
-/// and delegates the whole source -&gt; archive -&gt; dataset operation to
-/// <see cref="ArchiveWorkflow"/>, which re-imports idempotently and then exports from the
-/// SQLite archive. The workflow — not this command — owns the R2 conversation-transaction
-/// rollback on a Fatal source-coverage failure and the R1 in-process export
-/// staging/backup/restore behaviour. The CLI only maps the result to a JSON document or an
-/// error envelope.
+/// This is a thin transport adapter over the canonical-archive-only export boundary (Issue #66).
+/// The selector resolves from the canonical archive through <see cref="ArchiveConversationResolver"/>,
+/// and the whole <c>Canonical SQLite -&gt; JSONL/YAML/JSON</c> derivation is delegated to
+/// <see cref="ArchiveWorkflow"/>. No live WeChat/source-adapter access, capture, Raw Vault ingest,
+/// implicit import or canonical mutation is reachable from this command: refreshing canonical state
+/// is <c>sync</c>'s job, and the command only maps the result to a JSON document or an error
+/// envelope. The workflow — not this command — owns the R1 in-process export
+/// staging/backup/restore behaviour.
 /// </para>
 /// </summary>
 public sealed class ExportCommand : ICliCommand
 {
-    private readonly SourceCatalogService _catalog;
+    private readonly ArchiveConversationResolver _resolver;
     private readonly ArchiveWorkflow _workflow;
-    private readonly SourceConversationResolver _resolver;
     private readonly CliExportDefaults _defaults;
 
     public ExportCommand(
-        SourceCatalogService catalog,
+        ArchiveConversationResolver resolver,
         ArchiveWorkflow workflow,
         CliExportDefaults defaults)
     {
-        _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         _workflow = workflow ?? throw new ArgumentNullException(nameof(workflow));
         _defaults = defaults ?? throw new ArgumentNullException(nameof(defaults));
-        _resolver = new SourceConversationResolver(catalog);
     }
 
     public string Name => "export";
@@ -53,12 +50,31 @@ public sealed class ExportCommand : ICliCommand
 
         var (conversation, output) = ParseArgs(args);
 
-        CliReporting.Progress(context, $"Resolving conversation '{conversation}'…");
-        var resolved = await _resolver.ResolveAsync(context, conversation, cancellationToken)
-            .ConfigureAwait(false);
-        if (resolved is null)
-            return ExitCode.Failure;
-        var (account, source) = resolved.Value;
+        CliReporting.Progress(context, $"Resolving conversation '{conversation}' in the canonical archive…");
+        var resolved = await _resolver.ResolveAsync(conversation, cancellationToken).ConfigureAwait(false);
+        switch (resolved.Status)
+        {
+            case ArchiveConversationResolutionStatus.NotFound:
+                context.WriteError(
+                    CliErrorCode.ConversationNotFound,
+                    $"conversation '{conversation}' was not found in the canonical archive. " +
+                    "Sync it before exporting.");
+                return ExitCode.Failure;
+
+            case ArchiveConversationResolutionStatus.Ambiguous:
+                // An archived upstream source id that exists under more than one account is
+                // ambiguous: the caller must use the canonical stable id. Reporting the ordered
+                // candidate list keeps the failure deterministic and never falls back to the live
+                // source or an arbitrary account (Issue #66, Gap E).
+                context.WriteError(
+                    CliErrorCode.ConversationAmbiguous,
+                    $"conversation selector '{conversation}' matches {resolved.Candidates.Count} archived " +
+                    $"conversations ({string.Join(", ", resolved.Candidates.Select(c => c.Id))}); " +
+                    "use the canonical stable conversation id.");
+                return ExitCode.Failure;
+        }
+
+        var archived = resolved.Conversation!;
 
         // --output is a single-conversation package root: the exporter rebuilds manifest.json,
         // conversations.yaml and identities.yaml from this invocation's conversation only, so a
@@ -67,19 +83,15 @@ public sealed class ExportCommand : ICliCommand
         // destination is always a self-consistent, standalone package and exporting one
         // conversation can never damage another's output (docs/EXPORT_PRD.md section 3.2,
         // docs/CLI.md "export").
-        var resolvedOutput = output ?? DefaultOutputDirectory(account.SourceProfileId, source);
+        var resolvedOutput = output ?? Path.Combine(_defaults.DefaultOutputDirectory, archived.Id);
 
         var request = new ExportConversationRequest
         {
-            SourceProfileId = account.SourceProfileId,
-            SourceConversationId = source.SourceConversationId,
-            Kind = source.Kind,
-            PeerSourceUserId = source.PeerSourceUserId,
-            ConversationTitle = source.Title,
+            ConversationId = archived.Id,
             OutputDirectory = resolvedOutput,
         };
 
-        CliReporting.Progress(context, $"Exporting '{source.SourceConversationId}' to {resolvedOutput}…");
+        CliReporting.Progress(context, $"Exporting '{archived.Id}' to {resolvedOutput}…");
         var progress = new CliProgress<OperationProgress>(context, FormatProgress);
         var result = await _workflow
             .ExportConversationAsync(request, progress, cancellationToken)
@@ -157,22 +169,6 @@ public sealed class ExportCommand : ICliCommand
 
         // --no-input never prompts: --output is optional and defaults to a host-supplied root.
         return (conversation, string.IsNullOrWhiteSpace(output) ? null : output);
-    }
-
-    /// <summary>
-    /// The per-conversation default package root: the host-supplied exports directory plus the
-    /// conversation's canonical stable id. Deriving the folder name from the stable id (never a
-    /// mutable title) keeps the default destination addressable across renames, and giving each
-    /// conversation its own root keeps that root a self-consistent single-conversation package
-    /// (docs/EXPORT_PRD.md sections 3.1, 3.2 and 4, docs/DATA_MODEL.md section 16).
-    /// </summary>
-    private string DefaultOutputDirectory(string sourceProfileId, SourceConversation source)
-    {
-        var accountId = StableIds.Account(_catalog.AdapterName, sourceProfileId);
-        var conversationId = StableIds.Conversation(
-            accountId, source.Kind, source.SourceConversationId, source.PeerSourceUserId);
-
-        return Path.Combine(_defaults.DefaultOutputDirectory, conversationId);
     }
 
     private static void WriteResult(CliContext context, ExportResultDto result)

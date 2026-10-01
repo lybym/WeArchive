@@ -69,6 +69,20 @@ public interface IArchiveStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Reads the persisted ingest diagnostics associated with one conversation's canonical records.
+    /// <para>
+    /// This is a read-only projection of audit state the archive already owns: the diagnostics of
+    /// the import runs that wrote the conversation's messages, in a deterministic run order. It
+    /// exists so <c>export</c> can populate <c>manifest.json</c>'s diagnostics without re-reading
+    /// the live source (Issue #66, Gap D). It performs no write, infers no crash state and
+    /// interprets no checkpoint payload.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<ImportDiagnostic>> ReadConversationDiagnosticsAsync(
+        string conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Reads one bounded page of a conversation's canonical timeline.
     /// docs/DATA_MODEL.md section 23, docs/HARNESS.md section 5.
     /// <para>

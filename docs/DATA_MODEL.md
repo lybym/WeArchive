@@ -458,6 +458,12 @@ it read and its Fatal diagnostic says why. Section 2 principle 9, docs/ARCHITECT
 Every conversation a run publishes is committed in one transaction together with its messages, so
 the conversation row and its aggregates never describe records the archive does not hold.
 
+The audit row is also where export reads its completeness diagnostics from: export projects
+`import_runs.diagnostics_json` through `messages.import_run_id` for the conversation being exported
+and republishes that projection in `manifest.json`. This is a read-only projection of state the
+import already persisted — it adds no table and no column, and it exists so export never has to
+re-read the live source to describe completeness (Issue #66, docs/CLI.md "export").
+
 ## 14. SourceCheckpoint
 
 Stores adapter-owned incremental state.
