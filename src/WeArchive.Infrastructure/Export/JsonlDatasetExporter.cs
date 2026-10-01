@@ -142,8 +142,7 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
 
                 var conversation = await _archive.GetConversationAsync(conversationId, cancellationToken)
                     .ConfigureAwait(false)
-                    ?? throw new InvalidOperationException(
-                        $"Conversation '{conversationId}' is not present in the archive. Import it before exporting.");
+                    ?? throw new ConversationNotArchivedException(conversationId);
 
                 var messages = await _archive.ReadMessagesAsync(conversationId, cancellationToken)
                     .ConfigureAwait(false);

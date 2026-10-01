@@ -36,6 +36,13 @@ public static class CliErrorCode
     /// <summary>A conversation identifier did not resolve to any known conversation.</summary>
     public const string ConversationNotFound = "conversation_not_found";
 
+    /// <summary>
+    /// An upstream source conversation id matched more than one archived conversation, so the
+    /// archive-backed selector refused to choose one arbitrarily. Deterministic runtime failure
+    /// (exit 1); the caller must use the canonical stable id (Issue #66).
+    /// </summary>
+    public const string ConversationAmbiguous = "conversation_ambiguous";
+
     /// <summary>Describing a resolved conversation failed (e.g. the source became unavailable mid-operation).</summary>
     public const string ConversationDescribeFailed = "conversation_describe_failed";
 

@@ -59,20 +59,21 @@ The export command's status boundary must be read explicitly rather than inferre
   the canonical archive without live source access (G7, G10;
   [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md);
   [EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2 and 15, where SQLite remains the system of record).
-- **Shipped (`v0.4.0` / current `main`).** `wearchive export` does **not** yet satisfy that
-  boundary. It resolves the requested conversation through the live source catalog, probes live
-  source metadata and re-imports/upserts from the live source before generating the dataset from
-  SQLite, i.e. `live source -> archive -> dataset`. The shipped command therefore still requires
-  live WeChat/source-adapter access; the shipped command contract is documented in
-  [CLI.md](CLI.md).
-- **Planned (not shipped).** Making `wearchive export` operate on the canonical archive only, with
-  no live WeChat/source-adapter access, is a follow-up runtime change
-  ([Issue #66](https://github.com/lybym/WeArchive/issues/66)). Until it lands, G10's
-  "export works locally/offline after required capture" describes the target for the export
-  command, not shipped behavior.
+- **Shipped (`v0.4.0`).** The `v0.4.0` release did **not** satisfy that boundary: `wearchive export`
+  resolved the requested conversation through the live source catalog, probed live source metadata
+  and re-imported/upserted from the live source before generating the dataset from SQLite, i.e.
+  `live source -> archive -> dataset`. That shipped command therefore still required live
+  WeChat/source-adapter access; its contract was the one documented in [CLI.md](CLI.md) at that
+  release.
+- **Shipped (`main`, [Issue #66](https://github.com/lybym/WeArchive/issues/66)).** `wearchive export`
+  now satisfies the accepted boundary. It resolves the selector from the canonical archive and
+  derives the dataset as `Canonical SQLite -> JSONL/YAML/JSON`, with no live WeChat/source-adapter
+  access, no capture, no Raw Vault ingest, no implicit import and no canonical mutation; refreshing
+  canonical state is an explicit `wearchive sync`. G10's "export works locally/offline after
+  required capture" is therefore shipped behavior for the export command (see [CLI.md](CLI.md)).
 
-This status statement does not redefine ADR 0008, G7/G10 or EXPORT_PRD.md downward to match the
-current implementation; the implementation is expected to converge on the documented target.
+This status statement does not redefine ADR 0008, G7/G10 or EXPORT_PRD.md; the implementation
+converged on the documented target rather than the docs being relaxed to match earlier code.
 
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 

@@ -206,7 +206,8 @@ For parsing, normalization, identity, CLI argument validation and pure archive f
 For complete import/export flows without requiring a live upstream client:
 
 ```text
-ExportPipelineTests      fixture import -> archive -> JSONL package
+ExportPipelineTests      fixture import -> archive -> JSONL package (the export stage is canonical-archive-only)
+ExportSourceIsolationTests  canonical-archive-only export: zero source-adapter calls, no canonical/audit/Raw Vault mutation
 SqliteArchiveStoreTests  idempotency, ordering, provenance, transaction behavior
 SourceCoverageTests      fatal coverage failure -> whole conversation rollback
 ```

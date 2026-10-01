@@ -315,27 +315,45 @@ public sealed class SourceCoverageTests
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new JsonlDatasetExporter(store);
-        var catalog = new SourceCatalogService(adapter);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        var workflow = new ArchiveWorkflow(exporter, store, clock);
+
+        var outcome = await importer.ImportConversationAsync(
+            new ImportRequest
+            {
+                SourceProfileId = UnreadableShardAdapter.ProfileId,
+                SourceConversationId = UnreadableShardAdapter.ConversationId,
+                Kind = ConversationKind.Group,
+            },
+            null, CancellationToken.None);
+
+        Assert.Equal(ImportRunStatus.Failed, outcome.Run.Status);
 
         var output = temp.Combine("export");
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        // The failed run published nothing, so export — a read-only derivation from the canonical
+        // archive (Issue #66) — has no conversation to derive and must not produce an empty package.
+        var ex = await Assert.ThrowsAsync<ConversationNotArchivedException>(() =>
             workflow.ExportConversationAsync(
                 new ExportConversationRequest
                 {
-                    SourceProfileId = UnreadableShardAdapter.ProfileId,
-                    SourceConversationId = UnreadableShardAdapter.ConversationId,
-                    Kind = ConversationKind.Group,
+                    ConversationId = StableIds.Conversation(
+                        StableIds.Account(adapter.AdapterName, UnreadableShardAdapter.ProfileId),
+                        ConversationKind.Group,
+                        UnreadableShardAdapter.ConversationId,
+                        null),
                     OutputDirectory = output,
                 },
                 null, CancellationToken.None));
 
-        Assert.Contains(UnreadableShardAdapter.ConversationId, ex.Message, StringComparison.Ordinal);
+        Assert.Equal(
+            StableIds.Conversation(
+                StableIds.Account(adapter.AdapterName, UnreadableShardAdapter.ProfileId),
+                ConversationKind.Group,
+                UnreadableShardAdapter.ConversationId,
+                null),
+            ex.ConversationId);
 
-        // No dataset package may be produced for a conversation whose source is
-        // unavailable: the exporter is never reached.
         Assert.False(Directory.Exists(output),
             "an empty export package must not be produced for an unreadable shard");
     }
@@ -348,27 +366,42 @@ public sealed class SourceCoverageTests
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new JsonlDatasetExporter(store);
-        var workflow = new ArchiveWorkflow(
-            new SourceCatalogService(adapter),
-            new ImportService(adapter, store, clock),
-            exporter,
-            store,
-            clock);
+        var importer = new ImportService(adapter, store, clock);
+        var workflow = new ArchiveWorkflow(exporter, store, clock);
+
+        var outcome = await importer.ImportConversationAsync(
+            new ImportRequest
+            {
+                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+                SourceConversationId = FixtureSourceAdapter.GroupConversation,
+                Kind = ConversationKind.Group,
+            },
+            null, CancellationToken.None);
+
+        Assert.Equal(ImportRunStatus.Failed, outcome.Run.Status);
+        Assert.Contains(
+            outcome.Diagnostics,
+            d => d.Code == DiagnosticCodes.SourceMessageIdUnavailable
+              && d.Message.Contains("stable SourceMessageId", StringComparison.Ordinal));
+
         var output = temp.Combine("export");
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        // A source record without an identity must not yield a silently reduced export: the run
+        // published no conversation, so the canonical-only export cannot derive a dataset.
+        await Assert.ThrowsAsync<ConversationNotArchivedException>(() =>
             workflow.ExportConversationAsync(
                 new ExportConversationRequest
                 {
-                    SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
-                    SourceConversationId = FixtureSourceAdapter.GroupConversation,
-                    Kind = ConversationKind.Group,
+                    ConversationId = StableIds.Conversation(
+                        StableIds.Account(adapter.AdapterName, FixtureSourceAdapter.FixtureAccountId),
+                        ConversationKind.Group,
+                        FixtureSourceAdapter.GroupConversation,
+                        null),
                     OutputDirectory = output,
                 },
                 null,
                 CancellationToken.None));
 
-        Assert.Contains("stable SourceMessageId", ex.Message, StringComparison.Ordinal);
         Assert.False(Directory.Exists(output),
             "a source record without an identity must not yield a silently reduced export");
     }

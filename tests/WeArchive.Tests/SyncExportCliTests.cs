@@ -39,7 +39,7 @@ public sealed class SyncExportCliTests
         public void Dispose() => Provider.Dispose();
     }
 
-    private static Harness CreateHarness(
+    private static async Task<Harness> CreateHarnessAsync(
         TempDirectory temp,
         ISourceAdapter? adapter = null,
         Func<IArchiveStore, IDatasetExporter>? exporterFactory = null)
@@ -47,6 +47,28 @@ public sealed class SyncExportCliTests
         var fixture = new FixtureSourceAdapter();
         var clock = new FixedClock();
         var archivePath = temp.Combine("archive.db");
+
+        // Seed the canonical archive through the publication engine — the same engine an explicit
+        // `sync` drives — so every export assertion measures the canonical-archive-only boundary
+        // (Issue #66) instead of an implicit live-source re-import. Seeding always uses the fixture
+        // source, so a test may still inject a source that throws or counts calls.
+        var seedStore = new SqliteArchiveStore(archivePath, clock);
+        var importer = new ImportService(new FixtureSourceAdapter(), seedStore, clock);
+        await importer.ImportConversationAsync(new ImportRequest
+        {
+            SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+            SourceConversationId = FixtureSourceAdapter.GroupConversation,
+            Kind = ConversationKind.Group,
+            ConversationTitle = "华东产品创新中心工作群",
+        }, null, CancellationToken.None).ConfigureAwait(false);
+        await importer.ImportConversationAsync(new ImportRequest
+        {
+            SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+            SourceConversationId = FixtureSourceAdapter.DirectConversation,
+            Kind = ConversationKind.Direct,
+            PeerSourceUserId = FixtureSourceAdapter.Alice,
+            ConversationTitle = "张三",
+        }, null, CancellationToken.None).ConfigureAwait(false);
 
         var services = new ServiceCollection();
         services.AddWeArchiveCore(archivePath, temp.Combine("rawvault"));
@@ -105,7 +127,7 @@ public sealed class SyncExportCliTests
     public async Task SyncMissingConversationFlagExitsTwo()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var stdout = new StringWriter();
         var stderr = new StringWriter();
 
@@ -120,7 +142,7 @@ public sealed class SyncExportCliTests
     public async Task SyncUnknownOptionExitsTwo()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var stdout = new StringWriter();
 
         var exit = await RunAsync(harness.Provider, ["sync", "--bogus", "--json"], stdout, TextWriter.Null);
@@ -136,7 +158,7 @@ public sealed class SyncExportCliTests
     public async Task SyncNoAccountsEmitsNoAccountsCode()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp, new ResolutionFailureSource { NoAccounts = true });
+        using var harness = await CreateHarnessAsync(temp, new ResolutionFailureSource { NoAccounts = true });
         var stdout = new StringWriter();
 
         var exit = await RunAsync(harness.Provider,
@@ -151,7 +173,7 @@ public sealed class SyncExportCliTests
     public async Task SyncSourceUnavailableEmitsSourceUnavailableCode()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp, new ResolutionFailureSource { AccountListingFails = true });
+        using var harness = await CreateHarnessAsync(temp, new ResolutionFailureSource { AccountListingFails = true });
         var stdout = new StringWriter();
 
         var exit = await RunAsync(harness.Provider,
@@ -169,7 +191,7 @@ public sealed class SyncExportCliTests
         // failure, so the machine contract is consistent with `conversation show`
         // (docs/CLI.md failure-document table).
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var stdout = new StringWriter();
 
         var exit = await RunAsync(harness.Provider,
@@ -189,7 +211,7 @@ public sealed class SyncExportCliTests
     public async Task ExportSuccessPublishesTheDocumentedPackageAndExitsZero()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
 
         var exit = await RunAsync(harness.Provider,
@@ -213,7 +235,7 @@ public sealed class SyncExportCliTests
     public async Task ExportJsonEmitsOutputLocationCountersAndDiagnostics()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
         var stdout = new StringWriter();
         var stderr = new StringWriter();
@@ -250,7 +272,7 @@ public sealed class SyncExportCliTests
     public async Task ExportHumanWritesResultToStdoutAndProgressToStderr()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
         var stdout = new StringWriter();
         var stderr = new StringWriter();
@@ -270,12 +292,12 @@ public sealed class SyncExportCliTests
     [Fact]
     public async Task ExportUsesTheArchiveStableIdMechanism()
     {
-        // Both commands resolve the selector through the source catalog by the upstream
-        // conversation id or the canonical stable archive id, and the workflow derives the
-        // stable archive id exactly as the importer does — no second alias/id store is
-        // introduced by the CLI.
+        // Export resolves the selector from the canonical archive only (Issue #66): the upstream
+        // source conversation id is accepted because it resolves uniquely among archived
+        // conversations, and the dataset is keyed by the same stable archive id the importer
+        // derives — no second alias/id store is introduced by the CLI.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
         var stdout = new StringWriter();
 
@@ -293,7 +315,7 @@ public sealed class SyncExportCliTests
         // `--conversation` must accept the canonical stable archive id (g_/u_), not only the
         // upstream source id, mirroring `conversation show` and `sync`.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
         var stdout = new StringWriter();
 
@@ -315,7 +337,7 @@ public sealed class SyncExportCliTests
         // host exports directory, so the default destination is a self-consistent
         // single-conversation package (docs/CLI.md "export").
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var stdout = new StringWriter();
 
         var exit = await RunAsync(harness.Provider,
@@ -340,7 +362,7 @@ public sealed class SyncExportCliTests
     {
         // docs/CLI.md documents `-o, --output <dir>`; the short form must not be a dead option.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("short");
         var stdout = new StringWriter();
 
@@ -363,7 +385,7 @@ public sealed class SyncExportCliTests
         // documented default gives each conversation its own stable-id root, and each root's
         // manifest must still describe exactly its own conversation.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var exportsRoot = temp.Combine("export");
 
         var firstExit = await RunAsync(harness.Provider,
@@ -407,7 +429,7 @@ public sealed class SyncExportCliTests
         // That must never surface as process success with a result document: the CLI maps it to
         // exit 1 plus the documented failure document carrying the exporter's reason.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp, exporterFactory: _ => new FailingExporter());
+        using var harness = await CreateHarnessAsync(temp, exporterFactory: _ => new FailingExporter());
         var stdout = new StringWriter();
         var stderr = new StringWriter();
 
@@ -449,7 +471,7 @@ public sealed class SyncExportCliTests
     public async Task ExportCaughtFailureRestoresPriorOutputAndExitsOne()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp, exporterFactory: store => new FaultingExporter(store));
+        using var harness = await CreateHarnessAsync(temp, exporterFactory: store => new FaultingExporter(store));
         var faulting = (FaultingExporter)harness.Provider.GetRequiredService<IDatasetExporter>();
         var output = temp.Combine("out");
 
@@ -494,7 +516,7 @@ public sealed class SyncExportCliTests
     public async Task ExportCancellationExits130()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
         var stdout = new StringWriter();
 
@@ -514,7 +536,7 @@ public sealed class SyncExportCliTests
     public async Task ExportMissingConversationFlagExitsTwo()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var stdout = new StringWriter();
 
         var exit = await RunAsync(harness.Provider, ["export", "--json"], stdout, TextWriter.Null);
@@ -525,24 +547,29 @@ public sealed class SyncExportCliTests
     }
 
     [Fact]
-    public async Task ExportSourceCoverageFailureProducesNoPackageAndExitsOne()
+    public async Task ExportUnknownConversationFailsWithoutSourceAccess()
     {
+        // Export is a canonical-archive-only derivation (Issue #66): an unknown conversation is the
+        // documented conversation-not-found operation failure, and no package may be produced. The
+        // injected source throws on every method, so the failure also proves export never consults
+        // the live source for a selector the archive cannot resolve.
         using var temp = new TempDirectory();
-        var adapter = new UnreadableShardSource();
-        using var harness = CreateHarness(temp, adapter);
+        var source = new ThrowingSource();
+        using var harness = await CreateHarnessAsync(temp, source);
         var output = temp.Combine("out");
         var stdout = new StringWriter();
+        var stderr = new StringWriter();
 
         var exit = await RunAsync(harness.Provider,
-            ["export", "--conversation", UnreadableShardSource.ConversationId, "--output", output, "--json"],
-            stdout, TextWriter.Null);
+            ["export", "--conversation", "g_0000000000000000", "--output", output, "--json"],
+            stdout, stderr);
 
         Assert.Equal(ExitCode.Failure, exit);
+        Assert.Equal(0, source.CallCount);
         using var doc = ParseSingleJson(stdout);
-        Assert.Equal(CliErrorCode.Failure, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(CliErrorCode.ConversationNotFound, doc.RootElement.GetProperty("error").GetProperty("code").GetString());
 
-        // No dataset package may be produced for a conversation whose source is unavailable:
-        // the exporter is never reached because the import phase rolled back (R2).
+        // No dataset package may be produced for a conversation the archive does not hold.
         Assert.False(Directory.Exists(output));
     }
 
@@ -556,7 +583,7 @@ public sealed class SyncExportCliTests
         // unfalsifiable. Every file other than manifest.json must be byte-identical, and inside
         // manifest.json `created_at` must be the only field that differs.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
 
         var first = await RunAsync(harness.Provider,
@@ -638,7 +665,7 @@ public sealed class SyncExportCliTests
         // The same assertion for the preservation-first sync path (capture + Raw Vault + ingest)
         // lives in ConversationSyncTests, which owns that path's archive and Raw Vault layout.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("out");
 
         await RunAsync(harness.Provider,
@@ -681,7 +708,7 @@ public sealed class SyncExportCliTests
     public async Task HelpListsSyncAndExportCommands()
     {
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var stdout = new StringWriter();
 
         await RunAsync(harness.Provider, ["--help", "--json"], stdout, TextWriter.Null);
@@ -698,14 +725,14 @@ public sealed class SyncExportCliTests
     // ---- help description stays in sync with command Description properties ----
 
     [Fact]
-    public void CommandRouterDescriptionsMatchCommandDescriptions()
+    public async Task CommandRouterDescriptionsMatchCommandDescriptions()
     {
         // After the CommandEntry refactor each command's one-line description lives in two
         // places: the CommandRouter registration string and the command's Description property.
         // If they drift, --help (rendered from the router) would differ from a direct
         // command.Description read. This guard keeps them in sync.
         using var temp = new TempDirectory();
-        using var harness = CreateHarness(temp);
+        using var harness = await CreateHarnessAsync(temp);
         var sp = harness.Provider;
 
         var router = new CommandRouter(sp);
@@ -723,7 +750,7 @@ public sealed class SyncExportCliTests
                 sp.GetRequiredService<ConversationSyncService>(),
                 sp.GetRequiredService<CollectionSyncService>()),
             new ExportCommand(
-                sp.GetRequiredService<SourceCatalogService>(),
+                sp.GetRequiredService<ArchiveConversationResolver>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
                 sp.GetRequiredService<CliExportDefaults>()),
         ];
@@ -739,50 +766,47 @@ public sealed class SyncExportCliTests
     // ---- stubs ----
 
     /// <summary>
-    /// A source whose message shard is unavailable: <see cref="ReadMessagesAsync"/> throws
-    /// <see cref="SourceCoverageException"/> instead of yielding an empty stream, so a sync
-    /// surfaces a Fatal diagnostic and a rolled-back transaction (FR-14).
+    /// A source adapter that throws on every method and counts the calls it received. Export must
+    /// never reach it: the canonical-archive-only boundary proves source isolation by succeeding
+    /// (or failing deterministically) while the call count stays zero (Issue #66).
     /// </summary>
-    private sealed class UnreadableShardSource : ISourceAdapter
+    private sealed class ThrowingSource : ISourceAdapter
     {
-        public const string ProfileId = "stub_account";
-        public const string ConversationId = "stub_conv";
+        private int _callCount;
 
-        public string AdapterName => "stub";
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public string AdapterName => "throwing";
+
         public string AdapterVersion => "1.0.0";
 
+        private T Fail<T>()
+        {
+            Interlocked.Increment(ref _callCount);
+            throw new InvalidOperationException("the source adapter must not be reached by export");
+        }
+
         public Task<SourceDescriptor> DescribeSourceAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(new SourceDescriptor
-            {
-                AdapterName = AdapterName,
-                AdapterVersion = AdapterVersion,
-                SourceVersion = "stub-1",
-                SourceProductName = "stub source",
-                IsAvailable = true,
-            });
+            Fail<Task<SourceDescriptor>>();
 
         public Task<IReadOnlyList<SourceAccount>> ListAccountsAsync(CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceAccount>>(
-            [
-                new SourceAccount { SourceProfileId = ProfileId, DisplayName = "stub account", IsCurrent = true },
-            ]);
+            Fail<Task<IReadOnlyList<SourceAccount>>>();
 
-        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(string sourceProfileId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceConversation>>(
-            [
-                new SourceConversation { SourceConversationId = ConversationId, Kind = ConversationKind.Group, Title = "stub" },
-            ]);
+        public Task<IReadOnlyList<SourceConversation>> ListConversationsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Fail<Task<IReadOnlyList<SourceConversation>>>();
 
-        public Task<SourceConversationDetail> DescribeConversationAsync(string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
-            Task.FromResult(new SourceConversationDetail { SourceConversationId = sourceConversationId, MessageCount = 5, ParticipantCount = 1 });
+        public Task<SourceConversationDetail> DescribeConversationAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            Fail<Task<SourceConversationDetail>>();
 
-        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(string sourceProfileId, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<SourceParticipant>>([new SourceParticipant { SourceUserId = ProfileId, Nickname = "stub" }]);
+        public Task<IReadOnlyList<SourceParticipant>> ListParticipantsAsync(
+            string sourceProfileId, CancellationToken cancellationToken) =>
+            Fail<Task<IReadOnlyList<SourceParticipant>>>();
 
-        public IAsyncEnumerable<SourceMessage> ReadMessagesAsync(string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken)
-        {
-            throw new SourceCoverageException(DiagnosticCodes.PartitionUnreadable, "stub shard unreadable");
-        }
+        public IAsyncEnumerable<SourceMessage> ReadMessagesAsync(
+            string sourceProfileId, string sourceConversationId, CancellationToken cancellationToken) =>
+            Fail<IAsyncEnumerable<SourceMessage>>();
     }
 
     /// <summary>

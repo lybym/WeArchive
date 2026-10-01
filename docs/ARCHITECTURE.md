@@ -173,7 +173,8 @@ Key services:
 ```text
 SourceCatalogService   # describe source, list accounts/conversations, describe conversation
 ImportService          # adapter -> normalizer -> archive, with diagnostics
-ArchiveWorkflow        # live re-import + export coordination and archive statistics (export path)
+ArchiveConversationResolver # canonical-archive-only conversation selector (export path)
+ArchiveWorkflow        # canonical-archive-only export derivation: Canonical SQLite -> JSONL/YAML/JSON
 ArchiveQueryService    # bounded canonical retrieval, context windows and freshness (section 3.9)
 SyncOrchestrationService # the one preservation-first boundary: capture -> Raw Vault -> per-conversation ingest
 ConversationSyncService  # one conversation on that boundary (sync --conversation)
@@ -192,7 +193,11 @@ live source -> CaptureService -> immutable Raw Vault generation
 ```
 
 `ImportService` remains the per-conversation publication engine: the Raw Vault ingest path uses it
-over captured evidence (section 10), and the export path re-imports from the live source.
+over captured evidence (section 10), and live sync reaches the archive only through the
+preservation-first boundary above. Export is the opposite direction and does not publish at all:
+`ArchiveWorkflow` derives the dataset from the current canonical state and depends on the exporter,
+the archive and the clock only, so the export path re-imports nothing and reads no live source
+(Issue #66).
 `ConversationSyncService` adds no second incremental-ingest implementation; it sequences the
 documented boundaries. For live sync, `SyncOrchestrationService` passes the capture result's
 generation id to the ingest boundary so only the just-published, self-contained snapshot is
@@ -478,30 +483,33 @@ no FTS index exists.
 sequenceDiagram
     actor Caller as Human / Agent
     participant CLI as WeArchive CLI
-    participant Workflow as ArchiveWorkflow
+    participant Sync as Capture/ingest boundary
     participant Adapter
-    participant Normalizer
-    participant Archive
-    participant Exporter
+    participant Archive as Canonical SQLite
+    participant Export as Canonical export workflow
+    participant Exporter as IDatasetExporter
 
-    Caller->>CLI: command + args
-    CLI->>Workflow: typed request
-    Workflow->>Adapter: describe/read source
-    loop each source record
-        Adapter-->>Workflow: SourceMessage
-        Workflow->>Normalizer: normalize
-        Normalizer-->>Workflow: canonical Message + provenance
-        Workflow->>Archive: staged idempotent upsert
-    end
-    Workflow->>Archive: commit or rollback by documented rule
-    Workflow->>Exporter: export from archive
-    Exporter->>Archive: query normalized data
-    Exporter-->>Workflow: export result
-    Workflow-->>CLI: result + counters + diagnostics
+    Note over Caller,Exporter: sync — the only path that refreshes canonical state
+    Caller->>CLI: sync --conversation
+    CLI->>Sync: capture + conversation-scoped ingest
+    Sync->>Adapter: read live source evidence
+    Sync->>Archive: staged idempotent upsert, commit or rollback by documented rule
+    Sync-->>CLI: result + counters + diagnostics
+
+    Note over Caller,Exporter: export — a read-only derivation, no source access
+    Caller->>CLI: export --conversation
+    CLI->>Archive: resolve the canonical conversation
+    CLI->>Export: canonical id + output configuration
+    Export->>Archive: read account/conversation/messages + persisted diagnostics
+    Export->>Exporter: derive the dataset from archive models
+    Exporter-->>Export: export result (R1)
+    Export-->>CLI: result + counters + diagnostics
     CLI-->>Caller: stdout / stderr / exit code
 ```
 
-The exporter reads the archive only; it never reopens the source.
+The exporter reads the archive only; it never reopens the source. `export` performs no capture,
+Raw Vault ingest, import, source probe or canonical mutation — a caller that wants newer data runs
+`sync` first (Issue #66).
 
 ## 5. Target repository structure
 

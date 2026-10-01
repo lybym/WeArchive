@@ -23,27 +23,72 @@ public sealed class ExportPipelineTests
         FixtureSourceAdapter Adapter,
         SqliteArchiveStore Store,
         JsonlDatasetExporter Exporter,
-        ArchiveWorkflow Workflow);
+        ArchiveWorkflow Workflow,
+        ImportService Importer);
 
-    private static Harness CreateHarness(TempDirectory temp)
+    /// <summary>
+    /// The canonical archive must already hold the conversation before export can derive a dataset
+    /// from it: export is archive-only and never re-imports (Issue #66). The harness therefore
+    /// publishes the fixture conversations through <see cref="ImportService"/> first — the same
+    /// publication engine an explicit <c>sync</c> drives — and each test then measures the
+    /// canonical-archive-to-dataset boundary.
+    /// </summary>
+    private static async Task<Harness> CreateHarnessAsync(TempDirectory temp)
     {
         var adapter = new FixtureSourceAdapter();
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new JsonlDatasetExporter(store);
-        var catalog = new SourceCatalogService(adapter);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        var workflow = new ArchiveWorkflow(exporter, store, clock);
 
-        return new Harness(adapter, store, exporter, workflow);
+        await SeedAsync(importer).ConfigureAwait(false);
+
+        return new Harness(adapter, store, exporter, workflow, importer);
     }
+
+    private static async Task SeedAsync(ImportService importer)
+    {
+        await importer.ImportConversationAsync(new ImportRequest
+        {
+            SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+            SourceConversationId = FixtureSourceAdapter.GroupConversation,
+            Kind = ConversationKind.Group,
+            ConversationTitle = "华东产品创新中心工作群",
+        }, null, CancellationToken.None).ConfigureAwait(false);
+
+        await importer.ImportConversationAsync(new ImportRequest
+        {
+            SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+            SourceConversationId = FixtureSourceAdapter.DirectConversation,
+            Kind = ConversationKind.Direct,
+            PeerSourceUserId = FixtureSourceAdapter.Alice,
+            ConversationTitle = "张三",
+        }, null, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private static readonly FixtureSourceAdapter Fixture = new();
+
+    private static string FixtureAccountStableId =>
+        StableIds.Account(Fixture.AdapterName, FixtureSourceAdapter.FixtureAccountId);
+
+    private static string GroupStableId =>
+        StableIds.Conversation(
+            FixtureAccountStableId, ConversationKind.Group, FixtureSourceAdapter.GroupConversation, null);
+
+    private static string DirectStableId =>
+        StableIds.Conversation(
+            FixtureAccountStableId, ConversationKind.Direct, FixtureSourceAdapter.DirectConversation, FixtureSourceAdapter.Alice);
 
     private static ExportConversationRequest GroupRequest(string outputDirectory) => new()
     {
-        SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
-        SourceConversationId = FixtureSourceAdapter.GroupConversation,
-        Kind = ConversationKind.Group,
-        ConversationTitle = "华东产品创新中心工作群",
+        ConversationId = GroupStableId,
+        OutputDirectory = outputDirectory,
+    };
+
+    private static ExportConversationRequest DirectRequest(string outputDirectory) => new()
+    {
+        ConversationId = DirectStableId,
         OutputDirectory = outputDirectory,
     };
 
@@ -54,7 +99,7 @@ public sealed class ExportPipelineTests
     public async Task GroupExportProducesTheDocumentedPackageLayout()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -77,18 +122,11 @@ public sealed class ExportPipelineTests
     public async Task DirectExportUsesTheDirectFolderAndThePeerStableId()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(
-            new ExportConversationRequest
-            {
-                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
-                SourceConversationId = FixtureSourceAdapter.DirectConversation,
-                Kind = ConversationKind.Direct,
-                PeerSourceUserId = FixtureSourceAdapter.Alice,
-                OutputDirectory = output,
-            },
+            DirectRequest(output),
             null,
             CancellationToken.None);
 
@@ -102,7 +140,7 @@ public sealed class ExportPipelineTests
     public async Task EveryJsonlRecordConformsToTheCanonicalEnvelope()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -155,7 +193,7 @@ public sealed class ExportPipelineTests
     public async Task UnknownRecordsAreExportedAndCounted()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -192,7 +230,7 @@ public sealed class ExportPipelineTests
     public async Task MediaFilesLinksAndRepliesKeepTheirSemantics()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -263,7 +301,7 @@ public sealed class ExportPipelineTests
     public async Task IdentitiesFollowTheLatestRemarkRule()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -297,7 +335,7 @@ public sealed class ExportPipelineTests
     public async Task ConversationCatalogAndCollectionsAreWritten()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -316,7 +354,7 @@ public sealed class ExportPipelineTests
     public async Task ManifestDeclaresSchemasCountersAndFiles()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -358,7 +396,7 @@ public sealed class ExportPipelineTests
     public async Task ReExportIsDeterministicAndCreatesNoDuplicatePartitions()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -378,7 +416,7 @@ public sealed class ExportPipelineTests
     public async Task ReExportPreservesUserMaintainedCatalogs()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var result = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -407,39 +445,51 @@ public sealed class ExportPipelineTests
     public async Task ReimportingTheSameConversationDoesNotDuplicateArchivedMessages()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
-        var request = GroupRequest(output);
 
-        await harness.Workflow.ExportConversationAsync(request, null, CancellationToken.None);
-        var afterFirst = await harness.Store.GetArchiveStatsAsync(CancellationToken.None);
+        var group = await harness.Store.GetConversationAsync(GroupStableId, CancellationToken.None);
+        Assert.NotNull(group);
 
-        var second = await harness.Workflow.ExportConversationAsync(request, null, CancellationToken.None);
-        var afterSecond = await harness.Store.GetArchiveStatsAsync(CancellationToken.None);
+        // Re-publishing the same conversation through the publication engine stays idempotent...
+        await harness.Importer.ImportConversationAsync(new ImportRequest
+        {
+            SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
+            SourceConversationId = FixtureSourceAdapter.GroupConversation,
+            Kind = ConversationKind.Group,
+        }, null, CancellationToken.None);
 
-        Assert.Equal(afterFirst.MessageCount, afterSecond.MessageCount);
-        Assert.Equal(afterFirst.MessageCount, second.RecordCount);
+        var afterReimport = await harness.Store.GetConversationAsync(GroupStableId, CancellationToken.None);
+        Assert.Equal(group.MessageCount, afterReimport!.MessageCount);
+
+        // ...and the canonical-only export derives the archived records exactly once.
+        var exported = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
+        Assert.Equal(afterReimport.MessageCount, exported.RecordCount);
     }
 
     [Fact]
     public async Task ProgressIsReportedForTheWholeOperation()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var stages = new List<string>();
         var progress = new Progress<OperationProgress>(p => stages.Add(p.Stage));
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(temp.Combine("export")), progress, CancellationToken.None);
 
-        Assert.Contains(OperationStages.ProbingSource, stages);
+        // The canonical export boundary reports derivation stages only. A live-source probe or
+        // import stage is no longer reachable from export (Issue #66).
+        Assert.Contains(OperationStages.Exporting, stages);
         Assert.Contains(OperationStages.Completed, stages);
+        Assert.DoesNotContain(OperationStages.ProbingSource, stages);
+        Assert.DoesNotContain(OperationStages.Archiving, stages);
     }
 
     [Fact]
     public async Task ACancelledReExportLeavesThePreviouslyExportedDatasetIntact()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         // Establish a complete dataset.
@@ -487,7 +537,7 @@ public sealed class ExportPipelineTests
     public async Task AWriteFailureDuringReExportLeavesThePreviouslyExportedDatasetIntact()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -528,7 +578,7 @@ public sealed class ExportPipelineTests
     public async Task AStaleExporterBackupRestoresItsFixedFinalWhenFinalIsAbsent()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         // A complete first export of the real conversation.
@@ -568,7 +618,7 @@ public sealed class ExportPipelineTests
     public async Task AStaleBackupNeverReplacesAnExistingFinal()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -604,9 +654,9 @@ public sealed class ExportPipelineTests
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new FaultingJsonlDatasetExporter(store);
-        var catalog = new SourceCatalogService(adapter);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        await SeedAsync(importer);
+        var workflow = new ArchiveWorkflow(exporter, store, clock);
         var output = temp.Combine("export");
 
         // First export: the commit checkpoint (DurableCommit call #1) succeeds; the old dataset
@@ -651,9 +701,9 @@ public sealed class ExportPipelineTests
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new RootFaultingJsonlDatasetExporter(store);
-        var catalog = new SourceCatalogService(adapter);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        await SeedAsync(importer);
+        var workflow = new ArchiveWorkflow(exporter, store, clock);
         var output = temp.Combine("export");
 
         // First export: the prior package (group conversation + group manifest/catalogs).
@@ -666,14 +716,7 @@ public sealed class ExportPipelineTests
         // Second export of a DIFFERENT (direct) conversation: the root barrier faults after the
         // root files are replaced, so the export must roll back to the prior package.
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            workflow.ExportConversationAsync(new ExportConversationRequest
-            {
-                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
-                SourceConversationId = FixtureSourceAdapter.DirectConversation,
-                Kind = ConversationKind.Direct,
-                PeerSourceUserId = FixtureSourceAdapter.Alice,
-                OutputDirectory = output,
-            }, null, CancellationToken.None));
+            workflow.ExportConversationAsync(DirectRequest(output), null, CancellationToken.None));
 
         // The prior package is fully restored: group conversation intact, group manifest restored
         // (not the direct replacement), and the new direct conversation discarded.
@@ -704,9 +747,9 @@ public sealed class ExportPipelineTests
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new RootMoveFaultingJsonlDatasetExporter(store);
-        var catalog = new SourceCatalogService(adapter);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(catalog, importer, exporter, store, clock);
+        await SeedAsync(importer);
+        var workflow = new ArchiveWorkflow(exporter, store, clock);
         var output = temp.Combine("export");
 
         await workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -714,14 +757,7 @@ public sealed class ExportPipelineTests
 
         exporter.FailNextRootReplacement = true;
         await Assert.ThrowsAsync<IOException>(() =>
-            workflow.ExportConversationAsync(new ExportConversationRequest
-            {
-                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
-                SourceConversationId = FixtureSourceAdapter.DirectConversation,
-                Kind = ConversationKind.Direct,
-                PeerSourceUserId = FixtureSourceAdapter.Alice,
-                OutputDirectory = output,
-            }, null, CancellationToken.None));
+            workflow.ExportConversationAsync(DirectRequest(output), null, CancellationToken.None));
 
         Assert.Equal(priorPackage, Snapshot(output));
         Assert.DoesNotContain(
@@ -734,7 +770,7 @@ public sealed class ExportPipelineTests
     {
         // A leftover exporter backup must not replace an existing final on a later export.
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var first = await harness.Workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);
@@ -752,14 +788,7 @@ public sealed class ExportPipelineTests
             CancellationToken.None);
         // A later export of a DIFFERENT conversation must sweep the leftover, not restore it.
         var second = await harness.Workflow.ExportConversationAsync(
-            new ExportConversationRequest
-            {
-                SourceProfileId = FixtureSourceAdapter.FixtureAccountId,
-                SourceConversationId = FixtureSourceAdapter.DirectConversation,
-                Kind = ConversationKind.Direct,
-                PeerSourceUserId = FixtureSourceAdapter.Alice,
-                OutputDirectory = output,
-            },
+            DirectRequest(output),
             null,
             CancellationToken.None);
 
@@ -773,7 +802,7 @@ public sealed class ExportPipelineTests
     public async Task AJournalLikeFileIsIgnoredAndCannotDeleteOutsideTheExportRoot()
     {
         using var temp = new TempDirectory();
-        var harness = CreateHarness(temp);
+        var harness = await CreateHarnessAsync(temp);
         var output = temp.Combine("export");
 
         var sentinel = temp.Combine("sentinel.txt");

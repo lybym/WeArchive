@@ -160,23 +160,35 @@ public sealed class WeChatAdapterIntegrationTests
         var candidate = (await FindConversationsAsync(adapter, account.SourceProfileId, conversations)).FirstOrDefault();
         Assert.NotNull(candidate);
 
+        var clock = new Support.FixedClock();
         var store = new Infrastructure.Archive.SqliteArchiveStore(
             temp.Combine("archive.db"),
-            new Support.FixedClock());
+            clock);
         var exporter = new Infrastructure.Export.JsonlDatasetExporter(store);
-        var catalog = new Core.Services.SourceCatalogService(adapter);
-        var importer = new Core.Services.ImportService(adapter, store, new Support.FixedClock());
-        var workflow = new Core.Services.ArchiveWorkflow(catalog, importer, exporter, store, new Support.FixedClock());
+        var importer = new Core.Services.ImportService(adapter, store, clock);
+        var workflow = new Core.Services.ArchiveWorkflow(exporter, store, clock);
 
-        var output = temp.Combine("export");
-        var result = await workflow.ExportConversationAsync(
-            new Core.Services.ExportConversationRequest
+        // Export derives from the canonical archive only (Issue #66), so publish the conversation
+        // through the importer first — exactly what an explicit `sync` publishes — and then measure
+        // the canonical-archive-to-dataset boundary.
+        var imported = await importer.ImportConversationAsync(
+            new Core.Services.ImportRequest
             {
                 SourceProfileId = account.SourceProfileId,
                 SourceConversationId = candidate!.SourceConversationId,
                 Kind = candidate.Kind,
                 PeerSourceUserId = candidate.PeerSourceUserId,
                 ConversationTitle = candidate.Title,
+            },
+            null,
+            CancellationToken.None);
+        Assert.Equal(ImportRunStatus.Completed, imported.Run.Status);
+
+        var output = temp.Combine("export");
+        var result = await workflow.ExportConversationAsync(
+            new Core.Services.ExportConversationRequest
+            {
+                ConversationId = imported.ConversationId,
                 OutputDirectory = output,
             },
             null,
@@ -233,11 +245,7 @@ public sealed class WeChatAdapterIntegrationTests
         var second = await workflow.ExportConversationAsync(
             new Core.Services.ExportConversationRequest
             {
-                SourceProfileId = account.SourceProfileId,
-                SourceConversationId = candidate.SourceConversationId,
-                Kind = candidate.Kind,
-                PeerSourceUserId = candidate.PeerSourceUserId,
-                ConversationTitle = candidate.Title,
+                ConversationId = imported.ConversationId,
                 OutputDirectory = output,
             },
             null,
