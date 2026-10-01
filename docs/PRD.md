@@ -50,6 +50,30 @@ coverage chain passed under Issue #49
 ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). The delivered
 M1 code landed on `main` **after** Stable `v0.3.1`, so it is not part of that release.
 
+### Export boundary: Target / Shipped / Planned
+
+The export command's status boundary must be read explicitly rather than inferred (Issue #65):
+
+- **Target (accepted architecture).** Export is a source-independent *derived* operation over the
+  canonical archive: `Canonical SQLite -> export -> JSONL/YAML/JSON`. It must be regenerable from
+  the canonical archive without live source access (G7, G10;
+  [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md);
+  [EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2 and 15, where SQLite remains the system of record).
+- **Shipped (`v0.4.0` / current `main`).** `wearchive export` does **not** yet satisfy that
+  boundary. It resolves the requested conversation through the live source catalog, probes live
+  source metadata and re-imports/upserts from the live source before generating the dataset from
+  SQLite, i.e. `live source -> archive -> dataset`. The shipped command therefore still requires
+  live WeChat/source-adapter access; the shipped command contract is documented in
+  [CLI.md](CLI.md).
+- **Planned (not shipped).** Making `wearchive export` operate on the canonical archive only, with
+  no live WeChat/source-adapter access, is a follow-up runtime change
+  ([Issue #66](https://github.com/lybym/WeArchive/issues/66)). Until it lands, G10's
+  "export works locally/offline after required capture" describes the target for the export
+  command, not shipped behavior.
+
+This status statement does not redefine ADR 0008, G7/G10 or EXPORT_PRD.md downward to match the
+current implementation; the implementation is expected to converge on the documented target.
+
 Documentation may specify target behavior before implementation, but shipped-status sections must not claim these capabilities until delivered and tested.
 
 ## 3. Target users and callers
