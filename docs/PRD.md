@@ -48,7 +48,8 @@ M1 acceptance is complete: both M1 acceptance criteria are implemented and teste
 Issues, and the real-environment acceptance of the combined #49 + #51 canonical second-sync +
 coverage chain passed under Issue #49
 ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). The delivered
-M1 code landed on `main` **after** Stable `v0.3.1`, so it is not part of that release.
+M1 code landed on `main` **after** Stable `v0.3.1`, so it is not part of that release; it has since
+shipped in Stable `v0.4.0`.
 
 ### Export boundary: Target / Shipped / Planned
 
@@ -573,7 +574,7 @@ CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portabl
 
 ### M1 — Live WeChat source adapter (met)
 
-Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. Both Roadmap M1 acceptance criteria are now met: the canonical incremental conversation second-sync path is delivered by Issue #49 (PR #53), the source-neutral canonical coverage rollup with fail-closed `incomplete_coverage` is delivered by Issue #51 (PR #54), and Issue #49's real-environment acceptance of the combined #49 + #51 chain passed on a supported Windows/WeChat 4.x installation ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). M1 is complete on `main`; the delivered code is post-`v0.3.1` and is not part of Stable `v0.3.1`. M1.5 is unaffected and remains incomplete.
+Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. Both Roadmap M1 acceptance criteria are now met: the canonical incremental conversation second-sync path is delivered by Issue #49 (PR #53), the source-neutral canonical coverage rollup with fail-closed `incomplete_coverage` is delivered by Issue #51 (PR #54), and Issue #49's real-environment acceptance of the combined #49 + #51 chain passed on a supported Windows/WeChat 4.x installation ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). M1 is complete on `main`; the delivered code is post-`v0.3.1` and shipped in Stable `v0.4.0`. M1.5 is unaffected and remains incomplete.
 
 ### M1.5 — Preservation/rebuild foundation (partial delivery)
 

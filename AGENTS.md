@@ -138,7 +138,7 @@ wearchive capture [--account <id>]
 
 Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 
-**v0.3.1 is the current Stable baseline** (Release Issue #45, tag `v0.3.1`, Release PR #46). It carries the `v0.3.0` M1.5 capture slice plus the `0.3.1` hardening batch, and the chain remains verified in the real environment (complete baseline → incremental reuse → Raw-Vault-only rebuild → 216662 messages). The post-`v0.3.0` cleanup batch is delivered and closed history, not an active priority:
+**v0.5.1 is the current Stable baseline** (Release Issue #73, tag `v0.5.1`, Release PR #74). It carries the delivered chain through Stable `v0.4.0` — the `v0.3.0` M1.5 capture slice, the `0.3.1` hardening batch, and the completed M1 Windows local-source adapter (Issues #49/#51) — plus Stable `v0.5.0` (canonical archive-only offline export) and the WeChat multi-shard rotation ingest fix (Issue #71, delivered by PR #72). The upgrade chain was verified in the real environment at `v0.5.1-rc.1` (existing checkpoints reused as no-op, rotated-shard conversations fully read, full 2610/2610 session re-sync with zero duplicates). The post-`v0.3.0` cleanup batch is delivered and closed history, not an active priority:
 
 - **Issue #40 — CI credibility** (closed): Actions artifact retention lowered and the portable-ZIP upload made non-blocking, so `main` does not run red on convenience-artifact failures.
 - **Issue #39 — post-`v0.3.0` deferred hardening** (closed): the first batch of `0.3.1` work, including the `capture --account` stable-id defect surfaced by Issue #37.
@@ -154,7 +154,7 @@ Do not add TUI/chat/embedded-agent/MCP scope to this migration.
 
 The two Issues did not own overlapping acceptance criteria: Issue #49 does not define the canonical coverage contract and does not complete M1 alone, and Issue #51 must not re-open the sync orchestration owned by Issue #49. Issue #49's real-environment acceptance for the combined #49 + #51 chain passed on a supported Windows/WeChat 4.x installation, and the milestone completion was recorded afterwards through a separate documentation/governance step (Issue #57). Do not re-open the delivered M1 capability Issues, and do not treat this as marking M1.5 complete.
 
-The delivered M1 code landed on `main` **after** Stable `v0.3.1`, so `v0.3.1` does not contain it.
+The delivered M1 code landed on `main` **after** Stable `v0.3.1`, so `v0.3.1` does not contain it. It has since shipped in Stable `v0.4.0`.
 
 The next product **P0 is M2 — message semantics / semantic depth**: more reliable special-message semantics, better unknown-type diagnostics, reply-target resolution improvements and metadata refresh/merge correctness, without changing the canonical export contract (`docs/ROADMAP.md`, M2).
 
