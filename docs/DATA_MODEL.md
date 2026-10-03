@@ -734,7 +734,7 @@ coverage rollup states whether the evidence behind a canonical result was comple
 
 ### 21.6 Raw Vault v2 object/map model
 
-ADR 0011 defines the target v2 physical model:
+ADR 0011 and [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md) define the target v2 physical model:
 
 - account-local content sharing;
 - typed data objects and typed map nodes with separate/domain-separated identity;
