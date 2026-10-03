@@ -139,8 +139,8 @@ Acceptance criteria — met:
   coverage reporting, delivered by PR #54) and covered by the real-environment acceptance above.
 
 The two Issues' acceptance criteria are non-overlapping. **M1 is complete on `main`.** The delivered
-M1 code landed after Stable `v0.3.1`, so it is not part of that release; publishing it is separate
-release work.
+M1 code landed after Stable `v0.3.1`, so it is not part of that release; it has since shipped in
+Stable `v0.4.0`.
 
 ## M1.5 — Raw Vault preservation (incremental capture delivered; milestone incomplete)
 
@@ -356,7 +356,9 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-The Stable baseline is **`v0.3.1`** (Release Issue #45). The post-`v0.3.0` cleanup batch is delivered
+The Stable baseline is **`v0.5.1`** (Release Issue #73, Release PR #74). It carries the delivered
+chain through Stable `v0.4.0` (M1 Windows local-source adapter) and `v0.5.0` (canonical archive-only
+offline export) plus the WeChat multi-shard rotation ingest fix (Issue #71, PR #72). The post-`v0.3.0` cleanup batch is delivered
 and closed — the CI credibility work (Issue #40) and the deferred hardening that included the
 `capture --account` stable-id defect (Issue #39) — so it is historical context, not an active
 priority. `AGENTS.md` "Current priority" states the same order.
@@ -372,7 +374,7 @@ and the structured `incomplete_coverage` failure. Issue #49's real-environment a
 combined #49 + #51 chain passed
 ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)), so both M1
 acceptance criteria are met. The delivered M1 code landed on `main` **after** Stable `v0.3.1` and is
-therefore not part of that release; shipping it is separate release work.
+therefore not part of that release; it has since shipped in Stable `v0.4.0`.
 
 1. **The next product P0 is M2 — message semantics / semantic depth** (docs/ROADMAP.md M2):
    more reliable special-message semantics, better unknown-type diagnostics, reply-target resolution
