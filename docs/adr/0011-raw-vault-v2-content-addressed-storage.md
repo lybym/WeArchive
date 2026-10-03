@@ -83,10 +83,11 @@ Manifest-v3 readers support these block sizes:
 One artifact uses one fixed block size. The final block may be shorter. A generation may contain
 artifacts using different supported block sizes.
 
-The first writer default is selected by the Issue #77 benchmark gate. The current cost leader is
-4096 bytes with Zstd level 1, but the required candidate correctness matrix has no recorded pass
-results, so no provisional first-RC writer default has been selected. Changing the writer default
-within the already-supported set does not by itself require a new vault-format version.
+The first writer default is selected by the Issue #79 benchmark gate after the correctness matrix
+passes. The current cost leader is 4096 bytes with Zstd level 1, but the required candidate
+correctness matrix has no recorded pass results, so no provisional first-RC writer default has been
+selected. Changing the writer default within the already-supported set does not by itself require a
+new vault-format version.
 
 An existing v2 artifact should retain its predecessor block size when reused. A deliberate
 rechunk is a representation change with measurable cost and must not happen silently.
@@ -242,8 +243,9 @@ interchangeable quantities.
 
 ## Benchmark gate for the first writer default
 
-Issue #77 selects the provisional writer default from the supported block sizes using a reproducible
-benchmark with the candidate pack record, persistent map and derived lookup index, after all required
+Issue #77 records the prototype cost leader but does not select the writer default. Issue #79 selects
+the provisional first-RC writer default from the supported block sizes using a reproducible benchmark
+with the candidate pack record, persistent map and derived lookup index, after all required
 correctness checks pass.
 
 For each candidate B:
@@ -254,11 +256,11 @@ For each candidate B:
 T365 is a workload model until a real hourly trace exists. It must be labeled as estimated when
 the source captures were not actually one hour apart.
 
-All candidates must first prove byte-identical reconstruction and correct unknown-field
-preservation, no-change, append, in-place update, truncate and rewrite behavior. The current
-prototype record does not include pass results for these checks; the writer default remains
-unselected until the results are recorded. See [RAW_VAULT_V2_BENCHMARK.md](../RAW_VAULT_V2_BENCHMARK.md)
-for the required matrix and procedure.
+All candidates must first prove byte-identical reconstruction, including preservation of unknown
+source-field bytes within opaque artifact streams, and correct no-change, append, in-place update,
+truncate and rewrite behavior. The current prototype record does not include pass results for these
+checks; the writer default remains unselected until the results are recorded. See
+[RAW_VAULT_V2_BENCHMARK.md](../RAW_VAULT_V2_BENCHMARK.md) for the required matrix and procedure.
 
 Choose the smallest T365. If alternatives are within 5 percent, prefer the lower object count only
 when latest/random artifact materialization p95 is no more than 10 percent worse than the

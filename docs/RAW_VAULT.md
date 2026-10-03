@@ -125,7 +125,7 @@ reuse, not cross-generation incremental physical storage.
 
 ### 3.2 Target vault format 2 — not yet shipped
 
-Issue #77 / ADR 0011 authorizes the following target representation. The exact persisted encoding is frozen in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md), and the provisional writer-default decision is recorded in [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md):
+Issue #77 / ADR 0011 authorizes the following target representation. The exact persisted encoding is frozen in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) records prototype cost evidence and the correctness gate, but does not select a writer default:
 
 ```text
 <vault-root>/
@@ -154,10 +154,10 @@ The Raw Vault storage layer remains source-neutral. SQLite page size, SQLCipher 
 not enter the v2 storage contract; those remain WeChat-adapter concerns.
 
 The first v2 reader is planned to accept fixed block sizes of 4096, 8192, 16384, 32768 and 65536
-bytes. The writer default is selected by the Issue #77 benchmark gate. The current cost leader is
-4096 bytes + Zstd level 1, but the correctness-gate results are not recorded, so no provisional
-first-RC default has been selected. This is not a statement that storage blocks must equal SQLite
-pages.
+bytes. The writer default is selected by Issue #79 after its correctness matrix and actual-engine
+benchmark. The current cost leader is 4096 bytes + Zstd level 1, but the correctness-gate results
+are not recorded, so no provisional first-RC default has been selected. This is not a statement
+that storage blocks must equal SQLite pages.
 
 Writing v2 does not migrate or rewrite existing v1 generations. The intended upgrade path is
 **read old + write new**.

@@ -690,8 +690,8 @@ The last block may be shorter than the nominal block size. Logical size, block c
 object lengths and full artifact SHA-256 must agree or the artifact is rejected.
 
 The first v2 reader supports 4096, 8192, 16384, 32768 and 65536-byte blocks. The writer default is
-a benchmark-selected implementation choice recorded by Issue #77 rather than a universal SQLite
-property.
+selected by Issue #79 after its correctness matrix and actual-engine benchmark, using the cost-leader
+evidence recorded by Issue #77; it is not a universal SQLite property.
 
 ### 21.5 Capture checkpoint and partition coverage
 

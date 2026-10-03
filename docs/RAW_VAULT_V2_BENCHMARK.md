@@ -54,8 +54,9 @@ Decimal MB:
 
 The object/index values above came from the prototype accounting model, not the final product SQLite
 index. The authoritative persisted-format overhead is now frozen in
-[RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); Issue #79 must reproduce the decision using the
-actual storage engine and separately report the derived-index allocated bytes.
+[RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); Issue #79 must reproduce the cost comparison using
+the actual storage engine, select a default only after the correctness gate passes, and separately
+report the derived-index allocated bytes.
 
 Total retained bytes at the observed 8-generation point:
 
@@ -138,7 +139,7 @@ baseline and are not T365.
 
 ## 6. Correctness gate status
 
-The Issue #77 benchmark selection rule requires every candidate to pass correctness checks before
+The Issue #77/#79 benchmark selection rule requires every candidate to pass correctness checks before
 its storage cost is considered. The retained analysis record does not contain per-case assertion
 results, so the gate is **not verified by this prototype record**:
 
@@ -154,11 +155,12 @@ results, so the gate is **not verified by this prototype record**:
 
 To close this gate, run each case for block sizes 4096, 8192, 16384, 32768 and 65536 with both
 `none` and Zstd1/raw-fallback storage. For each case, reconstruct the complete artifact and compare
-its bytes and full SHA-256 with the expected input; assert preservation of unknown manifest fields;
-and record logical root/object reuse and expected changed blocks for no-change, append, in-place
-update, truncate and full rewrite. Include empty and partial-tail artifacts. Retain the command,
-tool/runtime version, input fixture hash, per-case pass/fail results and failure output, without
-including private artifact content. A candidate only passes when every required assertion passes.
+its bytes and full SHA-256 with the expected input, including opaque/unknown source-field bytes inside
+the artifact stream. Record logical root/object reuse and expected changed blocks for no-change,
+append, in-place update, truncate and full rewrite. Include empty and partial-tail artifacts. Retain
+the command, tool/runtime version, input fixture hash, per-case pass/fail results and failure output,
+without including private artifact content. A candidate only passes when every required assertion
+passes.
 
 The golden vector is a set of encoding examples, not evidence that this mutation/reconstruction
 matrix passed. The current fixture covers an empty map, one three-byte data block, a one-entry leaf
@@ -182,7 +184,8 @@ Issue #79 gate must begin by recording the correctness matrix above against the 
 reproduce the storage-cost comparison with the actual implementation. It must not adopt a writer
 default before both gates pass.
 
-Issue #79 MUST reproduce the decision after the actual:
+Issue #79 MUST run the correctness gate, reproduce the cost comparison, and select the first-RC
+default after the actual:
 
 - pack framing from [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md);
 - persistent map;
