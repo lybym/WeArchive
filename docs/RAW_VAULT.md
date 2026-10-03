@@ -4,7 +4,7 @@ The Raw Vault is a preservation layer that captures a source-faithful snapshot o
 WeChat account *before* normalization. It is separate from the canonical SQLite archive
 (`archive/wearchive.db`) and has its own format version, manifest and reliability contract.
 
-Normative decisions for the storage and snapshot design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md) (currently `Status: proposed`); the implemented behaviour is specified in this document and in [DEVELOPMENT.md](DEVELOPMENT.md) section 10.3.1.
+Normative decisions for the shipped v1 snapshot/storage design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The planned v2 physical-storage evolution is specified by [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and Issue #77. Until the v2 implementation Issues ship, the implemented behaviour remains vault format 1 / manifest version 2 as described below and in [DEVELOPMENT.md](DEVELOPMENT.md) section 10.3.1.
 
 ## 1. Purpose
 
@@ -104,6 +104,8 @@ are reported as unavailable and cannot delete prior generations.
 
 ## 3. Physical layout
 
+### 3.1 Shipped vault format 1
+
 ```text
 <vault-root>/accounts/<account-id>/generations/<generation-id>/
   manifest.json
@@ -114,8 +116,49 @@ are reported as unavailable and cannot delete prior generations.
 - `<account-id>` is the stable account id (`a_<16-hex>`, [DATA_MODEL.md](DATA_MODEL.md) section 16).
 - `<generation-id>` is `gen_<16-hex>`, derived from `StableIds.Generation(accountId, captureTime,
   adapterFamily, adapterVersion)`.
-- Artifacts are named by their SHA-256 hex digest plus the original file extension, so identical
-  content is stored once and content-addressable.
+- In vault format 1, each published generation owns its physical artifact files. Content identity
+  prevents duplicate artifact files within one generation, but cross-generation `reused` evidence
+  is still physically copied by the shipped implementation.
+
+This distinction is intentional historical behavior: Issue #25 shipped incremental **acquisition**
+reuse, not cross-generation incremental physical storage.
+
+### 3.2 Target vault format 2 — not yet shipped
+
+Issue #77 / ADR 0011 authorizes the following target representation:
+
+```text
+<vault-root>/
+  accounts/<account-id>/
+    generations/<generation-id>/
+      manifest.json
+    objects/
+      packs/
+        <pack-id>.rvpack
+    indexes/
+      objects.sqlite        # derived / rebuildable
+```
+
+A manifest-v3 / vault-v2 artifact is a complete logical artifact described by:
+
+- logical size;
+- full artifact SHA-256;
+- a supported fixed `block_size`;
+- ordered block count;
+- an immutable persistent-map root.
+
+The map resolves through account-local typed content-addressed objects stored in immutable sealed
+packs. The lookup SQLite database is derived state and may be rebuilt from the packs.
+
+The Raw Vault storage layer remains source-neutral. SQLite page size, SQLCipher and WAL behavior do
+not enter the v2 storage contract; those remain WeChat-adapter concerns.
+
+The first v2 reader is planned to accept fixed block sizes of 4096, 8192, 16384, 32768 and 65536
+bytes. The writer default is selected by the Issue #77 benchmark gate; 4096 bytes + Zstd level 1 is
+the current provisional candidate, not a statement that storage blocks must equal SQLite pages.
+
+Writing v2 does not migrate or rewrite existing v1 generations. The intended upgrade path is
+**read old + write new**.
 
 ## 4. Manifest
 
@@ -191,12 +234,15 @@ are reported as unavailable and cannot delete prior generations.
 
 ### 4.1 Versioning
 
-- `manifest_version` — the manifest's own structure version. Current writes use `2`; version `1`
-  remains readable.
-- `vault_format_version` — the physical artifact layout version. Currently `1`.
+- `manifest_version` — the manifest's own structure version. **Shipped writes currently use 2**;
+  version 1 remains readable. The v2 storage target advances this to manifest version 3 because the
+  artifact descriptor no longer means a generation-relative file path.
+- `vault_format_version` — the physical artifact layout version. **Shipped writes currently use 1**.
+  The fixed-block content-addressed target uses vault format 2.
 
-These are independent of each other and of the canonical SQLite, message-schema and
-export-schema versions.
+These are independent of each other and of the canonical SQLite, message-schema and export-schema
+versions. New readers must dispatch explicitly by supported manifest/vault-format combinations;
+unknown combinations fail closed rather than being interpreted as a live-source fallback.
 
 ### 4.2 Artifact roles
 
