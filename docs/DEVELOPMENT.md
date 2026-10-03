@@ -331,7 +331,8 @@ one complete generation with a validated manifest and checksums; a Fatal source/
 or caught cancellation/I/O failure discards the staged material best-effort and publishes
 nothing — no incomplete generation is ever published as complete. Process crash and OS/power
 loss are not guaranteed recovery classes. No journal, commit marker or rollback ledger is
-persisted. See [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md) and
+persisted. See [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md),
+[ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and
 [RAW_VAULT.md](RAW_VAULT.md).
 
 Incremental capture (Issue #25) retains R1. Its versioned checkpoint is embedded in the
@@ -357,6 +358,38 @@ Per section 7's fixture strategy, the WeChat capture adapter reaches the live so
 injectable environment seam (discovery, client-running probe, materialization), so the shipped
 fingerprint/prior-map/reuse/recheck decision is covered by fixture tests without a live client or
 a database key; only the end-to-end real-environment run remains manual.
+
+Raw Vault v2 (Issue #77 / ADR 0011) does not change the R1 level. It changes the physical
+representation from generation-local whole artifact files to account-local immutable content
+objects, persistent block-map roots and sealed packs.
+
+For v2, the required in-process publication order is:
+
+```text
+private staging
+  -> write candidate objects/map nodes/packs
+  -> seal + validate complete packs
+  -> publish immutable packs
+  -> validate generation object closure + full artifact checksums
+  -> write generation manifest in staging
+  -> publish generation last
+```
+
+The generation manifest remains the discoverability boundary. A caught cancellation or caught
+I/O/runtime failure before generation publication must not publish a new Complete generation or
+advance its capture checkpoint. A complete but unreachable object/pack may remain after a caught
+failure; that is an allowed R1 space leak, not a recovery transaction.
+
+The v2 object-location SQLite index is **R0 derived state**. It is not preservation authority and
+must be rebuildable from sealed packs. Losing/corrupting it cannot authorize loss of an otherwise
+reachable preserved object.
+
+The v2 writer may enforce one mutating Raw Vault operation at a time with an OS-lifetime guard.
+It must not add a persistent lease, intent log, recovery marker, cross-file transaction protocol
+or other R3+ mechanism without a separately approved reliability requirement.
+
+Existing v1 generations keep their historical read semantics. v2 does not authorize automatic
+migration, deletion, GC or retention pruning.
 
 ### 10.4 R2 — Database transaction publication
 
