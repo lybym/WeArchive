@@ -57,8 +57,11 @@ The CLI is a thin transport/presentation boundary. It must not contain WeChat sc
 
 The **Raw Vault** is a preservation layer that captures a source-faithful snapshot *before*
 normalization. It exists alongside the canonical SQLite archive but is independently versioned
-and has its own manifest, reliability contract and storage root. See
-[RAW_VAULT.md](RAW_VAULT.md) and [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
+and has its own manifest, reliability contract and storage root. The shipped v1 snapshot/storage
+contract is described by [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md); the approved target
+for long-running hourly physical storage is the fixed-block content-addressed v2 model in
+[ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md). See
+[RAW_VAULT.md](RAW_VAULT.md) for shipped-versus-target format details.
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
@@ -343,10 +346,38 @@ manifest, reliability contract (R1) and storage root (`%LOCALAPPDATA%\WeArchive\
 
 Responsibilities:
 
-- stage and publish immutable generations (publish-last);
-- record versioned manifests with source/capture provenance, artifact roles and SHA-256 checksums;
-- discover and validate published generations (checksum re-verification on open);
-- never inspect artifact internals — artifacts are opaque content objects.
+- stage and publish immutable logical generations (publish-last);
+- record versioned manifests with source/capture provenance, artifact roles and full artifact
+  SHA-256 checksums;
+- discover and validate published generations;
+- expose source-neutral logical-artifact access to captured-source readers;
+- own Raw Vault physical representation without leaking pack/block layout into Core, canonical
+  ingest, query or export;
+- never inspect source-specific artifact internals.
+
+Shipped vault format 1 implements that boundary with generation-local artifact files. Target vault
+format 2 keeps the same logical boundary but changes the physical representation to:
+
+```text
+logical artifact byte stream
+    -> fixed-size typed content objects
+    -> persistent ordered block map
+    -> account-local immutable sealed packs
+    -> derived/rebuildable SQLite lookup index
+```
+
+The v2 storage engine is an artifact-preservation component, not a general-purpose CAS library.
+Its block size is a source-neutral artifact descriptor property. SQLite pages, SQLCipher and WAL
+remain WeChat-adapter concerns under `Infrastructure/WeChat`.
+
+A versioned artifact-provider/materialization boundary must shield captured-source readers from
+physical layout: vault-v1 artifacts resolve to verified generation-local files, while vault-v2
+artifacts reconstruct through the block store and still prove logical size + full SHA-256. Canonical
+ingest/rebuild must not know pack ids, offsets, codecs or map nodes.
+
+The v2 lookup index is R0 derived state and can be rebuilt from authoritative sealed packs.
+Published packs and generation manifests are preservation state. Existing v1 generations remain
+readable and are not automatically migrated or rewritten.
 
 Version-2 manifests carry generic partition coverage and the capture checkpoint. `CaptureService`
 checks the previous published generation and its checkpoint before invoking an adapter's optional
@@ -377,16 +408,18 @@ discovery, message reads or key acquisition. Rebuild initializes a fresh archive
 migrations, validates it, and replaces the selected archive only after validation succeeds. No
 persistent recovery journal is added.
 
-The store treats artifacts as opaque. WeChat schema details (table names, column names, message
-type codes) live *inside* the artifacts, not in Core-visible manifest fields. Source acquisition,
-key recovery and SQLCipher decryption stay inside the WeChat infrastructure boundary
-(`src/WeArchive.Infrastructure/WeChat`).
+The store treats artifact *contents* as opaque with respect to source semantics. WeChat schema
+details (table names, column names, message type codes), source database page meaning, WAL
+interpretation, key recovery and SQLCipher decryption stay inside the WeChat infrastructure
+boundary (`src/WeArchive.Infrastructure/WeChat`). Raw Vault v2 may split the resulting artifact
+byte stream into fixed storage blocks, hash/compress/store them and reconstruct the stream without
+understanding those bytes as SQLite.
 
 The upstream WeChat database key is never persisted: it exists only in memory for the duration
 of a capture and is deleted when the scratch cache is disposed. Captured artifacts are decrypted
 content, readable without the key.
 
-See [RAW_VAULT.md](RAW_VAULT.md) and [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md).
+See [RAW_VAULT.md](RAW_VAULT.md), [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md) and [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md).
 
 ### 3.7 Query and export — `src/WeArchive.Infrastructure/Export`
 

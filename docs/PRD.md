@@ -105,7 +105,14 @@ Canonical records retain provenance, while source fields not understood by the c
 
 ### G4. Incremental operation
 
-After initial baseline capture/ingest, routine refreshes should process only new/changed source material and only affected conversations/partitions whenever this can be done safely.
+After initial baseline capture/ingest, routine refreshes should process only new/changed source
+material and only affected conversations/partitions whenever this can be done safely.
+
+For long-running Raw Vault preservation, incremental acquisition must not be defeated by
+generation-level physical duplication. The target storage model keeps every logical generation
+while allowing unchanged physical artifact content to be shared. Routine hourly capture should
+therefore grow authoritative Raw Vault payload primarily with newly introduced unique artifact
+blocks plus bounded metadata, rather than with the full size of every changed database artifact.
 
 ### G5. Stable message semantics
 
@@ -267,9 +274,21 @@ unknown/unclassified discovered partition cannot be silently ignored or reported
 A `Complete` generation means the adapter's required supported evidence is captured/reused and
 verified under that policy, not that every physical database file in the source tree was decryptable.
 
+The Raw Vault storage representation is independently versioned. Existing vault-format-v1
+generations remain valid evidence. The target vault-format-v2 representation uses account-local,
+fixed-block content-addressed artifact storage so a complete logical generation does not require a
+second physical copy of every unchanged artifact byte. The storage layer remains source-neutral;
+SQLite/SQLCipher/WAL semantics remain inside the source adapter.
+
 ### FR-05 Immutable preservation
 
-Published Raw Vault generations are logically immutable. Source deletion/absence MUST NOT automatically delete preserved history.
+Published Raw Vault generations are **logically immutable**. Source deletion/absence MUST NOT
+automatically delete preserved history.
+
+Logical immutability does not require duplicate physical storage. Multiple immutable generations
+may reference the same immutable content-addressed physical object when the referenced logical bytes
+are identical. Storage sharing must never make a later capture capable of mutating bytes reachable
+from an earlier generation.
 
 ### FR-06 Key-independent recoverability
 
@@ -595,9 +614,18 @@ generation through `skipped_accounts`. Real-environment verification on a suppor
 installation was performed under Issue #37 and passed (complete baseline with one Known-unsupported
 partition, incremental reuse without a full fallback, and a successful isolated Raw-Vault-only rebuild).
 
-Still outstanding: physical cross-generation storage dedup and Raw Vault encryption-at-rest.
+Active M1.5 work now includes the Raw Vault v2 physical-storage slice authorized by Issue #77:
+fixed-block content-addressed artifact storage, v1/v2 reader compatibility, a v2 capture writer,
+storage accounting/integrity verification and an official-RC hourly real-environment gate.
 
-M1.5 remains incomplete.
+This storage slice is now P0 because the accepted operating target is at least hourly capture with
+long-lived logical history; the shipped v1 whole-artifact-per-generation representation does not
+scale to that cadence.
+
+Raw Vault encryption-at-rest remains separate deferred work and is not pulled into the v2 storage
+release.
+
+M1.5 remains incomplete until the v2 storage slice and its required acceptance gate are delivered.
 
 ### M2 — Semantic completeness
 

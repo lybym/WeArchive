@@ -156,13 +156,29 @@ The two Issues did not own overlapping acceptance criteria: Issue #49 does not d
 
 The delivered M1 code landed on `main` **after** Stable `v0.3.1`, so `v0.3.1` does not contain it. It has since shipped in Stable `v0.4.0`.
 
-The next product **P0 is M2 — message semantics / semantic depth**: more reliable special-message semantics, better unknown-type diagnostics, reply-target resolution improvements and metadata refresh/merge correctness, without changing the canonical export contract (`docs/ROADMAP.md`, M2).
+The active product **P0 is the bounded M1.5 Raw Vault v2 storage slice** authorized by Issue #77 and ADR 0011. The accepted operating target is at least hourly capture while retaining logical generation history; the shipped vault-format-v1 whole-artifact-per-generation representation does not scale to that cadence.
 
-The remaining M1.5 items — **physical cross-generation storage deduplication** and **Raw Vault encryption-at-rest** — are open/deferred optimization and protection work. They are **not** completed by M1 completion, are **not** prerequisites for the delivered M1 canonical sync loop of Issues #49 + #51, and must not be pulled into the M1 implementation scope. M1.5 remains incomplete.
+The mandatory order is documentation-led:
 
-**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52. It is not active product work and does not change the M2 P0 priority.
+```text
+#77 docs / ADR / format / benchmark gate
+    ↓
+v2 storage engine / dual-format read path / v2 writer / storage verification
+    ↓
+official-RC hourly real-environment acceptance
+    ↓
+Stable
+```
 
-With M1 complete, the milestone order is the one in `docs/ROADMAP.md`: **M2 message semantics — the current product P0**, then M3 retrieval (the FTS index, keyword search, statistics/activity timeline and a CLI status command beyond the shipped M3a slice), then M4 Harness workflows (Collection-scoped query/search and export selection). FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest all stay outside the delivered M1 scope.
+**Issue #79 MUST NOT begin product-code implementation until #77 is closed with the v2 contract merged to `main`.** Issue #78 snapshot-integrity hardening may run in parallel; it blocks formal v2 capture acceptance and Stable, not storage-engine/read-path investigation.
+
+**M2 — message semantics / semantic depth remains the next semantic product milestone after this bounded storage/correctness slice.** It is deferred, not cancelled or absorbed into M1.5.
+
+Raw Vault encryption-at-rest remains separate deferred M1.5 protection work. The v2 storage slice does not authorize scheduler scope, GC/compaction, destructive historical migration, cross-account deduplication or R3+ recovery machinery. M1.5 remains incomplete.
+
+**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52. It is not active product work and does not change the current Issue #77 Raw Vault v2 P0 priority.
+
+With M1 complete, follow `docs/ROADMAP.md`: first finish the explicitly authorized Raw Vault v2 M1.5 storage/correctness slice, then resume **M2 message semantics**, followed by M3 retrieval and remaining M4 Harness workflows. FTS/search, Collection export/query, MCP and a scheduler stay outside the active storage slice; Raw Vault encryption-at-rest remains separate deferred work.
 
 Issue #24 delivers conversation-scoped Raw Vault ingest checkpoints; Issue #25 delivers incremental live-source capture checkpoints and explicit **capture-side** partition-coverage reporting (the canonical coverage rollup over that capture-side reporting is delivered by Issue #51). Issue #26 delivers the M4 Collection sync foundation: one authoritative application-level `collections.yaml` (ADR 0009), `collection list`/`collection show`, and `sync --collection`. Issue #27 delivers the M3a minimum structured retrieval slice: `ArchiveQueryService` plus the `message list` / `context` CLI contract, read-only over the canonical archive with no FTS index and no schema migration. Issue #37 delivers the WeChat source-partition support policy (Required / Supported auxiliary / Known unsupported / Unknown) and the real-environment verification of the capture and Raw-Vault-only rebuild chain. Continue from the completed M1 baseline to M2/M3/M4.
 

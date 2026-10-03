@@ -162,11 +162,18 @@ Delivered:
 - explicit expected/captured/reused/unavailable/unsupported partition coverage (Issue #25);
 - automatic widening to a full consistent snapshot whenever incremental safety cannot be proven (Issue #25).
 
-Still missing (non-goals of the rebuild slice, and open/deferred rather than prerequisites for the
-delivered M1 canonical sync loop):
+Still missing from M1.5:
 
-- physical cross-generation storage-dedup optimization;
-- Raw Vault encryption-at-rest.
+- the **active P0 Raw Vault v2 storage slice**: scalable cross-generation physical storage for the
+  accepted hourly-capture operating target, while retaining all logical generations;
+- Raw Vault encryption-at-rest, which remains separate deferred protection work.
+
+The v2 storage slice is governed by Issue #77 / ADR 0011. Its implementation path starts only
+after the docs/format gate is merged: source-neutral fixed-block content-addressed artifact storage,
+dual-format v1/v2 reading/materialization, v2 capture publication, storage accounting/verification,
+then an official-RC hourly real-environment gate. Issue #78 separately hardens the source snapshot
+integrity proof and blocks formal v2 capture acceptance. Issue #79 is the storage-engine backlog
+Issue and MUST NOT begin implementation before #77 closes.
 
 Real-environment verification on a supported Windows/WeChat 4.x installation was performed under
 Issue #37 and passed. On the real account the baseline capture reached `complete` with expected 25 /
@@ -199,7 +206,21 @@ Acceptance criteria — met for the capture slice:
 - the capture checkpoint advances only with a successfully published complete generation, and a Fatal publication leaves it unchanged (Issue #25);
 - a disappeared source partition is reported and never deletes an earlier generation or its evidence (Issue #25).
 
-Do not mark M1.5 complete in this Issue.
+Additional acceptance criteria for the active v2 storage slice:
+
+- hourly logical generations must not require a new full physical copy of every unchanged artifact;
+- no-change v2 capture writes zero new artifact payload and reuses the existing immutable map root;
+- a changed large artifact grows authoritative physical payload with newly unique fixed blocks plus
+  bounded metadata rather than with the artifact's complete logical size;
+- existing readable vault-format-v1 generations remain readable without live WeChat/key access;
+- the v2 representation preserves full logical artifact size and SHA-256 and remains source-neutral;
+- losing the derived object-location index does not lose authoritative preserved evidence;
+- v2 capture remains R1 and canonical ingest remains R2; no R3+ recovery protocol is introduced;
+- Stable requires an official-RC real-environment hourly trace, not only synthetic/fixture evidence.
+
+Do not mark M1.5 complete until the v2 storage slice and its Stable acceptance gate are delivered.
+Raw Vault encryption-at-rest remains independent and may keep the overall milestone open after the
+storage slice, depending on the later milestone decision.
 
 ## M2 — Message semantics and completeness
 
@@ -376,24 +397,26 @@ combined #49 + #51 chain passed
 acceptance criteria are met. The delivered M1 code landed on `main` **after** Stable `v0.3.1` and is
 therefore not part of that release; it has since shipped in Stable `v0.4.0`.
 
-1. **The next product P0 is M2 — message semantics / semantic depth** (docs/ROADMAP.md M2):
-   more reliable special-message semantics, better unknown-type diagnostics, reply-target resolution
-   improvements and metadata refresh/merge correctness, without changing the canonical export
-   contract.
-2. The remaining M1.5 items — physical cross-generation storage deduplication and Raw Vault
-   encryption-at-rest — stay open/deferred optimization and protection work. They are **not**
-   completed by M1 completion, they are **not** prerequisites for the delivered M1 canonical sync
-   loop, and M1.5 itself remains incomplete. The delivered M1.5 capture slice (Issues #22/#25/#37) is
-   verified in the real environment: versioned immutable generations, safe incremental capture and
-   explicit partition coverage.
-3. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract.
+1. **The active product P0 is now the M1.5 Raw Vault v2 storage slice** authorized by Issue #77.
+   The new accepted operating target is at least hourly capture with long-lived logical history.
+   Real v0.5.1 data shows the shipped v1 whole-artifact-per-generation layout has unacceptable
+   physical write amplification at that cadence. Complete the docs/format gate first, then the
+   storage engine, dual-format reader/materializer, v2 writer and storage verification, followed by
+   an official-RC hourly real-environment gate.
+2. **Issue #78 capture-integrity hardening runs in parallel** and must complete before v2 capture is
+   formally accepted for RC/Stable. It does not block storage-engine or read-path development.
+3. **M2 message semantics remains the next semantic product milestone** after this bounded storage
+   capacity/correctness slice. Its requirements are not cancelled or absorbed into M1.5.
+4. Raw Vault encryption-at-rest remains deferred and independent of the v2 storage release.
+5. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract after the active
+   priorities above.
 
-FTS/search, Collection export/query, MCP, a scheduler, deduplication and encryption-at-rest all
-remain outside the delivered M1 scope; M1 completion does not cover them.
+FTS/search, Collection export/query, MCP and a scheduler remain outside this M1.5 storage slice.
+M1 completion still does not cover them.
 
 **Issue #47** (profile-id selector case-sensitivity across `capture`/`conversation`, plus the PR #44
 fail-closed test-gap hardening) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52.
-It is not active product work and does not change the M2 P0 priority.
+It is not active product work and does not change the current Issue #77 Raw Vault v2 P0 priority.
 
 Issue #24 delivered conversation-scoped Raw Vault ingest checkpoints and Issue #25 delivered
 incremental live-source capture with explicit capture-side partition coverage; both are shipped and
