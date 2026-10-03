@@ -327,6 +327,8 @@ Rejected because a real baseline already implies hundreds of thousands of small 
 - ADR 0008 — Raw Vault / canonical / query layer separation
 - ADR 0010 — original Raw Vault storage and consistent snapshot
 - docs/RAW_VAULT.md
+- docs/RAW_VAULT_V2_FORMAT.md — canonical persisted-format encoding and golden vectors
+- docs/RAW_VAULT_V2_BENCHMARK.md — privacy-safe benchmark evidence and provisional default
 - docs/DATA_MODEL.md
 - docs/ARCHITECTURE.md
 - docs/DEVELOPMENT.md
