@@ -125,7 +125,7 @@ reuse, not cross-generation incremental physical storage.
 
 ### 3.2 Target vault format 2 — not yet shipped
 
-Issue #77 / ADR 0011 authorizes the following target representation:
+Issue #77 / ADR 0011 authorizes the following target representation. The exact persisted encoding is frozen in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md), and the provisional writer-default decision is recorded in [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md):
 
 ```text
 <vault-root>/
