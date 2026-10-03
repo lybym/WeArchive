@@ -64,6 +64,31 @@ an unverified candidate is discarded.
 A real group conversation (2071 records, 2026-07 → 2026-09) normalised to:
 `video 1085, text 738, image 171, app_share 27, revoke 24, emoji 12, unknown 6, voice 6, system 2`.
 
+### Message shard rotation across the `message_N.db` family (Issue #71)
+
+Rotation measurements below were additionally verified on **4.1.15.13** (the account that
+filed Issue #71); everything above was verified on 4.1.13.12.
+
+- WeChat 4.x rotates a conversation's `Msg_<md5(conversationId)>` table across the
+  `message_N.db` family over time: on rotation the client starts writing new records into a
+  different shard while the older shards keep the history they already hold, so a long-lived
+  conversation's table exists in **several shards at the same time**.
+- On the inspected account each window covers roughly one year and rotation happened in late
+  September; `message_0` is the current window. Measured for group `56894683949@chatroom`
+  (`Msg_` table present in three shards, disjoint `create_time` windows):
+  `message_2` = 3,921 records (2024-10-01 → 2025-09-20), `message_1` = 13,566 records
+  (2025-10-02 → 2026-09-24), `message_0` = 1,070 records (2026-09-24 → 2026-10-03).
+- Read-side consequence: a reader that maps each table name to exactly one shard (last writer
+  wins over the lexicographically enumerated `message_0, message_1, message_10, …, message_2`
+  family) silently truncates the conversation to the **oldest** rotation window, and because
+  the table *was* found, no coverage diagnostic fires. `WeChatAccountReader` therefore indexes
+  a table into every shard that contains it, reads them **oldest window first** (numeric
+  suffix descending), aggregates `Describe` across all shards, and keeps `Name2Id` sender
+  resolution per shard (Issue #71).
+- Capture-side behaviour is unchanged: the Raw Vault already preserves every shard as its own
+  partition, so rotated windows are backfilled by a reader-version-driven re-scan, not by a
+  capture change.
+
 ---
 
 ## 2. External references consulted

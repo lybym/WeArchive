@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using WeArchive.Core.Domain;
 using WeArchive.Infrastructure.WeChat.Compatibility;
@@ -33,6 +34,16 @@ internal sealed record WeChatMessageRow(
     int ContentCompression);
 
 /// <summary>
+/// One readable shard that holds a conversation's message table, together with the
+/// partition the rows are reported under and that shard's own <c>Name2Id</c> sender map.
+/// </summary>
+internal sealed record WeChatMessageShard(
+    string ShardPath,
+    string Table,
+    string Partition,
+    IReadOnlyDictionary<long, string> Name2Id);
+
+/// <summary>
 /// Read-only access to one account's decrypted databases. All WeChat column and table
 /// names are confined to this class and <see cref="WeChat4Schema"/>.
 /// </summary>
@@ -59,7 +70,7 @@ internal sealed class WeChatAccountReader(
     private readonly bool _requiredMessageEvidenceComplete = requiredMessageEvidenceComplete;
     private Dictionary<string, WeChatContactRow>? _contacts;
     private List<WeChatSessionRow>? _sessions;
-    private Dictionary<string, string>? _messageShardByTable;
+    private Dictionary<string, List<string>>? _messageShardByTable;
     private readonly Dictionary<string, Dictionary<long, string>> _name2Id = new(StringComparer.OrdinalIgnoreCase);
     // Shards that could not be opened/indexed, recorded (not swallowed) so a conversation
     // whose only table lives in one of them surfaces a partial-coverage diagnostic instead
@@ -161,31 +172,49 @@ internal sealed class WeChatAccountReader(
     }
 
     /// <summary>
-    /// Locates the message shard holding a conversation's table and its sender-id map.
-    /// WeChat 4.x splits conversations across several <c>message_N.db</c> files.
+    /// Locates every readable shard holding a conversation's message table, oldest rotation
+    /// window first. WeChat 4.x rotates a conversation's <c>Msg_</c> table across the
+    /// <c>message_N.db</c> family: on rotation the client starts writing new records into a
+    /// different shard while the older shards keep the history they already hold, so a
+    /// long-lived conversation exists in several shards at once (Issue #71).
     /// </summary>
-    public (string ShardPath, string Table, IReadOnlyDictionary<long, string> Name2Id)? FindMessageShard(
-        string sourceConversationId)
+    public IReadOnlyList<WeChatMessageShard> FindMessageShards(string sourceConversationId)
     {
         var shards = _messageShardByTable ??= BuildShardIndex();
         var table = WeChat4Schema.MessageTableName(sourceConversationId);
-        if (!shards.TryGetValue(table, out var shardPath))
+        if (!shards.TryGetValue(table, out var shardPaths))
         {
-            return null;
+            return [];
         }
 
-        if (!_name2Id.TryGetValue(shardPath, out var map))
+        var result = new List<WeChatMessageShard>(shardPaths.Count);
+        foreach (var shardPath in shardPaths)
         {
-            map = ReadName2Id(shardPath);
-            _name2Id[shardPath] = map;
+            if (!_name2Id.TryGetValue(shardPath, out var map))
+            {
+                map = ReadName2Id(shardPath);
+                _name2Id[shardPath] = map;
+            }
+
+            result.Add(new WeChatMessageShard(
+                shardPath,
+                table,
+                ResolvePartition(shardPath),
+                map));
         }
 
-        return (shardPath, table, map);
+        return result;
     }
 
-    private Dictionary<string, string> BuildShardIndex()
+    private string ResolvePartition(string shardPath) =>
+        _capturedPartitions is not null
+            && _capturedPartitions.TryGetValue(shardPath, out var capturedPartition)
+                ? capturedPartition
+                : Path.GetFileNameWithoutExtension(shardPath);
+
+    private Dictionary<string, List<string>> BuildShardIndex()
     {
-        var index = new Dictionary<string, string>(StringComparer.Ordinal);
+        var index = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var shard in _capturedMessagePaths ?? WeChatDataLocator.MessageDatabases(_account))
         {
             try
@@ -197,7 +226,14 @@ internal sealed class WeChatAccountReader(
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    index[reader.GetString(0)] = shard;
+                    var table = reader.GetString(0);
+                    if (!index.TryGetValue(table, out var holders))
+                    {
+                        holders = [];
+                        index[table] = holders;
+                    }
+
+                    holders.Add(shard);
                 }
             }
             catch (SqliteException)
@@ -215,7 +251,31 @@ internal sealed class WeChatAccountReader(
             }
         }
 
+        // Oldest rotation window first: WeChat keeps the current window in the lowest-numbered
+        // shard file, so ordering the numeric suffix descending orders the rotated windows
+        // oldest first and the whole stream stays ascending in time across them (Issue #71).
+        foreach (var holders in index.Values)
+        {
+            holders.Sort(CompareShardsOldestFirst);
+        }
+
         return index;
+    }
+
+    private static readonly Regex TrailingShardNumber = new(@"(\d+)$", RegexOptions.Compiled);
+
+    private static int CompareShardsOldestFirst(string left, string right)
+    {
+        var byWindow = ShardWindowNumber(right).CompareTo(ShardWindowNumber(left));
+        return byWindow != 0 ? byWindow : string.CompareOrdinal(left, right);
+    }
+
+    private static int ShardWindowNumber(string shardPath)
+    {
+        var match = TrailingShardNumber.Match(Path.GetFileNameWithoutExtension(shardPath));
+        return match.Success && long.TryParse(match.Groups[1].Value, out var number) && number <= int.MaxValue
+            ? (int)number
+            : -1;
     }
 
     private Dictionary<long, string> ReadName2Id(string shardPath)
@@ -236,46 +296,62 @@ internal sealed class WeChatAccountReader(
         return map;
     }
 
-    /// <summary>Aggregate counters for a conversation without reading message bodies.</summary>
+    /// <summary>
+    /// Aggregate counters for a conversation without reading message bodies. The counters
+    /// cover every rotation window that holds the conversation's table (Issue #71).
+    /// </summary>
     public SourceConversationDetail Describe(string sourceConversationId)
     {
-        var shard = FindMessageShard(sourceConversationId);
-        if (shard is null)
+        var shards = FindMessageShards(sourceConversationId);
+        long count = 0;
+        long? first = null;
+        long? last = null;
+        foreach (var shard in shards)
         {
-            return new SourceConversationDetail { SourceConversationId = sourceConversationId };
-        }
+            using var connection = Open(shard.ShardPath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                 SELECT COUNT(*), MIN(create_time), MAX(create_time)
+                 FROM "{shard.Table}";
+                 """;
+            using var reader = command.ExecuteReader();
+            if (!reader.Read())
+            {
+                continue;
+            }
 
-        using var connection = Open(shard.Value.ShardPath);
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            $"""
-             SELECT COUNT(*), MIN(create_time), MAX(create_time)
-             FROM "{shard.Value.Table}";
-             """;
-        using var reader = command.ExecuteReader();
-        if (!reader.Read())
-        {
-            return new SourceConversationDetail { SourceConversationId = sourceConversationId };
-        }
+            count += reader.IsDBNull(0) ? 0 : reader.GetInt64(0);
+            var shardFirst = reader.IsDBNull(1) ? (long?)null : reader.GetInt64(1);
+            var shardLast = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
+            if (shardFirst is not null && (first is null || shardFirst.Value < first.Value))
+            {
+                first = shardFirst;
+            }
 
-        var count = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
-        var first = reader.IsDBNull(1) ? (long?)null : reader.GetInt64(1);
-        var last = reader.IsDBNull(2) ? (long?)null : reader.GetInt64(2);
+            if (shardLast is not null && (last is null || shardLast.Value > last.Value))
+            {
+                last = shardLast;
+            }
+        }
 
         return new SourceConversationDetail
         {
             SourceConversationId = sourceConversationId,
-            MessageCount = count,
+            MessageCount = (int)Math.Min(count, int.MaxValue),
             FirstMessageAt = first is null ? null : ToLocalTime(first.Value),
             LastMessageAt = last is null ? null : ToLocalTime(last.Value),
         };
     }
 
-    /// <summary>Streams a conversation's records in ascending time order.</summary>
+    /// <summary>
+    /// Streams a conversation's records in ascending time order across every rotation window
+    /// that holds its table, oldest window first (Issue #71).
+    /// </summary>
     public IEnumerable<WeChatMessageRow> ReadMessages(string sourceConversationId, CancellationToken cancellationToken)
     {
-        var shard = FindMessageShard(sourceConversationId);
-        if (shard is null)
+        var shards = FindMessageShards(sourceConversationId);
+        if (shards.Count == 0)
         {
             // No readable shard holds this conversation's table. If any shard failed to index, the
             // table may live in one of those, so coverage is genuinely partial and this stays
@@ -307,39 +383,38 @@ internal sealed class WeChatAccountReader(
                 "The source provided no readable records for this conversation.");
         }
 
-        var partition = _capturedPartitions is not null
-            && _capturedPartitions.TryGetValue(shard.Value.ShardPath, out var capturedPartition)
-                ? capturedPartition
-                : Path.GetFileNameWithoutExtension(shard.Value.ShardPath);
-        using var connection = Open(shard.Value.ShardPath);
-        using var command = connection.CreateCommand();
-        command.CommandText =
-            $"""
-             SELECT {WeChat4Schema.LocalId}, COALESCE({WeChat4Schema.ServerId}, 0),
-                    {WeChat4Schema.LocalType}, COALESCE({WeChat4Schema.RealSenderId}, 0),
-                    {WeChat4Schema.CreateTime}, {WeChat4Schema.MessageContent},
-                    COALESCE({WeChat4Schema.ContentCompression}, 0), {WeChat4Schema.CompressContent}
-             FROM "{shard.Value.Table}"
-             ORDER BY {WeChat4Schema.CreateTime}, {WeChat4Schema.LocalId};
-             """;
-
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        foreach (var shard in shards)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            using var connection = Open(shard.ShardPath);
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                 SELECT {WeChat4Schema.LocalId}, COALESCE({WeChat4Schema.ServerId}, 0),
+                        {WeChat4Schema.LocalType}, COALESCE({WeChat4Schema.RealSenderId}, 0),
+                        {WeChat4Schema.CreateTime}, {WeChat4Schema.MessageContent},
+                        COALESCE({WeChat4Schema.ContentCompression}, 0), {WeChat4Schema.CompressContent}
+                 FROM "{shard.Table}"
+                 ORDER BY {WeChat4Schema.CreateTime}, {WeChat4Schema.LocalId};
+                 """;
 
-            // message_content is TEXT for plain records and a BLOB when WCDB compressed it.
-            // compress_content is the older location of the compressed payload.
-            var content = ReadBinary(reader, 5) ?? ReadBinary(reader, 7);
-            yield return new WeChatMessageRow(
-                partition,
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.GetInt64(2),
-                reader.GetInt64(3),
-                reader.GetInt64(4),
-                content,
-                (int)reader.GetInt64(6));
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // message_content is TEXT for plain records and a BLOB when WCDB compressed it.
+                // compress_content is the older location of the compressed payload.
+                var content = ReadBinary(reader, 5) ?? ReadBinary(reader, 7);
+                yield return new WeChatMessageRow(
+                    shard.Partition,
+                    reader.GetInt64(0),
+                    reader.GetInt64(1),
+                    reader.GetInt64(2),
+                    reader.GetInt64(3),
+                    reader.GetInt64(4),
+                    content,
+                    (int)reader.GetInt64(6));
+            }
         }
     }
 
