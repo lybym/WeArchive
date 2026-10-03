@@ -118,18 +118,23 @@ Until a real hourly trace exists:
     T365(B) = baseline_retained_bytes(B)
             + 8760 * mean_incremental_retained_bytes_per_capture(B)
 
-Using the seven observed transitions as a sensitivity model:
+Using the first retained generation as the baseline and the seven observed transitions to estimate
+mean incremental bytes per capture:
 
-| Block | Scenario hourly Zstd1 total MB | Scenario yearly Zstd1 incremental GB |
-|---|---:|---:|
-| 4 KiB | 0.918 | 8.042 |
-| 8 KiB | 1.231 | 10.780 |
-| 16 KiB | 1.762 | 15.432 |
-| 32 KiB | 2.814 | 24.652 |
-| 64 KiB | 4.441 | 38.900 |
+| Block | Baseline retained MB | Mean incremental MB/capture | T365 scenario retained GB |
+|---|---:|---:|---:|
+| 4 KiB | 862.709 | 0.918 | 8.904 |
+| 8 KiB | 826.799 | 1.231 | 11.607 |
+| 16 KiB | 799.452 | 1.762 | 16.231 |
+| 32 KiB | 790.873 | 2.814 | 25.443 |
+| 64 KiB | 777.331 | 4.441 | 39.677 |
 
-This scenario means: "if every future hourly capture introduced the same mean amount of previously
-unseen unique content as the seven measured transitions." It is not an empirical one-year forecast.
+The baseline is observed retained Zstd1 bytes for generation 1 (eight-generation total minus the
+seven post-baseline transitions). T365 applies the Issue #77 formula in decimal GB. It means: "if
+every future hourly capture introduced the same mean amount of previously unseen unique content as
+the seven measured transitions." It is not an empirical one-year forecast. Annualized incremental
+bytes alone are 8.042, 10.780, 15.432, 24.652 and 38.900 GB respectively; those values exclude the
+baseline and are not T365.
 
 ## 6. Decision
 

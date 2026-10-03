@@ -307,18 +307,19 @@ Issue #77 compared block sizes 4/8/16/32/64 KiB over the same real dataset:
 
 Prototype results showed:
 
-| Block | Zstd1 retained total MB | Post-baseline incremental total MB | Scenario T365 GB |
+| Block | Zstd1 retained total MB | Post-baseline incremental total MB | T365 scenario retained GB |
 |---|---:|---:|---:|
-| 4 KiB | 869.135 | 6.426 | 8.042 |
-| 8 KiB | 835.413 | 8.614 | 10.780 |
-| 16 KiB | 811.783 | 12.331 | 15.432 |
-| 32 KiB | 810.572 | 19.699 | 24.652 |
-| 64 KiB | 808.415 | 31.084 | 38.900 |
+| 4 KiB | 869.135 | 6.426 | 8.904 |
+| 8 KiB | 835.413 | 8.614 | 11.607 |
+| 16 KiB | 811.783 | 12.331 | 16.231 |
+| 32 KiB | 810.572 | 19.699 | 25.443 |
+| 64 KiB | 808.415 | 31.084 | 39.677 |
 
 The total retained baseline/history at the observed eight-generation point is not the same metric as
-long-term hourly incremental cost. The first writer therefore uses **4096 bytes as the provisional
-default** because the accepted workload is long-running hourly capture and the scenario model
-favored 4 KiB strongly.
+long-term hourly incremental cost. T365 includes the generation-1 baseline retained bytes plus 8760
+times the mean of the seven measured incremental transitions. The first writer therefore uses
+**4096 bytes as the provisional default** because the accepted workload is long-running hourly
+capture and the scenario model favored 4 KiB strongly.
 
 This is not a claim that SQLite pages require 4 KiB storage blocks.
 
