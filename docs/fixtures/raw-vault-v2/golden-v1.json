@@ -5,9 +5,12 @@
   "payload_hex": "616263",
   "artifact_sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
   "data_object": {
-    "domain": "wearchive/raw-vault/data/v1\\u0000",
+    "domain_utf8_nul_hex": "7765617263686976652f7261772d7661756c742f646174612f763100",
     "uncompressed_length": 3,
     "digest": "72e595b1259646387bbacd763406788361d8cdc542530f1a2b202b79efb22585"
+  },
+  "map_object": {
+    "domain_utf8_nul_hex": "7765617263686976652f7261772d7661756c742f6d61702f763100"
   },
   "empty_leaf_map": {
     "canonical_node_hex": "52564d50010000000000000000000000000000000000000000000000",
