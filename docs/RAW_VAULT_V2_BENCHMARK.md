@@ -136,28 +136,51 @@ the seven measured transitions." It is not an empirical one-year forecast. Annua
 bytes alone are 8.042, 10.780, 15.432, 24.652 and 38.900 GB respectively; those values exclude the
 baseline and are not T365.
 
-## 6. Decision
+## 6. Correctness gate status
 
-The Issue #77 provisional writer default is:
+The Issue #77 benchmark selection rule requires every candidate to pass correctness checks before
+its storage cost is considered. The retained analysis record does not contain per-case assertion
+results, so the gate is **not verified by this prototype record**:
 
-    block_size = 4096
-    codec preference = zstd level 1, raw fallback
+| Required check | Recorded result in this analysis |
+|---|---|
+| Byte-identical reconstruction for each block size and codec | Not recorded; reconstructed files were produced, but no comparison assertion/result was retained |
+| Unknown-field preservation | Not run / not recorded |
+| No-change root/object reuse | Not run / not recorded |
+| Append | Not run / not recorded |
+| In-place update | Not run / not recorded |
+| Truncate | Not run / not recorded |
+| Rewrite | Not run / not recorded |
 
-Rationale:
+To close this gate, run each case for block sizes 4096, 8192, 16384, 32768 and 65536 with both
+`none` and Zstd1/raw-fallback storage. For each case, reconstruct the complete artifact and compare
+its bytes and full SHA-256 with the expected input; assert preservation of unknown manifest fields;
+and record logical root/object reuse and expected changed blocks for no-change, append, in-place
+update, truncate and full rewrite. Include empty and partial-tail artifacts. Retain the command,
+tool/runtime version, input fixture hash, per-case pass/fail results and failure output, without
+including private artifact content. A candidate only passes when every required assertion passes.
 
-- 4 KiB has the lowest measured post-baseline incremental retained bytes;
-- it has the lowest T365 sensitivity result for the accepted hourly workload;
-- its prototype reconstruction throughput remains adequate for an archival path;
-- the descriptor still records block size, so the architecture is not permanently coupled to
-  SQLite's current 4096-byte source page size.
+The golden vector is a set of encoding examples, not evidence that this mutation/reconstruction
+matrix passed. The current fixture covers an empty map, one three-byte data block, a one-entry leaf
+and a raw single-record pack. Multi-level fanout-32 maps, descriptor-tail reconstruction, empty
+artifact reconstruction and corruption rejection remain implementation-test requirements.
 
-This default is **provisional for the first RC**, not a format-global constant.
+## 7. Cost leader; writer default not selected
+
+The recorded cost model ranks 4 KiB lowest for post-baseline incremental retained bytes and T365.
+This is a **cost leader only**. Since the correctness gate above is unverified, Issue #77 has not
+selected a provisional first-RC writer default. Do not encode 4096 bytes as the writer default
+until the correctness matrix passes for every candidate and its results are recorded alongside the
+cost comparison.
 
 The v2 reader accepts 4096/8192/16384/32768/65536-byte block sizes.
 
-## 7. Reproduction gate in Issue #79
+## 8. Reproduction gate in Issue #79
 
-Issue #77 is docs/format-first and therefore does not implement the production storage engine.
+Issue #77 is docs/format-first and therefore does not implement the production storage engine. The
+Issue #79 gate must begin by recording the correctness matrix above against the frozen format, then
+reproduce the storage-cost comparison with the actual implementation. It must not adopt a writer
+default before both gates pass.
 
 Issue #79 MUST reproduce the decision after the actual:
 
@@ -169,14 +192,15 @@ Issue #79 MUST reproduce the decision after the actual:
 
 exist in product code.
 
-A material divergence is a hard stop. Do not silently change the writer default inside #79. Instead:
+A material divergence is a hard stop. Do not silently select or change the writer default inside
+#79. Instead:
 
 1. publish the new measurements;
 2. update Issue #77-derived docs/decision with rationale;
 3. obtain review of the changed default;
 4. then continue implementation.
 
-## 8. Stable gate
+## 9. Stable gate
 
 The official RC real-environment acceptance must replace this scenario model with a continuous
 hourly trace before Stable.
@@ -193,6 +217,6 @@ That acceptance must report at least:
 - materialization/rebuild behavior without live WeChat/key;
 - any workload event such as VACUUM/rewrite that legitimately causes large historical deltas.
 
-If the real hourly trace materially reverses the provisional default, adjust the writer policy and
+If the real hourly trace materially reverses the selected default, adjust the writer policy and
 issue a new RC. The manifest-v3/vault-v2 architecture does not need to change because block size is
 an artifact descriptor property.

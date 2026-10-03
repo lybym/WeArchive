@@ -154,8 +154,10 @@ The Raw Vault storage layer remains source-neutral. SQLite page size, SQLCipher 
 not enter the v2 storage contract; those remain WeChat-adapter concerns.
 
 The first v2 reader is planned to accept fixed block sizes of 4096, 8192, 16384, 32768 and 65536
-bytes. The writer default is selected by the Issue #77 benchmark gate; 4096 bytes + Zstd level 1 is
-the current provisional candidate, not a statement that storage blocks must equal SQLite pages.
+bytes. The writer default is selected by the Issue #77 benchmark gate. The current cost leader is
+4096 bytes + Zstd level 1, but the correctness-gate results are not recorded, so no provisional
+first-RC default has been selected. This is not a statement that storage blocks must equal SQLite
+pages.
 
 Writing v2 does not migrate or rewrite existing v1 generations. The intended upgrade path is
 **read old + write new**.

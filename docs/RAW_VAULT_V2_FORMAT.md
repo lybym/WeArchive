@@ -300,7 +300,7 @@ A lineage may contain both format-1 and format-2 generations.
 
 No preserved-read failure may silently fall back to live WeChat/key acquisition.
 
-## 9. Benchmark decision for first writer default
+## 9. Benchmark cost comparison and correctness-gate status
 
 Issue #77 compared block sizes 4/8/16/32/64 KiB over the same real dataset:
 8 generations, 264 artifact references and 10.606 GB logical bytes.
@@ -317,17 +317,22 @@ Prototype results showed:
 
 The total retained baseline/history at the observed eight-generation point is not the same metric as
 long-term hourly incremental cost. T365 includes the generation-1 baseline retained bytes plus 8760
-times the mean of the seven measured incremental transitions. The first writer therefore uses
-**4096 bytes as the provisional default** because the accepted workload is long-running hourly
-capture and the scenario model favored 4 KiB strongly.
+times the mean of the seven measured incremental transitions. The cost comparison ranks 4096 bytes
+first under this scenario, but the prototype record does not include pass results for the required
+byte-identical reconstruction, unknown-field preservation, no-change, append, update, truncate and
+rewrite checks. Therefore 4096 bytes is only the cost leader; **no provisional first-RC writer
+default has been selected**. See [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) for the
+unverified gate and the required reproducible procedure.
 
 This is not a claim that SQLite pages require 4 KiB storage blocks.
 
-The storage-engine implementation Issue must reproduce the decision with the actual pack/index/map
-implementation. A material divergence is a hard stop: update Issue #77/docs and approve the changed
-default rather than silently changing the persisted behavior during implementation.
+The storage-engine implementation Issue must first record passing correctness results for every
+candidate, then reproduce the decision with the actual pack/index/map implementation. A material
+divergence is a hard stop: update Issue #77/docs and approve the changed default rather than silently
+changing the persisted behavior during implementation.
 
-The official RC real-environment gate then validates the default against a continuous hourly trace.
+The official RC real-environment gate then validates the selected default against a continuous
+hourly trace.
 
 ## 10. Golden vectors
 
@@ -336,3 +341,6 @@ Machine-readable vectors are stored at:
 `docs/fixtures/raw-vault-v2/golden-v1.json`
 
 Implementations MUST reproduce those bytes/digests exactly before writing production v2 content.
+These vectors do not cover multi-level fanout-32 trees, descriptor-tail or empty-artifact
+reconstruction, or corruption rejection; those require implementation tests before a writer default
+is selected.
