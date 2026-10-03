@@ -27,7 +27,13 @@ namespace WeArchive.Infrastructure.WeChat;
 public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
 {
     public const string Name = "wechat-windows";
-    public const string Version = "0.1.0";
+
+    // Load-bearing bump: RawVaultIngestService skips a conversation only while its checkpoint
+    // carries the current reader version, so raising this version invalidates every existing
+    // ingest checkpoint and the next ingest re-scans and backfills conversations whose history
+    // spans rotated message shards (Issue #71). 0.1.0 read a single rotation window per
+    // conversation; 0.2.0 reads all of them.
+    public const string Version = "0.2.0";
 
     private readonly IWeChatDatabaseKeyAcquirer _keyAcquirer;
     private readonly Lock _gate = new();
@@ -203,7 +209,13 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
         var reader = GetReader(sourceProfileId);
         var contacts = reader.ReadContacts();
         var isGroup = sourceConversationId.EndsWith(WeChat4Schema.WeChatRoomSuffix, StringComparison.Ordinal);
-        var shard = reader.FindMessageShard(sourceConversationId);
+        // A rotated conversation is read from several shards; sender resolution must use the
+        // Name2Id map of the shard each row was actually read from (Issue #71).
+        var name2IdByPartition = new Dictionary<string, IReadOnlyDictionary<long, string>>(StringComparer.Ordinal);
+        foreach (var shard in reader.FindMessageShards(sourceConversationId))
+        {
+            name2IdByPartition.TryAdd(shard.Partition, shard.Name2Id);
+        }
 
         var index = 0;
         foreach (var row in reader.ReadMessages(sourceConversationId, cancellationToken))
@@ -225,10 +237,11 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
                     isGroup,
                     candidate => contacts.ContainsKey(candidate));
 
+            name2IdByPartition.TryGetValue(row.Partition, out var name2Id);
             var senderSourceId = ResolveSender(
                 row.RealSenderId,
                 parsed.SenderHint,
-                shard?.Name2Id,
+                name2Id,
                 contacts,
                 sourceConversationId,
                 isGroup);
