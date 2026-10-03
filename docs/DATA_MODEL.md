@@ -602,10 +602,11 @@ If retained for debugging/reproducibility:
 
 ## 21. Raw Vault data model
 
-The Raw Vault is a separate persistence layer from the canonical SQLite archive. It has its own
-independently versioned format (`manifest_version` currently `2`, `vault_format_version` `1`),
-and no canonical SQLite migration is required to introduce it (Issue #22, migration-1
-`source_checkpoints` remains untouched).
+The Raw Vault is a separate persistence layer from the canonical SQLite archive. The **shipped**
+writer currently uses `manifest_version = 2` and `vault_format_version = 1`. Issue #77 / ADR 0011
+defines the next storage target as `manifest_version = 3` and `vault_format_version = 2`.
+Raw Vault format evolution is independent of canonical SQLite migrations; introducing v2 does not
+reinterpret migration-1 `source_checkpoints` or migration-2 ingest checkpoints.
 
 Conceptual entities:
 
@@ -627,28 +628,70 @@ same account at different times yield different generation ids.
 
 ### 21.2 Physical layout
 
+Shipped vault format 1:
+
 ```text
 <vault-root>/accounts/<account-id>/generations/<generation-id>/
   manifest.json
   artifacts/<sha256><ext>
 ```
 
+Target vault format 2 (Issue #77 / ADR 0011; not shipped until its implementation Issues land):
+
+```text
+<vault-root>/accounts/<account-id>/
+  generations/<generation-id>/
+    manifest.json
+  objects/packs/<pack-id>.rvpack
+  indexes/objects.sqlite
+```
+
+The v2 `objects.sqlite` index is derived/rebuildable state, not evidence authority. Generation
+manifests and their reachable immutable pack objects are authoritative preserved state.
+
 ### 21.3 Manifest
 
 The manifest is a versioned JSON document recording source product/version, source profile,
 capture adapter family/version, capture time, mode (`baseline` or `incremental`), completeness,
-every artifact's role/name/content-ref/SHA-256/size, per-partition coverage, the optional capture
-checkpoint, diagnostics and the previous generation id (append-only chain). See
-[RAW_VAULT.md](RAW_VAULT.md) for the full manifest shape.
+every artifact's role/name/logical size/full SHA-256 and storage reference, per-partition coverage,
+the optional capture checkpoint, diagnostics and the previous generation id (append-only chain).
+See [RAW_VAULT.md](RAW_VAULT.md) for the full manifest shape.
+
+For manifest versions 1/2 with vault format 1, `content_ref` is a path relative to the generation
+directory. Manifest version 3 changes that storage-reference contract: a v2 artifact carries a
+source-neutral storage descriptor (`kind`, fixed `block_size`, `block_count`, persistent-map
+`root`) rather than treating the reference as a generation-local file path.
 
 The manifest format version is independent of the canonical SQLite schema version
 (section 18), the message-schema version and the export-schema version.
 
-### 21.4 Artifact roles and checksums
+### 21.4 Artifact roles, identity and storage descriptors
 
 Artifact `role` values are source-neutral strings (e.g. `source-database`) so the Raw Vault does
-not leak WeChat table names into Core/CLI. Every artifact has a verifiable SHA-256 checksum;
-opening a generation re-verifies every checksum and rejects tampered or corrupted artifacts.
+not leak WeChat table names into Core/CLI.
+
+Every logical artifact retains a verifiable full SHA-256 checksum over its reconstructed bytes.
+That checksum remains the artifact identity/proof across physical repack, recompression, index
+rebuild and supported representation changes.
+
+Vault format 2 adds a source-neutral fixed-block storage descriptor. Its target semantics are:
+
+```text
+kind         fixed-block-map-v1
+block_size   one supported fixed size for this artifact
+block_count  ordered logical block count
+root         immutable persistent-map root
+```
+
+The storage layer does not know SQLite page numbers. Equal typed data-object content may be shared
+across logical positions and generations within the same account; ordering is carried by the map.
+
+The last block may be shorter than the nominal block size. Logical size, block count, referenced
+object lengths and full artifact SHA-256 must agree or the artifact is rejected.
+
+The first v2 reader supports 4096, 8192, 16384, 32768 and 65536-byte blocks. The writer default is
+a benchmark-selected implementation choice recorded by Issue #77 rather than a universal SQLite
+property.
 
 ### 21.5 Capture checkpoint and partition coverage
 
@@ -689,7 +732,24 @@ confused with the `conversation_coverage` ingest-progress cursor (section 14.1):
 records that a newer generation was verified unchanged so ingest work can be skipped, while the
 coverage rollup states whether the evidence behind a canonical result was complete.
 
-### 21.6 Raw Vault format-version tests
+### 21.6 Raw Vault v2 object/map model
+
+ADR 0011 defines the target v2 physical model:
+
+- account-local content sharing;
+- typed data objects and typed map nodes with separate/domain-separated identity;
+- a canonical fixed-fanout persistent ordered block map;
+- immutable sealed pack files;
+- `none` and `zstd` codecs whose encoding does not change object identity;
+- a derived SQLite object-location index that can be deleted and rebuilt from packs;
+- no generation-delta replay chain.
+
+One artifact root is independently sufficient, together with the account's authoritative object
+store, to reconstruct the complete logical artifact. A no-change artifact reuses its root and
+creates no new map nodes. An append/update/shrink produces a new root without mutating any root or
+object reachable from an earlier generation.
+
+### 21.7 Raw Vault format-version tests
 
 Raw Vault format-version tests must verify that `manifest_version = 1` can be reopened
 independently of the capture process — i.e. a new `RawVaultStore` instance pointing at the same
@@ -703,7 +763,7 @@ reject a checkpoint that omits `captured`/`reused` evidence or that addresses an
 a pre-existing version-2 manifest whose checkpoint covered all of its (necessarily captured/reused)
 coverage entries.
 
-### 21.7 Rebuild and canonical migration
+### 21.8 Rebuild and canonical migration
 
 The Raw Vault format introduces no canonical SQLite migration. Rebuild creates a new canonical
 database by applying the normal forward migration sequence to an empty file; it does not copy
