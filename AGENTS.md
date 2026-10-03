@@ -176,7 +176,7 @@ Stable
 
 Raw Vault encryption-at-rest remains separate deferred M1.5 protection work. The v2 storage slice does not authorize scheduler scope, GC/compaction, destructive historical migration, cross-account deduplication or R3+ recovery machinery. M1.5 remains incomplete.
 
-**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52. It is not active product work and does not change the M2 P0 priority.
+**Issue #47** (the profile-id selector case-sensitivity asymmetry between `capture` and `conversation`, plus the PR #44 fail-closed test-gap items) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52. It is not active product work and does not change the current Issue #77 Raw Vault v2 P0 priority.
 
 With M1 complete, follow `docs/ROADMAP.md`: first finish the explicitly authorized Raw Vault v2 M1.5 storage/correctness slice, then resume **M2 message semantics**, followed by M3 retrieval and remaining M4 Harness workflows. FTS/search, Collection export/query, MCP and a scheduler stay outside the active storage slice; Raw Vault encryption-at-rest remains separate deferred work.
 
