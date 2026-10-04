@@ -154,6 +154,8 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             // Not encrypted: this happens for a few auxiliary files. Use SQLite's own
             // read-only WAL recovery and backup implementation so committed plaintext WAL
             // evidence is part of the captured image without ever opening the source writable.
+            // SQLite backup alone is not proof that the source WAL was fully understood: SQLite
+            // may silently fall back to the main database after malformed or torn WAL evidence.
             var pageSize = ReadSqlitePageSize(header);
             var mainLength = new FileInfo(path).Length;
             if (mainLength == 0 || mainLength % pageSize != 0)
@@ -165,6 +167,13 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             if (_scratchRoot is null)
             {
                 return new DecryptionOutcome(path, checked((int)(mainLength / pageSize)), 0, 0, true);
+            }
+
+            var wal = ReadPlaintextWal(path, pageSize);
+            if (wal.Rejected > 0)
+            {
+                throw new WeChatKeyUnavailableException(
+                    $"'{Path.GetFileName(path)}' has invalid or incomplete plaintext SQLite WAL evidence.");
             }
 
             var snapshotPath = Path.Combine(_scratchRoot, Guid.NewGuid().ToString("n") + ".db");
@@ -261,56 +270,113 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         }
 
         var wal = ReadAll(walPath);
-        var frameSize = SqlCipherPageCipher.PageSize + 24;
-        if (wal.Length == 0)
+        var scan = ScanWriteAheadLog(
+            wal,
+            SqlCipherPageCipher.PageSize,
+            (pageNumber, pageOffset) => SqlCipherPageCipher.VerifyPage(
+                macKey, wal.AsSpan(pageOffset, SqlCipherPageCipher.PageSize), pageNumber));
+
+        if (scan.LastCommitFrame < 0)
         {
-            return (0, 0);
+            return (0, scan.Rejected);
         }
 
-        if (wal.Length < 32)
+        if (scan.CommittedPageCount > 0)
         {
-            return (0, 1);
+            var required = (long)scan.CommittedPageCount * SqlCipherPageCipher.PageSize;
+            if (required != image.LongLength)
+            {
+                Array.Resize(ref image, (int)required);
+            }
+        }
+
+        var applied = 0;
+        for (var frame = 0; frame <= scan.LastCommitFrame; frame++)
+        {
+            var (offset, pageNumber, _) = scan.Frames[frame];
+            var page = wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize);
+            var destination = (long)(pageNumber - 1) * SqlCipherPageCipher.PageSize;
+            if (destination + SqlCipherPageCipher.PageSize > image.LongLength)
+            {
+                // A later committed truncate legitimately removes pages written by an earlier
+                // transaction in the same WAL generation.
+                continue;
+            }
+
+            SqlCipherPageCipher.DecryptPage(key, page, pageNumber).CopyTo(image, destination);
+            applied++;
+        }
+
+        return (applied, scan.Rejected);
+    }
+
+    private static WalScanResult ReadPlaintextWal(string databasePath, int pageSize)
+    {
+        var walPath = databasePath + "-wal";
+        return File.Exists(walPath)
+            ? ScanWriteAheadLog(ReadAll(walPath), pageSize)
+            : WalScanResult.Empty;
+    }
+
+    /// <summary>
+    /// Validates the shared SQLite WAL framing/checksum/transaction protocol. The optional page
+    /// validator adds SQLCipher page authentication; plaintext WALs use the same protocol checks
+    /// without a page-authentication layer. SQLite backup remains responsible for materialization.
+    /// </summary>
+    private static WalScanResult ScanWriteAheadLog(
+        byte[] wal,
+        int expectedPageSize,
+        Func<uint, int, bool>? validatePage = null)
+    {
+        const int headerSize = 32;
+        if (wal.Length == 0)
+        {
+            return WalScanResult.Empty;
+        }
+
+        if (wal.Length < headerSize)
+        {
+            return WalScanResult.Invalid;
         }
 
         var magic = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(0, 4));
         if (magic is not (0x377F0682 or 0x377F0683) ||
-            BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(4, 4)) != 3_007_000)
+            BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(4, 4)) != 3_007_000 ||
+            BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(8, 4)) != expectedPageSize)
         {
-            return (0, 1);
+            return WalScanResult.Invalid;
         }
 
         var checksumBigEndian = magic == 0x377F0683;
-
-        var pageSize = (int)BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(8, 4));
-        if (pageSize != SqlCipherPageCipher.PageSize ||
-            !TryWalChecksum(wal.AsSpan(0, 24), checksumBigEndian, 0, 0, out var checksum0, out var checksum1) ||
+        if (!TryWalChecksum(wal.AsSpan(0, 24), checksumBigEndian, 0, 0, out var checksum0, out var checksum1) ||
             checksum0 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(24, 4)) ||
             checksum1 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(28, 4)))
         {
-            return (0, 1);
+            return WalScanResult.Invalid;
         }
 
+        var frameSize = expectedPageSize + 24;
         var salt1 = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(16, 4));
         var salt2 = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(20, 4));
-
-        var hasIncompleteTail = (wal.Length - 32) % frameSize != 0;
-        var frameCount = (wal.Length - 32) / frameSize;
-        uint committedPageCount = 0;
-        var lastCommitFrame = -1;
+        var hasIncompleteTail = (wal.Length - headerSize) % frameSize != 0;
+        var frameCount = (wal.Length - headerSize) / frameSize;
         var rollingChecksum0 = checksum0;
         var rollingChecksum1 = checksum1;
-        var validFrames = new List<(int Offset, uint PageNumber, uint DatabaseSize)>();
+        uint committedPageCount = 0;
+        uint transactionMaxPage = 0;
+        var lastCommitFrame = -1;
         var rejected = 0;
         var reachedOlderGeneration = false;
-        uint transactionMaxPage = 0;
+        var frames = new List<(int Offset, uint PageNumber, uint DatabaseSize)>();
 
         for (var frame = 0; frame < frameCount; frame++)
         {
-            var offset = 32 + (frame * frameSize);
-            if (BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 8, 4)) != salt1
-                || BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 12, 4)) != salt2)
+            var offset = headerSize + (frame * frameSize);
+            if (BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 8, 4)) != salt1 ||
+                BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 12, 4)) != salt2)
             {
-                // The ring buffer still holds older generations beyond this point.
+                // SQLite reuses WAL files without truncating them. The first stale-salt frame is
+                // the logical end of this generation; bytes after it are old storage, not a tail.
                 reachedOlderGeneration = true;
                 break;
             }
@@ -319,7 +385,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
                     wal.AsSpan(offset, 8), checksumBigEndian, rollingChecksum0, rollingChecksum1,
                     out rollingChecksum0, out rollingChecksum1) ||
                 !TryWalChecksum(
-                    wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize), checksumBigEndian,
+                    wal.AsSpan(offset + 24, expectedPageSize), checksumBigEndian,
                     rollingChecksum0, rollingChecksum1, out rollingChecksum0, out rollingChecksum1) ||
                 rollingChecksum0 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 16, 4)) ||
                 rollingChecksum1 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 20, 4)))
@@ -329,8 +395,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             }
 
             var pageNumber = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset, 4));
-            if (pageNumber == 0 || !SqlCipherPageCipher.VerifyPage(
-                    macKey, wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize), pageNumber))
+            if (pageNumber == 0 || (validatePage is not null && !validatePage(pageNumber, offset + 24)))
             {
                 rejected++;
                 break;
@@ -351,50 +416,17 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
                 transactionMaxPage = 0;
             }
 
-            validFrames.Add((offset, pageNumber, databaseSize));
+            frames.Add((offset, pageNumber, databaseSize));
         }
 
-        // SQLite may reuse a WAL file without truncating it. A stale-salt frame marks the end of
-        // the current generation, so any physical short tail after that boundary is leftover
-        // storage from older generations, not an incomplete frame in the current WAL. Before such
-        // a boundary, the same short tail remains ambiguous and must keep the snapshot partial.
+        // A short physical tail is ambiguous only while it follows the current generation. Once
+        // a full stale-salt frame marks logical EOF, short leftovers belong to the prior generation.
         if (hasIncompleteTail && !reachedOlderGeneration)
         {
             rejected++;
         }
 
-        if (lastCommitFrame < 0)
-        {
-            return (0, rejected);
-        }
-
-        if (committedPageCount > 0)
-        {
-            var required = (long)committedPageCount * SqlCipherPageCipher.PageSize;
-            if (required != image.LongLength)
-            {
-                Array.Resize(ref image, (int)required);
-            }
-        }
-
-        var applied = 0;
-        for (var frame = 0; frame <= lastCommitFrame; frame++)
-        {
-            var (offset, pageNumber, _) = validFrames[frame];
-            var page = wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize);
-            var destination = (long)(pageNumber - 1) * SqlCipherPageCipher.PageSize;
-            if (destination + SqlCipherPageCipher.PageSize > image.LongLength)
-            {
-                // A later committed truncate legitimately removes pages written by an earlier
-                // transaction in the same WAL generation.
-                continue;
-            }
-
-            SqlCipherPageCipher.DecryptPage(key, page, pageNumber).CopyTo(image, destination);
-            applied++;
-        }
-
-        return (applied, rejected);
+        return new WalScanResult(frames, lastCommitFrame, committedPageCount, rejected);
     }
 
     private static int ReadSqlitePageSize(ReadOnlySpan<byte> header)
@@ -555,4 +587,15 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
     }
 
     private sealed record CacheEntry(string Fingerprint, DecryptionOutcome Outcome);
+
+    private sealed record WalScanResult(
+        IReadOnlyList<(int Offset, uint PageNumber, uint DatabaseSize)> Frames,
+        int LastCommitFrame,
+        uint CommittedPageCount,
+        int Rejected)
+    {
+        public static WalScanResult Empty { get; } = new([], -1, 0, 0);
+
+        public static WalScanResult Invalid { get; } = new([], -1, 0, 1);
+    }
 }

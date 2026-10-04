@@ -45,14 +45,11 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
     public const string Family = "wechat-windows";
 
     /// <summary>
-    /// The adapter version is deliberately unchanged by Issue #37. The manifest structure, the
-    /// checkpoint shape (one fingerprint per captured/reused partition) and the per-partition
-    /// fingerprint contract are all unchanged; only which discovered partitions count as expected
-    /// evidence changed. Every pre-existing <c>0.1.0</c> checkpoint already contains exactly its
-    /// captured/reused partitions, so it stays reusable, while the partial rc.1 generations (no
-    /// checkpoint at all) still fail closed into a full baseline.
+    /// This version identifies the source-consistency proof used to build capture checkpoints.
+    /// It advances whenever validation semantics change, so older checkpoints cannot let a newly
+    /// validated source partition bypass full materialization.
     /// </summary>
-    public const string Version = "0.2.0";
+    public const string Version = "0.3.0";
 
     private const string SourceDatabaseRole = "source-database";
 

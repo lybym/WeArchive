@@ -481,11 +481,14 @@ Reading a generation therefore leaves its directory byte-for-byte as published.
 
 ## 7. Completeness and failure modes
 
-For WeChat Windows adapter `0.2.0`, encrypted source pages are authenticated before decryption;
-main database and plaintext database lengths must end on a complete SQLite page. Encrypted WAL
-replay checks the supported SQLite WAL magic/version/page size, header and rolling frame
-checksums, generation salts, SQLCipher page HMACs, and transaction commit/database-size markers.
-Only frames through the last valid commit are applied. SQLite may reuse a WAL without truncating
+For WeChat Windows adapter `0.3.0`, encrypted source pages are authenticated before decryption;
+main database and plaintext database lengths must end on a complete SQLite page. Both encrypted
+and plaintext WALs are checked for the supported SQLite WAL magic/version/page size, header and
+rolling frame checksums, generation salts, and transaction commit/database-size markers. Encrypted
+WAL frames additionally require SQLCipher page HMACs. Plaintext sources are scanned before SQLite's
+read-only backup so a backup that silently falls back to the main file cannot hide malformed or
+incomplete WAL evidence. Only frames through the last valid commit are applied by the encrypted
+materializer. SQLite may reuse a WAL without truncating
 it after a checkpoint; a frame whose salts differ from the current WAL header marks the end of the
 current generation, and bytes beyond that logical boundary are ignored as leftovers. A short tail
 before a stale-generation boundary, a malformed header/frame, failed page authentication, or
@@ -507,8 +510,8 @@ successful quick check as proof of FTS index consistency. Real WeChat 4.x FTS sh
 the real environment acceptance gate.
 
 The capture adapter version is bumped when these source-consistency semantics change. Existing
-generation manifests remain immutable and readable, but checkpoints created by adapter `0.1.0`
-are not reused by `0.2.0`; the next capture widens to a full materialization before recording a new
+generation manifests remain immutable and readable, but checkpoints created by adapter `0.2.0`
+are not reused by `0.3.0`; the next capture widens to a full materialization before recording a new
 checkpoint.
 
 | Verdict | Meaning |

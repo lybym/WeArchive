@@ -1,7 +1,9 @@
+using System.Buffers.Binary;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
+using Microsoft.Data.Sqlite;
 using WeArchive.Infrastructure.Fixtures;
 using WeArchive.Infrastructure.RawVault;
 using WeArchive.Infrastructure.WeChat;
@@ -330,6 +332,134 @@ public sealed class WeChatCaptureAdapterTests
         Assert.Equal(RawCaptureMode.Baseline, recovered.Mode);
         Assert.Equal(RawGenerationCompleteness.Complete, recovered.Completeness);
         Assert.Contains(recovered.Diagnostics, d => d.Code == DiagnosticCodes.CaptureFullFallback);
+    }
+
+    [Fact]
+    public async Task InvalidPlaintextWalHeaderProducesUnavailableCoverageWithoutCheckpoint()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreatePlaintextDatabase(source.Combine("session", "session.db"));
+        var message = CreatePlaintextDatabase(source.Combine("message", "message_0.db"));
+        var environment = CreateEnvironment(source, session, message);
+        environment.UseRealSqlCipherMaterializer = true;
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, clock) = CreateService(vaultDirectory, adapter);
+
+        var baseline = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(baseline.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, baseline.Completeness);
+        Assert.NotNull((await vault.OpenGenerationAsync(
+            baseline.AccountId, baseline.GenerationId, CancellationToken.None))!.Manifest.CaptureCheckpoint);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var sourceBefore = File.ReadAllBytes(message);
+        var malformedWal = new byte[] { 0x57, 0x41, 0x4C };
+        File.WriteAllBytes(message + "-wal", malformedWal);
+        var partial = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(partial.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Partial, partial.Completeness);
+        Assert.Contains(partial.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnreadable);
+        Assert.Single(partial.Coverage, c =>
+            c.PartitionId == "message/message_0.db" && c.Status == RawPartitionStatus.Unavailable);
+        Assert.Single(partial.Coverage, c =>
+            c.PartitionId == "session/session.db" && c.Status == RawPartitionStatus.Reused);
+        var generation = await vault.OpenGenerationAsync(partial.AccountId, partial.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.Null(generation!.Manifest.CaptureCheckpoint);
+        Assert.Equal(sourceBefore, File.ReadAllBytes(message));
+        Assert.Equal(malformedWal, File.ReadAllBytes(message + "-wal"));
+        var baselineGeneration = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
+        Assert.NotNull(baselineGeneration);
+        Assert.NotNull(baselineGeneration!.Manifest.CaptureCheckpoint);
+    }
+
+    [Fact]
+    public async Task CurrentGenerationPlaintextWalShortTailProducesUnavailableCoverageWithoutCheckpoint()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreatePlaintextDatabase(source.Combine("session", "session.db"));
+        var message = CreatePlaintextWalPair(source, "message/message_0.db");
+        var environment = CreateEnvironment(source, session, message);
+        environment.UseRealSqlCipherMaterializer = true;
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, clock) = CreateService(vaultDirectory, adapter);
+
+        var baseline = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(baseline.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, baseline.Completeness);
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        var walPath = message + "-wal";
+        var wal = File.ReadAllBytes(walPath);
+        Assert.True(wal.Length > 72);
+        // A 40-byte prefix of a real current-generation frame retains its current salts and is
+        // therefore an ambiguous current WAL tail, not reusable bytes from a prior generation.
+        var partialFrame = wal.AsSpan(32, 40).ToArray();
+        using (var append = new FileStream(walPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            append.Write(partialFrame);
+        }
+
+        var partial = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(partial.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Partial, partial.Completeness);
+        Assert.Contains(partial.Diagnostics, d => d.Code == DiagnosticCodes.PartitionUnreadable);
+        Assert.Single(partial.Coverage, c =>
+            c.PartitionId == "message/message_0.db" && c.Status == RawPartitionStatus.Unavailable);
+        var generation = await vault.OpenGenerationAsync(partial.AccountId, partial.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.Null(generation!.Manifest.CaptureCheckpoint);
+        var baselineGeneration = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
+        Assert.NotNull(baselineGeneration);
+        Assert.NotNull(baselineGeneration!.Manifest.CaptureCheckpoint);
+    }
+
+    [Fact]
+    public async Task ReusedPlaintextWalWithStaleFrameAndShortTailRemainsComplete()
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreatePlaintextDatabase(source.Combine("session", "session.db"));
+        var message = CreatePlaintextWalPair(source, "message/message_0.db");
+        var environment = CreateEnvironment(source, session, message);
+        environment.UseRealSqlCipherMaterializer = true;
+        var keys = new RecordingKeyAcquirer();
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, _) = CreateService(vaultDirectory, adapter);
+
+        var walPath = message + "-wal";
+        var wal = File.ReadAllBytes(walPath);
+        Assert.True(wal.Length > 32);
+        var pageSize = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(8, 4));
+        var frameSize = checked((int)pageSize + 24);
+        Assert.True(wal.Length >= 32 + frameSize);
+
+        // Reused WAL files can keep a full prior-generation frame followed by fewer than one
+        // physical frame of leftover bytes. Salt mismatch establishes the logical end first.
+        var staleFrame = wal.AsSpan(32, frameSize).ToArray();
+        staleFrame[8] ^= 0x80;
+        using (var append = new FileStream(walPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            append.Write(staleFrame);
+            append.Write([0xA1, 0xB2, 0xC3]);
+        }
+
+        var result = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, result.Completeness);
+        Assert.Contains(result.Coverage, c =>
+            c.PartitionId == "message/message_0.db" && c.Status == RawPartitionStatus.Captured);
+        var generation = await vault.OpenGenerationAsync(result.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.NotNull(generation!.Manifest.CaptureCheckpoint);
+        Assert.Equal(5L, CountRowsInCapturedArtifact(generation, "message_0.db"));
     }
 
     [Fact]
@@ -677,6 +807,10 @@ public sealed class WeChatCaptureAdapterTests
         {
             CaptureCheckpoint = m.CaptureCheckpoint! with { CaptureAdapterVersion = "0.1.0" },
         })));
+        Assert.Null(WeChatCaptureAdapter.BuildPriorMap(WithManifest(valid, m => m with
+        {
+            CaptureCheckpoint = m.CaptureCheckpoint! with { CaptureAdapterVersion = "0.2.0" },
+        })));
         // A partial predecessor cannot establish that its coverage is still current.
         Assert.Null(WeChatCaptureAdapter.BuildPriorMap(WithManifest(valid, m => m with
         {
@@ -732,6 +866,77 @@ public sealed class WeChatCaptureAdapterTests
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content);
         return path;
+    }
+
+    private static string CreatePlaintextDatabase(string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "CREATE TABLE messages(id INTEGER PRIMARY KEY, body TEXT);";
+        command.ExecuteNonQuery();
+        command.CommandText = "INSERT INTO messages VALUES (1, 'fixture-session');";
+        command.ExecuteNonQuery();
+        SqliteConnection.ClearAllPools();
+        return path;
+    }
+
+    private static string CreatePlaintextWalPair(TempDirectory source, string relativePath)
+    {
+        var seed = source.Combine("wal-seed.db");
+        var pair = source.Combine(relativePath.Split('/'));
+        Directory.CreateDirectory(Path.GetDirectoryName(pair)!);
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = seed,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=WAL;";
+            command.ExecuteNonQuery();
+            command.CommandText = "CREATE TABLE messages(id INTEGER PRIMARY KEY, body TEXT);";
+            command.ExecuteNonQuery();
+            using var transaction = connection.BeginTransaction();
+            command.Transaction = transaction;
+            for (var i = 1; i <= 5; i++)
+            {
+                command.CommandText = $"INSERT INTO messages VALUES ({i}, 'fixture-message-{i}');";
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            command.Transaction = null;
+            File.Copy(seed, pair, overwrite: true);
+            File.Copy(seed + "-wal", pair + "-wal", overwrite: true);
+        }
+
+        SqliteConnection.ClearAllPools();
+        return pair;
+    }
+
+    private static long CountRowsInCapturedArtifact(RawGeneration generation, string artifactName)
+    {
+        var artifact = generation.Manifest.Artifacts.Single(a => a.Name == artifactName);
+        var path = Path.Combine(generation.GenerationDirectory, artifact.ContentRef.Replace('/', Path.DirectorySeparatorChar));
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM messages;";
+        return (long)command.ExecuteScalar()!;
     }
 
     /// <summary>Republishes a generation's manifest, leaving the artifacts on disk untouched.</summary>
@@ -876,6 +1081,8 @@ public sealed class WeChatCaptureAdapterTests
 
         public int WalFramesRejected { get; set; }
 
+        public bool UseRealSqlCipherMaterializer { get; set; }
+
         public int CreateMaterializerCalls { get; private set; }
 
         public int GetPlaintextCalls { get; private set; }
@@ -900,7 +1107,22 @@ public sealed class WeChatCaptureAdapterTests
         {
             CreateMaterializerCalls++;
             LastKeySet = keys;
-            return new FixtureMaterializer(this);
+            return UseRealSqlCipherMaterializer
+                ? new RealMaterializer(this, keys)
+                : new FixtureMaterializer(this);
+        }
+
+        private sealed class RealMaterializer(FixtureWeChatEnvironment owner, WeChatKeySet keys) : IWeChatSourceMaterializer
+        {
+            private readonly SqlCipherDatabaseCache _cache = new(keys);
+
+            public DecryptionOutcome GetPlaintext(string databasePath)
+            {
+                owner.GetPlaintextCalls++;
+                return _cache.GetPlaintext(databasePath);
+            }
+
+            public void Dispose() => _cache.Dispose();
         }
 
         private sealed class FixtureMaterializer(FixtureWeChatEnvironment owner) : IWeChatSourceMaterializer
