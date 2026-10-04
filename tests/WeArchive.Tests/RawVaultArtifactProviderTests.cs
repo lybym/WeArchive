@@ -141,7 +141,7 @@ public sealed class RawVaultArtifactProviderTests
             using (var provider = RawVaultArtifactProvider.Create(openedV1!))
                 Assert.Equal(v1Content, await File.ReadAllBytesAsync(provider.GetVerifiedPath(openedV1!.Manifest.Artifacts[0])));
             using var v2Provider = RawVaultArtifactProvider.Create(openedV2!);
-            Assert.Equal(v2Content, await File.ReadAllBytesAsync(v2Provider.GetVerifiedPath(descriptor)));
+            Assert.Equal(v2Content, await File.ReadAllBytesAsync(v2Provider.GetVerifiedPath(openedV2!.Manifest.Artifacts[0])));
         }
         finally
         {
