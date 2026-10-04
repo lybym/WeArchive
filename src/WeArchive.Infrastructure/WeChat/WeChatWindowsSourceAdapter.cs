@@ -45,6 +45,7 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
     private readonly Dictionary<string, WeChatAccountReader> _readers = new(StringComparer.OrdinalIgnoreCase);
     private readonly SourceAccount? _capturedAccount;
     private readonly SourceDescriptor? _capturedDescriptor;
+    private readonly IDisposable? _capturedArtifacts;
     private bool _disposed;
 
     public WeChatWindowsSourceAdapter()
@@ -57,12 +58,13 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
         _keyAcquirer = keyAcquirer ?? throw new ArgumentNullException(nameof(keyAcquirer));
     }
 
-    internal WeChatWindowsSourceAdapter(SourceAccount capturedAccount, SourceDescriptor capturedDescriptor, WeChatAccountReader capturedReader, SqlCipherDatabaseCache capturedCache)
+    internal WeChatWindowsSourceAdapter(SourceAccount capturedAccount, SourceDescriptor capturedDescriptor, WeChatAccountReader capturedReader, SqlCipherDatabaseCache capturedCache, IDisposable? capturedArtifacts = null)
         : this(new WcdbCipherConfigKeyAcquirer())
     {
         _capturedAccount = capturedAccount;
         _capturedDescriptor = capturedDescriptor;
         _cache = capturedCache;
+        _capturedArtifacts = capturedArtifacts;
         _readers.Add(capturedAccount.SourceProfileId, capturedReader);
     }
 
@@ -414,6 +416,7 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
             _readers.Clear();
             _cache?.Dispose();
             _cache = null;
+            _capturedArtifacts?.Dispose();
         }
     }
 }

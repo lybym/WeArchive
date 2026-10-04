@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
+using WeArchive.Infrastructure.RawVault;
 using WeArchive.Infrastructure.WeChat.Compatibility;
 
 namespace WeArchive.Infrastructure.WeChat;
@@ -17,14 +18,27 @@ internal static class CapturedWeChatSourceAdapter
     public static WeChatWindowsSourceAdapter Create(RawGeneration generation)
     {
         ArgumentNullException.ThrowIfNull(generation);
+        var artifacts = RawVaultArtifactProvider.Create(generation);
+        try
+        {
+            return CreateCore(generation, artifacts);
+        }
+        catch
+        {
+            artifacts.Dispose();
+            throw;
+        }
+    }
+
+    private static WeChatWindowsSourceAdapter CreateCore(RawGeneration generation, RawVaultArtifactProvider artifacts)
+    {
         var manifest = generation.Manifest;
         if (manifest.AccountId != generation.AccountId
             || manifest.GenerationId != generation.GenerationId
             || string.IsNullOrWhiteSpace(manifest.SourceProfileId))
             throw new InvalidDataException("Raw Vault generation identity does not match its manifest.");
 
-        if (manifest.ManifestVersion is < 1 or > RawManifest.CurrentManifestVersion
-            || manifest.VaultFormatVersion != RawManifest.CurrentVaultFormatVersion)
+        if ((manifest.ManifestVersion, manifest.VaultFormatVersion) is not ((1, 1) or (2, 1) or (3, 2)))
             throw new NotSupportedException("No captured-source reader supports this Raw Vault manifest/format version.");
 
         if (!string.Equals(manifest.Capture.CaptureAdapterFamily, WeChatCaptureAdapter.Family, StringComparison.Ordinal)
@@ -56,11 +70,7 @@ internal static class CapturedWeChatSourceAdapter
             .Select(a =>
             {
                 var relative = a.Metadata!["source_relative_path"].Replace('\\', '/');
-                var path = Path.GetFullPath(Path.Combine(generation.GenerationDirectory, a.ContentRef));
-                var root = Path.GetFullPath(generation.GenerationDirectory) + Path.DirectorySeparatorChar;
-                if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
-                    throw new InvalidDataException("A Raw Vault artifact path is invalid or missing.");
-                return (Relative: relative, Path: path);
+                return (Relative: relative, Path: artifacts.GetVerifiedPath(a));
             }).ToList();
 
         string? Find(string suffix) => databases
@@ -112,7 +122,7 @@ internal static class CapturedWeChatSourceAdapter
             SourceProductName = manifest.Source.SourceProductName,
             IsAvailable = true,
         };
-        return new WeChatWindowsSourceAdapter(sourceAccount, descriptor, reader, cache);
+        return new WeChatWindowsSourceAdapter(sourceAccount, descriptor, reader, cache, artifacts);
     }
 
     /// <summary>

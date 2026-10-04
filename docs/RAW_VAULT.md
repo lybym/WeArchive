@@ -4,7 +4,7 @@ The Raw Vault is a preservation layer that captures a source-faithful snapshot o
 WeChat account *before* normalization. It is separate from the canonical SQLite archive
 (`archive/wearchive.db`) and has its own format version, manifest and reliability contract.
 
-Normative decisions for the shipped v1 snapshot/storage design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The planned v2 physical-storage evolution is specified by [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and Issue #77. Until the v2 implementation Issues ship, the implemented behaviour remains vault format 1 / manifest version 2 as described below and in [DEVELOPMENT.md](DEVELOPMENT.md) section 10.3.1.
+Normative decisions for the shipped v1 snapshot/storage design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The v2 physical-storage evolution is specified by [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and Issue #77. The dual-format reader supports manifest/vault versions 1/1, 2/1 and 3/2. Capture still writes vault format 1 / manifest version 2 until the v2 writer is delivered.
 
 ## 1. Purpose
 
@@ -21,8 +21,9 @@ Raw Vault holds the raw source snapshot that a future parser can re-process.
 `wearchive rebuild` selects a reader by the preserved capture family, source version and
 artifact format metadata. The initial reader supports decrypted WeChat for Windows 4.x SQLite
 images from a generation marked `complete`; partial generations cannot establish complete
-canonical coverage and are rejected. It reads those images directly from the verified generation and has no live-source or
-database-key fallback. It creates the canonical target using the ordinary migration sequence,
+canonical coverage and are rejected. V1 images retain their generation-relative file semantics;
+v2 images are reconstructed into temporary leased files and verified before SQLite opens them.
+The reader has no live-source or database-key fallback. It creates the canonical target using the ordinary migration sequence,
 checks SQLite integrity, and only then replaces the selected canonical file. A failed read,
 normalization or validation leaves the selected archive untouched. Rebuild never writes into
 Raw Vault generations; exports remain separate derived outputs.
@@ -123,9 +124,9 @@ are reported as unavailable and cannot delete prior generations.
 This distinction is intentional historical behavior: Issue #25 shipped incremental **acquisition**
 reuse, not cross-generation incremental physical storage.
 
-### 3.2 Target vault format 2 — not yet shipped
+### 3.2 Vault format 2 — reader supported; writer pending
 
-Issue #77 / ADR 0011 authorizes the following target representation. The exact persisted encoding is frozen in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) records prototype cost evidence and the correctness gate, but does not select a writer default:
+Issue #77 / ADR 0011 authorizes the following representation. The read path and exact persisted encoding are supported as specified in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) records prototype cost evidence and the correctness gate. The first production writer remains scoped to Issue #83:
 
 ```text
 <vault-root>/
@@ -153,7 +154,7 @@ packs. The lookup SQLite database is derived state and may be rebuilt from the p
 The Raw Vault storage layer remains source-neutral. SQLite page size, SQLCipher and WAL behavior do
 not enter the v2 storage contract; those remain WeChat-adapter concerns.
 
-The first v2 reader is planned to accept fixed block sizes of 4096, 8192, 16384, 32768 and 65536
+The v2 reader accepts fixed block sizes of 4096, 8192, 16384, 32768 and 65536
 bytes. The writer default is selected by Issue #79 after its correctness matrix and actual-engine
 benchmark. The current cost leader is 4096 bytes + Zstd level 1, but the correctness-gate results
 are not recorded, so no provisional first-RC default has been selected. This is not a statement

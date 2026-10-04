@@ -58,10 +58,10 @@ The CLI is a thin transport/presentation boundary. It must not contain WeChat sc
 The **Raw Vault** is a preservation layer that captures a source-faithful snapshot *before*
 normalization. It exists alongside the canonical SQLite archive but is independently versioned
 and has its own manifest, reliability contract and storage root. The shipped v1 snapshot/storage
-contract is described by [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md); the approved target
-for long-running hourly physical storage is the fixed-block content-addressed v2 model in
-[ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md). See
-[RAW_VAULT.md](RAW_VAULT.md) for shipped-versus-target format details.
+contract is described by [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The dual-format
+reader supports the fixed-block content-addressed v2 model in [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md);
+the capture writer still emits v1 pending Issue #83. See [RAW_VAULT.md](RAW_VAULT.md) for the
+supported reader and writer versions.
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 

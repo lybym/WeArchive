@@ -223,31 +223,27 @@ public sealed class RawVaultStore : IRawVaultStore
             return null;
         }
 
-        // Verify every artifact's checksum so a tampered or corrupted generation is rejected
-        // rather than trusted (Issue #22 checksum verification).
-        foreach (var artifact in manifest.Artifacts)
-        {
-            var artifactPath = Path.Combine(generationDir, artifact.ContentRef);
-            if (!File.Exists(artifactPath))
-            {
-                return null;
-            }
-
-            var actualHash = await ComputeSha256Async(artifactPath, cancellationToken)
-                .ConfigureAwait(false);
-            if (!string.Equals(actualHash, artifact.Sha256, StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-        }
-
-        return new RawGeneration
+        var generation = new RawGeneration
         {
             GenerationId = manifest.GenerationId,
             AccountId = manifest.AccountId,
             Manifest = manifest,
             GenerationDirectory = generationDir,
         };
+
+        // Verify logical content through the source-neutral provider. V1 retains historical
+        // generation-relative files; v2 must reconstruct from authoritative maps and packs.
+        try
+        {
+            using var provider = RawVaultArtifactProvider.Create(generation);
+            provider.VerifyAll(cancellationToken);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return null;
+        }
+
+        return generation;
     }
 
     /// <summary>Renames the staging directory to its final location (publish-last).</summary>
@@ -418,7 +414,9 @@ internal sealed class RawVaultGenerationSession : IRawGenerationSession
         if (!previous.Manifest.Artifacts.Contains(artifact))
             throw new InvalidDataException("Reused artifact is absent from the verified generation.");
 
-        var source = Path.GetFullPath(Path.Combine(previous.GenerationDirectory, artifact.ContentRef));
+        var contentRef = artifact.ContentRef
+            ?? throw new InvalidDataException("A vault-format-v1 writer cannot reuse an artifact without content_ref.");
+        var source = Path.GetFullPath(Path.Combine(previous.GenerationDirectory, contentRef));
         var sourceRoot = Path.GetFullPath(previous.GenerationDirectory) + Path.DirectorySeparatorChar;
         if (!source.StartsWith(sourceRoot, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Reused artifact path escapes its generation.");

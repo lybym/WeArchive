@@ -49,14 +49,42 @@ internal static class RawManifestSerializer
             return null;
         }
 
-        if (manifest.ManifestVersion is < 1 or > RawManifest.CurrentManifestVersion)
+        if (manifest.ManifestVersion is < 1 or > RawManifest.LatestSupportedManifestVersion)
         {
             return null;
         }
 
-        if (manifest.VaultFormatVersion < 1)
+        var supportedTuple = (manifest.ManifestVersion, manifest.VaultFormatVersion) is (1, 1) or (2, 1) or (3, 2);
+        if (!supportedTuple || manifest.Artifacts is null)
         {
             return null;
+        }
+
+        foreach (var artifact in manifest.Artifacts)
+        {
+            if (string.IsNullOrWhiteSpace(artifact.Role) || string.IsNullOrWhiteSpace(artifact.Name) || artifact.Size < 0)
+                return null;
+
+            if (manifest.VaultFormatVersion == 1)
+            {
+                if (string.IsNullOrWhiteSpace(artifact.ContentRef) || artifact.Storage is not null)
+                    return null;
+            }
+            else
+            {
+                var storage = artifact.Storage;
+                if (string.IsNullOrEmpty(artifact.Sha256) || artifact.Sha256.Length != 64 || artifact.Sha256.Any(c => !Uri.IsHexDigit(c)) ||
+                    artifact.Sha256 != artifact.Sha256.ToLowerInvariant() || artifact.ContentRef is not null || storage is null ||
+                    storage.Kind != "fixed-block-map-v1" || storage.Root is null ||
+                    !WeArchive.Infrastructure.RawVault.RawVaultV2Format.SupportedBlockSizes.Contains(storage.BlockSize))
+                    return null;
+
+                var expectedBlockCount = artifact.Size == 0 ? 0UL : checked((ulong)(artifact.Size / storage.BlockSize +
+                    (artifact.Size % storage.BlockSize == 0 ? 0 : 1)));
+                if (storage.BlockCount != expectedBlockCount || storage.Root.Length != 64 ||
+                    storage.Root.Any(c => !Uri.IsHexDigit(c)) || storage.Root != storage.Root.ToLowerInvariant())
+                    return null;
+            }
         }
 
         if (string.IsNullOrWhiteSpace(manifest.GenerationId) ||

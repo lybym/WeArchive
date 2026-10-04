@@ -602,9 +602,9 @@ If retained for debugging/reproducibility:
 
 ## 21. Raw Vault data model
 
-The Raw Vault is a separate persistence layer from the canonical SQLite archive. The **shipped**
-writer currently uses `manifest_version = 2` and `vault_format_version = 1`. Issue #77 / ADR 0011
-defines the next storage target as `manifest_version = 3` and `vault_format_version = 2`.
+The Raw Vault is a separate persistence layer from the canonical SQLite archive. The writer
+currently emits `manifest_version = 2` and `vault_format_version = 1`. The dual-format reader
+supports `manifest_version = 3` and `vault_format_version = 2` as defined by Issue #77 / ADR 0011.
 Raw Vault format evolution is independent of canonical SQLite migrations; introducing v2 does not
 reinterpret migration-1 `source_checkpoints` or migration-2 ingest checkpoints.
 
@@ -636,7 +636,7 @@ Shipped vault format 1:
   artifacts/<sha256><ext>
 ```
 
-Target vault format 2 (Issue #77 / ADR 0011; not shipped until its implementation Issues land):
+Vault format 2 reader layout (Issue #77 / ADR 0011; writing is scoped to Issue #83):
 
 ```text
 <vault-root>/accounts/<account-id>/
@@ -689,7 +689,7 @@ across logical positions and generations within the same account; ordering is ca
 The last block may be shorter than the nominal block size. Logical size, block count, referenced
 object lengths and full artifact SHA-256 must agree or the artifact is rejected.
 
-The first v2 reader supports 4096, 8192, 16384, 32768 and 65536-byte blocks. The writer default is
+The v2 reader supports 4096, 8192, 16384, 32768 and 65536-byte blocks. The writer default is
 selected by Issue #79 after its correctness matrix and actual-engine benchmark, using the cost-leader
 evidence recorded by Issue #77; it is not a universal SQLite property.
 
@@ -734,7 +734,7 @@ coverage rollup states whether the evidence behind a canonical result was comple
 
 ### 21.6 Raw Vault v2 object/map model
 
-ADR 0011 and [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md) define the target v2 physical model:
+ADR 0011 and [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md) define the supported v2 physical model:
 
 - account-local content sharing;
 - typed data objects and typed map nodes with separate/domain-separated identity;

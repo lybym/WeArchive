@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace WeArchive.Core.RawVault;
 
 /// <summary>
@@ -19,6 +21,7 @@ public sealed record RawManifest
     /// it is independent of the canonical SQLite, message-schema and export-schema versions.
     /// </summary>
     public const int CurrentManifestVersion = 2;
+    public const int LatestSupportedManifestVersion = 3;
 
     public const int CurrentVaultFormatVersion = 1;
 
@@ -129,8 +132,9 @@ public sealed record RawArtifactDescriptor
     /// <summary>The original source-relative name, kept for provenance only.</summary>
     public required string Name { get; init; }
 
-    /// <summary>Path of the artifact relative to the generation directory.</summary>
-    public required string ContentRef { get; init; }
+    /// <summary>Path of a v1 artifact relative to the generation directory.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string ContentRef { get; init; } = null!;
 
     /// <summary>Lowercase hex SHA-256 of the artifact content.</summary>
     public required string Sha256 { get; init; }
@@ -145,6 +149,18 @@ public sealed record RawArtifactDescriptor
 
     /// <summary>Optional source-adapter-specific metadata (page counts, WAL frames, etc.).</summary>
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
+
+    /// <summary>Physical storage descriptor for vault-format-v2 artifacts.</summary>
+    public RawArtifactStorage? Storage { get; init; }
+}
+
+/// <summary>Source-neutral physical storage descriptor for a logical artifact.</summary>
+public sealed record RawArtifactStorage
+{
+    public required string Kind { get; init; }
+    public required int BlockSize { get; init; }
+    public required ulong BlockCount { get; init; }
+    public required string Root { get; init; }
 }
 
 /// <summary>

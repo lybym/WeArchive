@@ -1,13 +1,13 @@
 # Raw Vault v2 persisted-format specification
 
-Status: proposed by Issue #77 / ADR 0011
+Status: format frozen by Issue #77 / ADR 0011; dual-format reader implemented by Issue #82; v2 writer pending Issue #83
 
 This document freezes the **persisted representation contract** needed by the Raw Vault v2 storage
 engine. It is intentionally source-neutral. SQLite, SQLCipher, WAL and WeChat partition semantics do
 not appear in this format.
 
-The shipped product remains vault format 1 until the downstream implementation Issues are merged
-and released.
+The capture writer still emits vault format 1. Readers support vault-format-v2 manifests and
+reconstruct their logical artifacts from the account-local sealed packs.
 
 ## 1. Version tuple
 
