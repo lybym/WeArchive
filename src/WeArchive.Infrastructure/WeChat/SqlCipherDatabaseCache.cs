@@ -240,7 +240,6 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         rejected = framesRejected;
 
         File.WriteAllBytes(target, image);
-        ValidateImage(target);
         return new DecryptionOutcome(target, image.Length / SqlCipherPageCipher.PageSize, applied, rejected, false);
     }
 

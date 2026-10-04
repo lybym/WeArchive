@@ -275,13 +275,16 @@ public sealed class SqlCipherTests
         using var temp = new TempDirectory();
         var path = temp.Combine("contact_fts.db");
         CreatePlaintextDatabase(path, rows: 5);
+        var sourceBytes = File.ReadAllBytes(path);
 
         var keys = new WeChatKeySet([]);
         using var cache = new SqlCipherDatabaseCache(keys);
 
         var outcome = cache.GetPlaintext(path);
         Assert.True(outcome.WasPlaintext);
-        Assert.Equal(path, outcome.PlaintextPath);
+        Assert.NotEqual(path, outcome.PlaintextPath);
+        Assert.Equal(5L, SqliteConnectionPooledRowCount(outcome.PlaintextPath));
+        Assert.Equal(sourceBytes, File.ReadAllBytes(path));
     }
 
     [Fact]
@@ -296,20 +299,21 @@ public sealed class SqlCipherTests
 
         var first = cache.GetPlaintext(artifact);
         Assert.True(first.WasPlaintext);
-        Assert.Equal(artifact, first.PlaintextPath);
+        Assert.NotEqual(artifact, first.PlaintextPath);
 
-        // SQLite opening a preserved WAL-mode image in place creates -wal/-shm sidecars next to it,
-        // which changes the cache fingerprint and forces a re-materialization. The caller's own
-        // file must never be treated as scratch: doing so deleted a published Raw Vault artifact
-        // during a real rebuild, which is the immutability violation Issue #37 exposed.
-        File.WriteAllBytes(artifact + "-wal", [0, 0, 0, 0]);
+        // A changed source gets a new scratch snapshot. The input database remains caller-owned
+        // and must not be deleted when its cache fingerprint changes.
+        File.SetLastWriteTimeUtc(artifact, DateTime.UtcNow.AddMinutes(1));
 
         var second = cache.GetPlaintext(artifact);
 
         Assert.True(File.Exists(artifact));
-        Assert.Equal(artifact, second.PlaintextPath);
+        Assert.NotEqual(artifact, second.PlaintextPath);
+        Assert.NotEqual(first.PlaintextPath, second.PlaintextPath);
         Assert.True(second.WasPlaintext);
-        Assert.Equal(5, SqliteConnectionPooledRowCount(artifact));
+        Assert.Equal(5L, SqliteConnectionPooledRowCount(first.PlaintextPath));
+        Assert.Equal(5L, SqliteConnectionPooledRowCount(second.PlaintextPath));
+        Assert.Equal(5L, SqliteConnectionPooledRowCount(artifact));
     }
 
     [Fact]

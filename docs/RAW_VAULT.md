@@ -493,13 +493,15 @@ omitted and the source remains untouched. A mutation detected by the existing be
 source fingerprints makes the capture incomplete and discards staging.
 
 These checks establish authenticated pages and a committed SQLite snapshot under the supported
-adapter contract; they are not a general logical-content proof. Capture runs SQLite `quick_check`
-against the materialized image to verify ordinary database structure. SQLite's generic structural
-check does not verify external-content FTS index synchronization; an FTS-specific integrity command
-can report an index mismatch even when `quick_check` returns `ok`. Such an FTS result is a known
-virtual-table compatibility boundary, not proof of a torn source snapshot. Tests assert this
-distinction and do not treat a successful quick check as proof of FTS index consistency. Real
-WeChat 4.x FTS shards remain part of the real environment acceptance gate.
+adapter contract; they are not a general logical-content proof. Plaintext DB/WAL backup images are
+checked with SQLite `quick_check`. Encrypted SQLCipher images are validated at the page-HMAC and
+WAL-protocol boundary; running ordinary SQLite structural validation over the decrypted image is
+not reliable for the supported SQLCipher reserved-page layout, so no B-tree or application-level
+consistency claim is made for that path. SQLite's generic `quick_check` also does not verify
+external-content FTS index synchronization; an FTS-specific integrity command can report an index
+mismatch even when `quick_check` returns `ok`. Tests assert this distinction and do not treat a
+successful quick check as proof of FTS index consistency. Real WeChat 4.x FTS shards remain part of
+the real environment acceptance gate.
 
 The capture adapter version is bumped when these source-consistency semantics change. Existing
 generation manifests remain immutable and readable, but checkpoints created by adapter `0.1.0`

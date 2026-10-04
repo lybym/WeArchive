@@ -68,9 +68,10 @@ The WeChat capture adapter reuses the existing `SqlCipherDatabaseCache`, which:
   transient scratch directory.
 
 Partial pages, malformed WAL evidence, or failed page authentication prevent complete coverage.
-The materialized image also passes SQLite `quick_check`. The adapter does not claim external-content
-FTS virtual-table/index consistency from that check; the exact compatibility boundary and
-checkpoint-version invalidation are documented in
+Plaintext backup images pass SQLite `quick_check`; encrypted SQLCipher images are validated at the
+authenticated-page/WAL-protocol boundary due the reserved-page layout. The adapter does not claim
+external-content FTS virtual-table/index consistency from `quick_check`; the exact compatibility
+boundary and checkpoint-version invalidation are documented in
 [`RAW_VAULT.md`](../RAW_VAULT.md).
 
 The capture adapter copies each plaintext image into the Raw Vault as an artifact. The upstream
