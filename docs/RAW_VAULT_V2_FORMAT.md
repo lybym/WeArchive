@@ -317,12 +317,9 @@ Prototype results showed:
 
 The total retained baseline/history at the observed eight-generation point is not the same metric as
 long-term hourly incremental cost. T365 includes the generation-1 baseline retained bytes plus 8760
-times the mean of the seven measured incremental transitions. The cost comparison ranks 4096 bytes
-first under this scenario, but the prototype record does not include pass results for the required
-byte-identical reconstruction, unknown-field preservation, no-change, append, update, truncate and
-rewrite checks. Therefore 4096 bytes is only the cost leader; **no provisional first-RC writer
-default has been selected**. See [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) for the
-unverified gate and the required reproducible procedure.
+times the mean of the seven measured incremental transitions. These are historical prototype
+results; the actual-engine results and completed correctness gate are recorded below and in
+[RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md).
 
 This is not a claim that SQLite pages require 4 KiB storage blocks.
 
@@ -342,6 +339,5 @@ Machine-readable vectors are stored at:
 `docs/fixtures/raw-vault-v2/golden-v1.json`
 
 Implementations MUST reproduce those bytes/digests exactly before writing production v2 content.
-These vectors do not cover multi-level fanout-32 trees, descriptor-tail or empty-artifact
-reconstruction, or corruption rejection; those require implementation tests before a writer default
-is selected.
+The vectors are compact examples; multi-level fanout-32 trees, descriptor-tail and empty-artifact
+reconstruction, and corruption rejection are covered by the implementation tests.

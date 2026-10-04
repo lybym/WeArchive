@@ -171,8 +171,8 @@ Issue #77 is docs/format-first and therefore does not implement the production s
 #79 has now recorded the correctness matrix above and reproduced the storage-cost comparison with
 the actual implementation.
 
-Issue #79 MUST run the correctness gate, reproduce the cost comparison, and select the first-RC
-default after the actual:
+Issue #79 has run the correctness gate, reproduced the cost comparison, and selected the provisional
+first-RC default after the actual:
 
 - pack framing from [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md);
 - persistent map;
