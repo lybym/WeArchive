@@ -151,8 +151,52 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
 
         if (header.AsSpan(0, 15).SequenceEqual("SQLite format 3"u8))
         {
-            // Not encrypted: this happens for a few auxiliary files.
-            return new DecryptionOutcome(path, header.Length / SqlCipherPageCipher.PageSize, 0, 0, true);
+            // Not encrypted: this happens for a few auxiliary files. Use SQLite's own
+            // read-only WAL recovery and backup implementation so committed plaintext WAL
+            // evidence is part of the captured image without ever opening the source writable.
+            var pageSize = ReadSqlitePageSize(header);
+            var mainLength = new FileInfo(path).Length;
+            if (mainLength == 0 || mainLength % pageSize != 0)
+            {
+                throw new WeChatKeyUnavailableException(
+                    $"'{Path.GetFileName(path)}' has an incomplete SQLite page at the end of the source file.");
+            }
+
+            if (_scratchRoot is null)
+            {
+                return new DecryptionOutcome(path, checked((int)(mainLength / pageSize)), 0, 0, true);
+            }
+
+            var snapshotPath = Path.Combine(_scratchRoot, Guid.NewGuid().ToString("n") + ".db");
+            try
+            {
+                using var source = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = path,
+                    Mode = SqliteOpenMode.ReadOnly,
+                    Pooling = false,
+                }.ToString());
+                source.Open();
+                using var destination = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = snapshotPath,
+                    Mode = SqliteOpenMode.ReadWriteCreate,
+                    Pooling = false,
+                }.ToString());
+                destination.Open();
+                source.BackupDatabase(destination);
+                ValidateImage(snapshotPath);
+                var size = new FileInfo(snapshotPath).Length;
+                return new DecryptionOutcome(snapshotPath, checked((int)(size / pageSize)), 0, 0, true);
+            }
+            catch (SqliteException ex)
+            {
+                TryDelete(snapshotPath);
+                TryDelete(snapshotPath + "-wal");
+                TryDelete(snapshotPath + "-shm");
+                throw new WeChatKeyUnavailableException(
+                    $"'{Path.GetFileName(path)}' could not be read as a consistent plaintext SQLite/WAL snapshot: {ex.Message}");
+            }
         }
 
         if (_keys is null || !_keys.TryResolve(path, out var key))
@@ -167,6 +211,12 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         var rejected = 0;
 
         var main = ReadAll(path);
+        if (main.Length == 0 || main.Length % SqlCipherPageCipher.PageSize != 0)
+        {
+            throw new WeChatKeyUnavailableException(
+                $"'{Path.GetFileName(path)}' has an incomplete SQLCipher page at the end of the source file.");
+        }
+
         var mainPages = main.Length / SqlCipherPageCipher.PageSize;
         var image = new byte[mainPages * SqlCipherPageCipher.PageSize];
         var macKey = SqlCipherPageCipher.DeriveMacKey(key, main.AsSpan(0, SqlCipherPageCipher.SaltSize));
@@ -174,6 +224,12 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         for (var i = 0; i < mainPages; i++)
         {
             var page = main.AsSpan(i * SqlCipherPageCipher.PageSize, SqlCipherPageCipher.PageSize);
+            if (!SqlCipherPageCipher.VerifyPage(macKey, page, (uint)(i + 1)))
+            {
+                throw new WeChatKeyUnavailableException(
+                    $"'{Path.GetFileName(path)}' page {i + 1} failed SQLCipher authentication.");
+            }
+
             var plain = SqlCipherPageCipher.DecryptPage(key, page, (uint)(i + 1));
             plain.CopyTo(image, i * SqlCipherPageCipher.PageSize);
             pageCount++;
@@ -184,6 +240,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         rejected = framesRejected;
 
         File.WriteAllBytes(target, image);
+        ValidateImage(target);
         return new DecryptionOutcome(target, image.Length / SqlCipherPageCipher.PageSize, applied, rejected, false);
     }
 
@@ -206,23 +263,46 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
 
         var wal = ReadAll(walPath);
         var frameSize = SqlCipherPageCipher.PageSize + 24;
-        if (wal.Length < 32 + frameSize)
+        if (wal.Length == 0)
         {
             return (0, 0);
         }
 
-        var pageSize = (int)BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(8, 4));
-        if (pageSize != SqlCipherPageCipher.PageSize)
+        if (wal.Length < 32)
         {
-            return (0, 0);
+            return (0, 1);
+        }
+
+        var magic = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(0, 4));
+        if (magic is not (0x377F0682 or 0x377F0683) ||
+            BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(4, 4)) != 3_007_000)
+        {
+            return (0, 1);
+        }
+
+        var checksumBigEndian = magic == 0x377F0683;
+
+        var pageSize = (int)BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(8, 4));
+        if (pageSize != SqlCipherPageCipher.PageSize ||
+            !TryWalChecksum(wal.AsSpan(0, 24), checksumBigEndian, 0, 0, out var checksum0, out var checksum1) ||
+            checksum0 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(24, 4)) ||
+            checksum1 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(28, 4)))
+        {
+            return (0, 1);
         }
 
         var salt1 = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(16, 4));
         var salt2 = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(20, 4));
 
+        var hasIncompleteTail = (wal.Length - 32) % frameSize != 0;
         var frameCount = (wal.Length - 32) / frameSize;
         uint committedPageCount = 0;
         var lastCommitFrame = -1;
+        var rollingChecksum0 = checksum0;
+        var rollingChecksum1 = checksum1;
+        var validFrames = new List<(int Offset, uint PageNumber, uint DatabaseSize)>();
+        var rejected = hasIncompleteTail ? 1 : 0;
+        uint transactionMaxPage = 0;
 
         for (var frame = 0; frame < frameCount; frame++)
         {
@@ -234,17 +314,48 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
                 break;
             }
 
+            if (!TryWalChecksum(
+                    wal.AsSpan(offset, 8), checksumBigEndian, rollingChecksum0, rollingChecksum1,
+                    out rollingChecksum0, out rollingChecksum1) ||
+                !TryWalChecksum(
+                    wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize), checksumBigEndian,
+                    rollingChecksum0, rollingChecksum1, out rollingChecksum0, out rollingChecksum1) ||
+                rollingChecksum0 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 16, 4)) ||
+                rollingChecksum1 != BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 20, 4)))
+            {
+                rejected++;
+                break;
+            }
+
+            var pageNumber = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset, 4));
+            if (pageNumber == 0 || !SqlCipherPageCipher.VerifyPage(
+                    macKey, wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize), pageNumber))
+            {
+                rejected++;
+                break;
+            }
+
             var databaseSize = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 4, 4));
+            transactionMaxPage = Math.Max(transactionMaxPage, pageNumber);
             if (databaseSize != 0)
             {
+                if (transactionMaxPage > databaseSize)
+                {
+                    rejected++;
+                    break;
+                }
+
                 committedPageCount = databaseSize;
                 lastCommitFrame = frame;
+                transactionMaxPage = 0;
             }
+
+            validFrames.Add((offset, pageNumber, databaseSize));
         }
 
         if (lastCommitFrame < 0)
         {
-            return (0, 0);
+            return (0, rejected);
         }
 
         if (committedPageCount > 0)
@@ -257,27 +368,15 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         }
 
         var applied = 0;
-        var rejected = 0;
         for (var frame = 0; frame <= lastCommitFrame; frame++)
         {
-            var offset = 32 + (frame * frameSize);
-            var pageNumber = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset, 4));
-            if (pageNumber == 0)
-            {
-                break;
-            }
-
+            var (offset, pageNumber, _) = validFrames[frame];
             var page = wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize);
-            if (!SqlCipherPageCipher.VerifyPage(macKey, page, pageNumber))
-            {
-                rejected++;
-                continue;
-            }
-
             var destination = (long)(pageNumber - 1) * SqlCipherPageCipher.PageSize;
             if (destination + SqlCipherPageCipher.PageSize > image.LongLength)
             {
-                rejected++;
+                // A later committed truncate legitimately removes pages written by an earlier
+                // transaction in the same WAL generation.
                 continue;
             }
 
@@ -286,6 +385,86 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         }
 
         return (applied, rejected);
+    }
+
+    private static int ReadSqlitePageSize(ReadOnlySpan<byte> header)
+    {
+        var encoded = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(header.Slice(16, 2));
+        var pageSize = encoded == 1 ? 65_536 : encoded;
+        if (pageSize is < 512 or > 65_536 || (pageSize & (pageSize - 1)) != 0)
+        {
+            throw new WeChatKeyUnavailableException("Plaintext SQLite source has an invalid page size.");
+        }
+
+        return pageSize;
+    }
+
+    private static void ValidateImage(string path)
+    {
+        try
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString());
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA quick_check;";
+            using var reader = command.ExecuteReader();
+            var foundResult = false;
+            while (reader.Read())
+            {
+                foundResult = true;
+                if (!string.Equals(reader.GetString(0), "ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new WeChatKeyUnavailableException(
+                        $"Materialized SQLite image '{Path.GetFileName(path)}' failed structural quick-check.");
+                }
+            }
+
+            if (!foundResult)
+            {
+                throw new WeChatKeyUnavailableException(
+                    $"Materialized SQLite image '{Path.GetFileName(path)}' returned no structural quick-check result.");
+            }
+        }
+        catch (SqliteException ex)
+        {
+            throw new WeChatKeyUnavailableException(
+                $"Materialized SQLite image '{Path.GetFileName(path)}' failed structural quick-check: {ex.Message}");
+        }
+    }
+
+    private static bool TryWalChecksum(
+        ReadOnlySpan<byte> bytes,
+        bool bigEndian,
+        uint input0,
+        uint input1,
+        out uint output0,
+        out uint output1)
+    {
+        output0 = input0;
+        output1 = input1;
+        if (bytes.Length % 8 != 0)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < bytes.Length; i += 8)
+        {
+            var first = bigEndian
+                ? BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(i, 4))
+                : BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(i, 4));
+            var second = bigEndian
+                ? BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(i + 4, 4))
+                : BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(i + 4, 4));
+            output0 = unchecked(output0 + first + output1);
+            output1 = unchecked(output1 + second + output0);
+        }
+
+        return true;
     }
 
     private static string Fingerprint(string path)

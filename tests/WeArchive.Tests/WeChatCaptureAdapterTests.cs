@@ -673,6 +673,10 @@ public sealed class WeChatCaptureAdapterTests
         {
             CaptureCheckpoint = m.CaptureCheckpoint! with { CaptureAdapterVersion = "9.9.9" },
         })));
+        Assert.Null(WeChatCaptureAdapter.BuildPriorMap(WithManifest(valid, m => m with
+        {
+            CaptureCheckpoint = m.CaptureCheckpoint! with { CaptureAdapterVersion = "0.1.0" },
+        })));
         // A partial predecessor cannot establish that its coverage is still current.
         Assert.Null(WeChatCaptureAdapter.BuildPriorMap(WithManifest(valid, m => m with
         {

@@ -481,6 +481,31 @@ Reading a generation therefore leaves its directory byte-for-byte as published.
 
 ## 7. Completeness and failure modes
 
+For WeChat Windows adapter `0.2.0`, encrypted source pages are authenticated before decryption;
+main database and plaintext database lengths must end on a complete SQLite page. Encrypted WAL
+replay checks the supported SQLite WAL magic/version/page size, header and rolling frame
+checksums, generation salts, SQLCipher page HMACs, and transaction commit/database-size markers.
+Only frames through the last valid commit are applied. A malformed or truncated WAL, failed page
+authentication, or unmaterializable plaintext WAL is recorded as unavailable/partial coverage;
+it cannot produce a complete generation or advance its capture checkpoint. Plaintext DB + WAL
+snapshots are made through SQLite's read-only backup API so committed plaintext WAL rows are not
+omitted and the source remains untouched. A mutation detected by the existing before/after
+source fingerprints makes the capture incomplete and discards staging.
+
+These checks establish authenticated pages and a committed SQLite snapshot under the supported
+adapter contract; they are not a general logical-content proof. Capture runs SQLite `quick_check`
+against the materialized image to verify ordinary database structure. SQLite's generic structural
+check does not verify external-content FTS index synchronization; an FTS-specific integrity command
+can report an index mismatch even when `quick_check` returns `ok`. Such an FTS result is a known
+virtual-table compatibility boundary, not proof of a torn source snapshot. Tests assert this
+distinction and do not treat a successful quick check as proof of FTS index consistency. Real
+WeChat 4.x FTS shards remain part of the real environment acceptance gate.
+
+The capture adapter version is bumped when these source-consistency semantics change. Existing
+generation manifests remain immutable and readable, but checkpoints created by adapter `0.1.0`
+are not reused by `0.2.0`; the next capture widens to a full materialization before recording a new
+checkpoint.
+
 | Verdict | Meaning |
 |---|---|
 | `complete` | All required artifacts captured and verified; no Fatal diagnostic |

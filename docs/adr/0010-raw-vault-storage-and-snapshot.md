@@ -60,10 +60,18 @@ schema version, and the export schema version (docs/DATA_MODEL.md section 18).
 The WeChat capture adapter reuses the existing `SqlCipherDatabaseCache`, which:
 
 - opens source files with shared read access (read-only, NFR-02);
-- replays only committed, HMAC-verified WAL frames up to the last commit marker (exactly as
-  SQLite itself would recover them), so the snapshot is consistent rather than a torn copy;
+- authenticates every encrypted main page and validates WAL header/version/checksums, frame
+  salts/checksums, page HMACs and commit/database-size markers before replaying committed frames;
+- uses SQLite's read-only backup path for plaintext DB + WAL pairs so committed plaintext frames
+  are included without changing the source;
 - materializes each encrypted SQLCipher database as a decrypted, ordinary SQLite image in a
   transient scratch directory.
+
+Partial pages, malformed WAL evidence, or failed page authentication prevent complete coverage.
+The materialized image also passes SQLite `quick_check`. The adapter does not claim external-content
+FTS virtual-table/index consistency from that check; the exact compatibility boundary and
+checkpoint-version invalidation are documented in
+[`RAW_VAULT.md`](../RAW_VAULT.md).
 
 The capture adapter copies each plaintext image into the Raw Vault as an artifact. The upstream
 key (`WeChatKeySet`) is held only in memory for the duration of the capture and is never written

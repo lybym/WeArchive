@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using WeArchive.Infrastructure.WeChat;
@@ -216,6 +217,13 @@ public sealed class SqlCipherTests
         wal.AddRange(BuildFrame(
             EncryptPage(Key, macKey, MarkedPage(plaintext, pageIndex: 1, marker), 2, Salt),
             pageNumber: 2,
+            databaseSize: 0,
+            frameSalt1: salt1,
+            frameSalt2: salt2));
+        const byte repeatedPageMarker = 0x42;
+        wal.AddRange(BuildFrame(
+            EncryptPage(Key, macKey, MarkedPage(plaintext, pageIndex: 1, repeatedPageMarker), 2, Salt),
+            pageNumber: 2,
             databaseSize: (uint)(plaintext.Length / SqlCipherPageCipher.PageSize),
             frameSalt1: salt1,
             frameSalt2: salt2));
@@ -225,6 +233,9 @@ public sealed class SqlCipherTests
             databaseSize: 0,
             frameSalt1: salt1 - 1,
             frameSalt2: salt2));
+        wal.Add(0x7F); // incomplete trailing frame must not be silently accepted as complete
+
+        SealWalChecksums(wal);
 
         File.WriteAllBytes(encryptedPath + "-wal", [.. wal]);
 
@@ -232,13 +243,13 @@ public sealed class SqlCipherTests
         using var cache = new SqlCipherDatabaseCache(keys);
         var outcome = cache.GetPlaintext(encryptedPath);
 
-        Assert.Equal(1, outcome.WalFramesApplied);
-        Assert.Equal(0, outcome.WalFramesRejected);
+        Assert.Equal(2, outcome.WalFramesApplied);
+        Assert.Equal(1, outcome.WalFramesRejected);
 
         var image = File.ReadAllBytes(outcome.PlaintextPath);
 
-        // Page 2 carries the committed frame...
-        Assert.Equal(marker, image[SqlCipherPageCipher.PageSize]);
+        // The repeated page is applied in frame order, and the last committed copy wins...
+        Assert.Equal(repeatedPageMarker, image[SqlCipherPageCipher.PageSize]);
         // ...while page 4 still holds its original content from the main database.
         var originalPage4 = plaintext.AsSpan(3 * SqlCipherPageCipher.PageSize, SqlCipherPageCipher.PageSize);
         Assert.NotEqual(marker, image[3 * SqlCipherPageCipher.PageSize]);
@@ -474,6 +485,105 @@ public sealed class SqlCipherTests
         Assert.Throws<WeChatKeyUnavailableException>(() => cache.GetPlaintext(encryptedPath));
     }
 
+    [Fact]
+    public void ReaderRejectsAnUnauthenticatedMainDatabasePage()
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"));
+        var encryptedPath = temp.Combine("message_0.db");
+        var encrypted = EncryptDatabase(plaintext, Key, Salt);
+        encrypted[SqlCipherPageCipher.PageSize + 100] ^= 0x80;
+        File.WriteAllBytes(encryptedPath, encrypted);
+        var keys = new WeChatKeySet([new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key)]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+
+        Assert.Throws<WeChatKeyUnavailableException>(() => cache.GetPlaintext(encryptedPath));
+    }
+
+    [Fact]
+    public void ReaderRejectsAnIncompleteEncryptedMainPageTail()
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"));
+        var encryptedPath = temp.Combine("message_0.db");
+        var encrypted = EncryptDatabase(plaintext, Key, Salt);
+        File.WriteAllBytes(encryptedPath, [.. encrypted, 0x42]);
+        var keys = new WeChatKeySet([new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key)]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+
+        Assert.Throws<WeChatKeyUnavailableException>(() => cache.GetPlaintext(encryptedPath));
+    }
+
+    [Fact]
+    public void ReaderMaterializesCommittedPlaintextWalRowsIntoTheSnapshot()
+    {
+        using var temp = new TempDirectory();
+        var source = CreateWriteAheadLogOnlyDatabasePair(temp.Path);
+        var sourceMain = File.ReadAllBytes(source);
+        var sourceWal = File.ReadAllBytes(source + "-wal");
+        using var cache = new SqlCipherDatabaseCache(new WeChatKeySet([]));
+
+        var outcome = cache.GetPlaintext(source);
+
+        Assert.True(outcome.WasPlaintext);
+        Assert.True(outcome.PageCount > 0);
+        Assert.Equal(5L, SqliteConnectionPooledRowCount(outcome.PlaintextPath));
+        Assert.Equal(sourceMain, File.ReadAllBytes(source));
+        Assert.Equal(sourceWal, File.ReadAllBytes(source + "-wal"));
+    }
+
+    [Fact]
+    public void ReaderRejectsAnIncompletePlaintextDatabaseTail()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Combine("plain.db");
+        var database = CreatePlaintextDatabase(path);
+        File.WriteAllBytes(path, [.. database, 0x42]);
+        using var cache = new SqlCipherDatabaseCache(new WeChatKeySet([]));
+
+        Assert.Throws<WeChatKeyUnavailableException>(() => cache.GetPlaintext(path));
+    }
+
+    [Fact]
+    public void ReaderReportsAnInvalidWalHeaderInsteadOfSilentlyIgnoringIt()
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"));
+        var encryptedPath = temp.Combine("message_0.db");
+        File.WriteAllBytes(encryptedPath, EncryptDatabase(plaintext, Key, Salt));
+        File.WriteAllBytes(encryptedPath + "-wal", [1, 2, 3]);
+        var keys = new WeChatKeySet([new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key)]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+
+        Assert.Equal(1, cache.GetPlaintext(encryptedPath).WalFramesRejected);
+    }
+
+    [Fact]
+    public void GenericIntegrityCheckDoesNotClaimExternalContentFtsIndexConsistency()
+    {
+        using var temp = new TempDirectory();
+        var path = temp.Combine("fts.db");
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                "CREATE TABLE documents(id INTEGER PRIMARY KEY, body TEXT); " +
+                "INSERT INTO documents VALUES (1, 'preserved source text'); " +
+                "CREATE VIRTUAL TABLE documents_fts USING fts5(body, content='documents', content_rowid='id');";
+            command.ExecuteNonQuery();
+            command.CommandText = "PRAGMA integrity_check;";
+            Assert.Equal("ok", command.ExecuteScalar());
+            command.CommandText = "INSERT INTO documents_fts(documents_fts, rank) VALUES ('integrity-check', 1);";
+            Assert.Throws<SqliteException>(() => command.ExecuteNonQuery());
+        }
+    }
+
     private static byte[] BuildFrame(byte[] encryptedPage, uint pageNumber, uint databaseSize, uint frameSalt1, uint frameSalt2)
     {
         var frame = new byte[24 + SqlCipherPageCipher.PageSize];
@@ -483,5 +593,41 @@ public sealed class SqlCipherTests
         BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(12, 4), frameSalt2);
         encryptedPage.CopyTo(frame, 24);
         return frame;
+    }
+
+    private static void SealWalChecksums(List<byte> wal)
+    {
+        uint s0 = 0;
+        uint s1 = 0;
+        UpdateWalChecksum(CollectionsMarshal.AsSpan(wal)[..24], ref s0, ref s1);
+        BinaryPrimitives.WriteUInt32BigEndian(CollectionsMarshal.AsSpan(wal).Slice(24, 4), s0);
+        BinaryPrimitives.WriteUInt32BigEndian(CollectionsMarshal.AsSpan(wal).Slice(28, 4), s1);
+
+        const int frameSize = 24 + SqlCipherPageCipher.PageSize;
+        for (var offset = 32; offset + frameSize <= wal.Count; offset += frameSize)
+        {
+            var frame = CollectionsMarshal.AsSpan(wal).Slice(offset, frameSize);
+            // The fixture deliberately includes one frame from an old salt generation after
+            // the valid frame; SQLite stops at that boundary, so its checksum is immaterial.
+            if (BinaryPrimitives.ReadUInt32BigEndian(frame.Slice(8, 4)) != 0x32D1F04A ||
+                BinaryPrimitives.ReadUInt32BigEndian(frame.Slice(12, 4)) != 0x3824DAB3)
+            {
+                break;
+            }
+
+            UpdateWalChecksum(frame[..8], ref s0, ref s1);
+            UpdateWalChecksum(frame.Slice(24, SqlCipherPageCipher.PageSize), ref s0, ref s1);
+            BinaryPrimitives.WriteUInt32BigEndian(frame.Slice(16, 4), s0);
+            BinaryPrimitives.WriteUInt32BigEndian(frame.Slice(20, 4), s1);
+        }
+    }
+
+    private static void UpdateWalChecksum(ReadOnlySpan<byte> bytes, ref uint s0, ref uint s1)
+    {
+        for (var i = 0; i < bytes.Length; i += 8)
+        {
+            s0 = unchecked(s0 + BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(i, 4)) + s1);
+            s1 = unchecked(s1 + BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(i + 4, 4)) + s0);
+        }
     }
 }

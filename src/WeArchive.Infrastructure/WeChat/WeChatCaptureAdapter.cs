@@ -52,7 +52,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
     /// captured/reused partitions, so it stays reusable, while the partial rc.1 generations (no
     /// checkpoint at all) still fail closed into a full baseline.
     /// </summary>
-    public const string Version = "0.1.0";
+    public const string Version = "0.2.0";
 
     private const string SourceDatabaseRole = "source-database";
 
@@ -398,16 +398,15 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
                 continue;
             }
 
-            // Report WAL consistency information: rejected frames mean the snapshot is
-            // consistent up to the last committed transaction, but some torn frames were
-            // skipped. This is Partial, not Fatal: the image is still valid.
+            // Any malformed/torn WAL evidence prevents a Complete verdict, even when a valid
+            // committed prefix could still be materialized.
             if (outcome.WalFramesRejected > 0)
             {
                 diagnostics.Add(RawManifestDiagnostic.Partial(
                     DiagnosticCodes.WalFramesRejected,
-                    $"{Path.GetFileName(databasePath)}: rejected {outcome.WalFramesRejected} " +
-                    "torn/stale WAL frame(s); the snapshot is consistent up to the last committed " +
-                    "transaction."));
+                    $"{Path.GetFileName(databasePath)}: detected {outcome.WalFramesRejected} " +
+                    "invalid or incomplete WAL evidence; only verified committed frames were " +
+                    "materialized and the partition is not eligible for Complete coverage."));
                 if (completeness == RawGenerationCompleteness.Complete)
                 {
                     completeness = RawGenerationCompleteness.Partial;
