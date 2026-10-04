@@ -39,12 +39,14 @@ internal sealed class RawVaultV2PackStore
         EnsureIndex();
         using var writerLock = new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var pendingPack = new List<(RawVaultV2Format.StoredObject Value, byte[] Bytes)>();
+        var pendingKeys = new HashSet<string>(StringComparer.Ordinal);
         var pendingBytes = 16;
         foreach (var batch in values.Chunk(400))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var existing = FindExisting(batch);
-            var missing = batch.Where(value => !existing.Contains(Key(value))).GroupBy(Key, StringComparer.Ordinal).Select(group => group.First()).ToArray();
+            var missing = batch.Where(value => !existing.Contains(Key(value)) && !pendingKeys.Contains(Key(value)))
+                .GroupBy(Key, StringComparer.Ordinal).Select(group => group.First()).ToArray();
             if (missing.Length == 0) continue;
             var records = missing.Select(value => (Value: value, Bytes: RawVaultV2Format.EncodeRecord(value, _compressObjects))).ToArray();
             foreach (var record in records)
@@ -56,6 +58,7 @@ internal sealed class RawVaultV2PackStore
                     cancellationToken.ThrowIfCancellationRequested();
                 }
                 pendingPack.Add(record);
+                pendingKeys.Add(Key(record.Value));
                 pendingBytes = checked(pendingBytes + record.Bytes.Length);
             }
         }

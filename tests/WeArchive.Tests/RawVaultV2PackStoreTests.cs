@@ -229,6 +229,41 @@ public sealed class RawVaultV2PackStoreTests
     }
 
     [Fact]
+    public void RepeatedContentAcrossLookupBatchesIsStoredOnceAndReconstructsByteForByte()
+    {
+        var account = Path.Combine(Path.GetTempPath(), "wearchive-v2-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(account);
+        try
+        {
+            const int blockSize = 4096;
+            var blocks = Enumerable.Range(0, 400).Select(i =>
+            {
+                var seed = SHA256.HashData(BitConverter.GetBytes(i));
+                var block = Enumerable.Range(0, blockSize).Select(index => seed[index % seed.Length]).ToArray();
+                return block;
+            }).ToList();
+            blocks.Add(blocks[0].ToArray());
+            var bytes = blocks.SelectMany(block => block).ToArray();
+            var store = new RawVaultV2PackStore(account, compressObjects: false);
+            var artifact = store.PutArtifact(bytes, blockSize, CancellationToken.None);
+
+            var repeatedDigest = RawVaultV2Format.DataDigest(blocks[0]);
+            var storedCopies = Directory.GetFiles(Path.Combine(account, "objects", "packs"), "*.rvpk")
+                .SelectMany(path => RawVaultV2Format.ReadPack(File.ReadAllBytes(path)))
+                .Count(value => value.Kind == 1 && value.Digest.SequenceEqual(repeatedDigest));
+            Assert.Equal(1, storedCopies);
+
+            using var output = new MemoryStream();
+            store.MaterializeTo(artifact, output, CancellationToken.None);
+            Assert.Equal(bytes, output.ToArray());
+        }
+        finally
+        {
+            Directory.Delete(account, recursive: true);
+        }
+    }
+
+    [Fact]
     public void CancellationAfterASealedPackLeavesOnlyCompleteUnreachableObjects()
     {
         var account = Path.Combine(Path.GetTempPath(), "wearchive-v2-" + Guid.NewGuid().ToString("N"));
