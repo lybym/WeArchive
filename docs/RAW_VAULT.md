@@ -481,6 +481,48 @@ Reading a generation therefore leaves its directory byte-for-byte as published.
 
 ## 7. Completeness and failure modes
 
+For WeChat Windows adapter `0.4.0`, encrypted source pages are authenticated before decryption;
+main database and plaintext database lengths must end on a complete SQLite page. Both encrypted
+and plaintext WALs are checked for the supported SQLite WAL magic/version/page size, header and
+rolling frame checksums, generation salts, and transaction commit/database-size markers. Encrypted
+WAL frames additionally require SQLCipher page HMACs. Plaintext sources are scanned before SQLite's
+read-only backup so a backup that silently falls back to the main file cannot hide malformed or
+incomplete WAL evidence. Only frames through the last valid commit are applied by the encrypted
+materializer. Each commit is checked against the preceding logical database size: every newly
+exposed page must have distinct valid frame evidence in that transaction. Repeated frames for one
+page cannot fill a gap. A committed truncate discards removed pages; subsequent regrowth requires
+fresh evidence for every removed page it exposes again, even if the main image or an earlier WAL
+transaction held authenticated copies. Missing evidence rejects that transaction, retaining only
+the last valid committed image with partial coverage and no checkpoint. Encrypted replay resizes
+the image at each accepted commit, so the final `page_count` and artifact bytes describe exactly
+that image. `wal_frames_applied` counts every frame replayed in accepted transactions, including
+frames whose pages are removed by a later accepted truncate.
+SQLite may reuse a WAL without truncating
+it after a checkpoint; a frame whose salts differ from the current WAL header marks the end of the
+current generation, and bytes beyond that logical boundary are ignored as leftovers. A short tail
+before a stale-generation boundary, a malformed header/frame, failed page authentication, or
+unmaterializable plaintext WAL is recorded as unavailable/partial coverage; it cannot produce a
+complete generation or advance its capture checkpoint. Plaintext DB + WAL
+snapshots are made through SQLite's read-only backup API so committed plaintext WAL rows are not
+omitted and the source remains untouched. A mutation detected by the existing before/after
+source fingerprints makes the capture incomplete and discards staging.
+
+These checks establish authenticated pages and a committed SQLite snapshot under the supported
+adapter contract; they are not a general logical-content proof. Plaintext DB/WAL backup images are
+checked with SQLite `quick_check`. Encrypted SQLCipher images are validated at the page-HMAC and
+WAL-protocol boundary; running ordinary SQLite structural validation over the decrypted image is
+not reliable for the supported SQLCipher reserved-page layout, so no B-tree or application-level
+consistency claim is made for that path. SQLite's generic `quick_check` also does not verify
+external-content FTS index synchronization; an FTS-specific integrity command can report an index
+mismatch even when `quick_check` returns `ok`. Tests assert this distinction and do not treat a
+successful quick check as proof of FTS index consistency. Real WeChat 4.x FTS shards remain part of
+the real environment acceptance gate.
+
+The capture adapter version is bumped when these source-consistency semantics change. Existing
+generation manifests remain immutable and readable, but checkpoints created by adapters `0.1.0`,
+`0.2.0` or `0.3.0` are not reused by `0.4.0`; the next capture widens to a full materialization before recording a new
+checkpoint.
+
 | Verdict | Meaning |
 |---|---|
 | `complete` | All required artifacts captured and verified; no Fatal diagnostic |
