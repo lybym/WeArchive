@@ -1,8 +1,8 @@
 # Raw Vault v2 storage benchmark evidence
 
-Issue: #77
+Issues: #77, #79
 
-Date: 2026-10-03
+Date: 2026-10-04
 
 Purpose: record the privacy-safe aggregate evidence used to choose the **provisional first-RC writer
 default** for Raw Vault v2.
@@ -53,10 +53,7 @@ Decimal MB:
 | 64 KiB | 1,396.367 | 804.980 | 21,340 | 2.049 | 1.114 |
 
 The object/index values above came from the prototype accounting model, not the final product SQLite
-index. The authoritative persisted-format overhead is now frozen in
-[RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); Issue #79 must reproduce the cost comparison using
-the actual storage engine, select a default only after the correctness gate passes, and separately
-report the derived-index allocated bytes.
+index. The actual-engine results below supersede the prototype decision figures.
 
 Total retained bytes at the observed 8-generation point:
 
@@ -140,49 +137,39 @@ baseline and are not T365.
 ## 6. Correctness gate status
 
 The Issue #77/#79 benchmark selection rule requires every candidate to pass correctness checks before
-its storage cost is considered. The retained analysis record does not contain per-case assertion
-results, so the gate is **not verified by this prototype record**:
+its storage cost is considered. The implementation test run passed the candidate matrix for all five
+block sizes with both raw and Zstd1/raw-fallback storage. It verifies byte-identical reconstruction
+and full SHA-256, empty and partial-tail artifacts, no-change reuse, append, in-place update,
+truncate, rewrite, golden encodings, unknown-version/corruption rejection, and immutable pack/index
+recovery cases. The focused suite result was 29 passed and 1 environment-gated benchmark skipped;
+the full non-live-adapter suite result is recorded in the Issue #79 PR.
 
 | Required check | Recorded result in this analysis |
 |---|---|
-| Byte-identical reconstruction for each block size and codec | Not recorded; reconstructed files were produced, but no comparison assertion/result was retained |
-| Unknown-field preservation | Not run / not recorded |
-| No-change root/object reuse | Not run / not recorded |
-| Append | Not run / not recorded |
-| In-place update | Not run / not recorded |
-| Truncate | Not run / not recorded |
-| Rewrite | Not run / not recorded |
+| Byte-identical reconstruction for each block size and codec | PASS; every block size and both codec paths covered |
+| Unknown-field preservation | PASS; opaque bytes in the source stream survive byte-identical reconstruction |
+| No-change root/object reuse | PASS; roots and existing objects are reused |
+| Append | PASS |
+| In-place update | PASS |
+| Truncate | PASS |
+| Rewrite | PASS |
 
-To close this gate, run each case for block sizes 4096, 8192, 16384, 32768 and 65536 with both
-`none` and Zstd1/raw-fallback storage. For each case, reconstruct the complete artifact and compare
-its bytes and full SHA-256 with the expected input, including opaque/unknown source-field bytes inside
-the artifact stream. Record logical root/object reuse and expected changed blocks for no-change,
-append, in-place update, truncate and full rewrite. Include empty and partial-tail artifacts. Retain
-the command, tool/runtime version, input fixture hash, per-case pass/fail results and failure output,
-without including private artifact content. A candidate only passes when every required assertion
-passes.
+The run used .NET SDK 10.0.401 on Windows. Private source bytes were not emitted or retained.
 
-The golden vector is a set of encoding examples, not evidence that this mutation/reconstruction
-matrix passed. The current fixture covers an empty map, one three-byte data block, a one-entry leaf
-and a raw single-record pack. Multi-level fanout-32 maps, descriptor-tail reconstruction, empty
-artifact reconstruction and corruption rejection remain implementation-test requirements.
+The golden vector remains a compact set of encoding examples. Multi-level fanout-32 maps,
+descriptor-tail reconstruction, empty-artifact reconstruction and corruption rejection are covered
+by the implementation tests in addition to the golden fixture.
 
-## 7. Cost leader; writer default not selected
+## 7. Provisional hourly capacity model
 
-The recorded cost model ranks 4 KiB lowest for post-baseline incremental retained bytes and T365.
-This is a **cost leader only**. Since the correctness gate above is unverified, Issue #77 has not
-selected a provisional first-RC writer default. Do not encode 4096 bytes as the writer default
-until the correctness matrix passes for every candidate and its results are recorded alongside the
-cost comparison.
-
-The v2 reader accepts 4096/8192/16384/32768/65536-byte block sizes.
+The v2 reader accepts 4096/8192/16384/32768/65536-byte block sizes. The actual-engine default decision
+is recorded in section 10 below.
 
 ## 8. Reproduction gate in Issue #79
 
-Issue #77 is docs/format-first and therefore does not implement the production storage engine. The
-Issue #79 gate must begin by recording the correctness matrix above against the frozen format, then
-reproduce the storage-cost comparison with the actual implementation. It must not adopt a writer
-default before both gates pass.
+Issue #77 is docs/format-first and therefore does not implement the production storage engine. Issue
+#79 has now recorded the correctness matrix above and reproduced the storage-cost comparison with
+the actual implementation.
 
 Issue #79 MUST run the correctness gate, reproduce the cost comparison, and select the first-RC
 default after the actual:
@@ -223,3 +210,45 @@ That acceptance must report at least:
 If the real hourly trace materially reverses the selected default, adjust the writer policy and
 issue a new RC. The manifest-v3/vault-v2 architecture does not need to change because block size is
 an artifact descriptor property.
+
+## 10. Issue #79 actual-engine results and writer default
+
+The final engine benchmark ran on Windows with .NET SDK 10.0.401 against the read-only sample above
+(8 complete generations, 264 artifacts). Workload fingerprint:
+`d86eb08685c249df2ff9e0d904aca3ea052117a44135fefe80e03861589c2b98` (SHA-256 over the ordered
+manifest artifact SHA-256 values). It exercised the real pack writer, fanout-32 map, Zstd1/raw
+fallback, derived SQLite index, Windows allocated-byte accounting, and artifact materializer. The
+full matrix completed successfully in 20 minutes. Each materialized artifact was compared through
+the descriptor's full SHA-256 check. Test output retained aggregate metrics only.
+
+T365 uses the allocated pack plus allocated derived-index bytes after the first generation as the
+baseline, followed by the mean of the seven measured generation transitions. Values use decimal GB.
+
+| Block | Codec | Baseline allocated bytes | Mean incremental allocated bytes/capture | T365 GB | Latest materialization MiB/s | Historical 24 materialization MiB/s |
+|---|---|---:|---:|---:|---:|---:|
+| 4 KiB | none | 1,382,735,096 | 2,003,518 | 18.934 | 42.00 | 41.46 |
+| 4 KiB | Zstd1/raw fallback | 880,269,310 | 937,510 | **9.093** | 37.86 | 37.48 |
+| 8 KiB | none | 1,353,839,812 | 2,831,282 | 26.156 | 66.38 | 70.72 |
+| 8 KiB | Zstd1/raw fallback | 835,528,249 | 1,240,555 | 11.703 | 67.89 | 69.00 |
+| 16 KiB | none | 1,339,280,184 | 4,145,297 | 37.652 | 101.40 | 128.46 |
+| 16 KiB | Zstd1/raw fallback | 803,877,829 | 1,754,203 | 16.171 | 100.36 | 113.93 |
+| 32 KiB | none | 1,332,037,160 | 6,528,040 | 58.518 | 167.56 | 198.10 |
+| 32 KiB | Zstd1/raw fallback | 793,038,387 | 2,803,496 | 25.352 | 148.42 | 162.30 |
+| 64 KiB | none | 1,328,276,000 | 10,367,677 | 92.149 | 227.34 | 250.45 |
+| 64 KiB | Zstd1/raw fallback | 778,418,625 | 4,421,843 | 39.514 | 186.43 | 206.25 |
+
+The derived-index allocated bytes after eight generations were 32,485,376; 16,343,040;
+8,286,208; 4,190,208; and 2,154,496 for Zstd1/raw-fallback at 4/8/16/32/64 KiB respectively.
+The corresponding pack allocated bytes were 854,346,503; 827,869,091; 807,871,043; 808,472,651;
+and 807,217,027. The lower block-size candidate retains more index metadata, while its lower
+incremental data cost still produces the smallest T365.
+
+**Decision: provisional first-RC writer default is 4096 bytes with Zstd level 1 and raw fallback.**
+The actual engine confirms the 4 KiB candidate remains the T365 cost leader from the prototype
+comparison. The actual value is 9.093 GB versus the prototype scenario's 8.904 GB; this small change
+does not reverse the ranking or require a format/default review. Readers continue to accept all five
+block sizes, and reused artifacts preserve their descriptor block size and root.
+
+These are single-run warm-cache measurements, and the yearly figure remains a scenario derived from
+seven observed transitions rather than a continuous hourly trace. The final RC must still replace
+this projection with the real hourly acceptance trace described in section 9.

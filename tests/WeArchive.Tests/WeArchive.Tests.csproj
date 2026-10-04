@@ -33,4 +33,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\docs\fixtures\raw-vault-v2\golden-v1.json" Link="docs\fixtures\raw-vault-v2\golden-v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

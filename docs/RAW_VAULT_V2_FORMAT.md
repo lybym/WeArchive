@@ -326,10 +326,11 @@ unverified gate and the required reproducible procedure.
 
 This is not a claim that SQLite pages require 4 KiB storage blocks.
 
-The storage-engine implementation Issue must first record passing correctness results for every
-candidate, then reproduce the decision with the actual pack/index/map implementation. A material
-divergence is a hard stop: update Issue #77/docs and approve the changed default rather than silently
-changing the persisted behavior during implementation.
+Issue #79 recorded passing correctness results for every candidate and reproduced the decision with
+the actual pack/index/map implementation. The provisional first-RC writer default is 4096 bytes with
+Zstd level 1 and raw fallback. The complete candidate table and workload fingerprint are in
+[RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md). The actual engine kept 4 KiB as the T365
+leader, so the prototype decision was not materially reversed.
 
 The official RC real-environment gate then validates the selected default against a continuous
 hourly trace.
