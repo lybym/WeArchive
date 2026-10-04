@@ -416,7 +416,7 @@ public sealed class SqlCipherTests
     }
 
     [Fact]
-    public void ReaderAppliesCommittedTruncateAndOmitsEarlierFramesForRemovedPages()
+    public void ReaderAppliesEachCommittedTransactionIncludingTruncate()
     {
         using var temp = new TempDirectory();
         var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"), rows: 40);
@@ -444,10 +444,129 @@ public sealed class SqlCipherTests
         var expected = original[..(2 * SqlCipherPageCipher.PageSize)];
         expected.AsSpan(SqlCipherPageCipher.PageSize, 64).Fill(0x46);
 
-        Assert.Equal(1, outcome.WalFramesApplied);
+        Assert.Equal(2, outcome.WalFramesApplied);
         Assert.Equal(0, outcome.WalFramesRejected);
         Assert.Equal(2, outcome.PageCount);
         Assert.Equal(expected, File.ReadAllBytes(outcome.PlaintextPath));
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public void ReaderRequiresFreshPageEvidenceForGrowthAndRegrowth(
+        bool regrowth, bool completeGrowth, bool checksumBigEndian)
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"), rows: 40);
+        var fixture = CreatePageEvidenceScenario(plaintext, regrowth, completeGrowth, checksumBigEndian);
+        var encryptedPath = temp.Combine("message_0.db");
+        File.WriteAllBytes(encryptedPath, fixture.Main);
+        File.WriteAllBytes(encryptedPath + "-wal", fixture.Wal);
+        using var cache = new SqlCipherDatabaseCache(new WeChatKeySet([fixture.DatabaseKey]));
+
+        var outcome = cache.GetPlaintext(encryptedPath);
+
+        Assert.Equal(fixture.ExpectedApplied, outcome.WalFramesApplied);
+        Assert.Equal(completeGrowth ? 0 : 1, outcome.WalFramesRejected);
+        Assert.Equal(completeGrowth ? 4 : 2, outcome.PageCount);
+        Assert.Equal(fixture.ExpectedImage, File.ReadAllBytes(outcome.PlaintextPath));
+        Assert.Equal(fixture.Main, File.ReadAllBytes(encryptedPath));
+        Assert.Equal(fixture.Wal, File.ReadAllBytes(encryptedPath + "-wal"));
+    }
+
+    /// <summary>
+    /// Authenticated growth fixtures shared with actual materializer-to-capture tests. Missing
+    /// growth repeats page 4, so duplicate frames cannot stand in for absent page 3. Regrowth
+    /// additionally puts an older page 3 in both the main image and WAL before truncating it.
+    /// </summary>
+    internal static PageEvidenceScenario CreatePageEvidenceScenario(
+        byte[] plaintext, bool regrowth, bool completeGrowth, bool checksumBigEndian = false)
+    {
+        const int pageSize = SqlCipherPageCipher.PageSize;
+        var mainPlain = plaintext[..((regrowth ? 4 : 2) * pageSize)];
+        var main = EncryptDatabase(mainPlain, Key, Salt);
+        var expected = mainPlain.ToArray();
+        for (var page = 0; page < expected.Length / pageSize; page++)
+        {
+            expected.AsSpan(page * pageSize + SqlCipherPageCipher.IvOffset, SqlCipherPageCipher.ReserveSize).Clear();
+        }
+
+        var macKey = SqlCipherPageCipher.DeriveMacKey(Key, Salt);
+        const uint salt1 = 0x32D1F04A;
+        const uint salt2 = 0x3824DAB3;
+        var wal = CreateWal(salt1, salt2, checksumBigEndian);
+        void AddPage(int pageNumber, byte marker, uint commitSize)
+        {
+            wal.AddRange(BuildFrame(
+                EncryptPage(Key, macKey, MarkedPage(plaintext, pageNumber - 1, marker), (uint)pageNumber, Salt),
+                (uint)pageNumber, commitSize, salt1, salt2));
+        }
+
+        if (regrowth)
+        {
+            AddPage(3, 0x50, 4); // authenticated old WAL evidence must also be discarded
+        }
+
+        AddPage(2, 0x51, 2); // a prior valid commit must survive an invalid later growth
+        expected = expected[..(2 * pageSize)];
+        expected.AsSpan(pageSize, 64).Fill(0x51);
+
+        AddPage(4, 0x52, 0); // out-of-order and repeated new page
+        if (completeGrowth)
+        {
+            AddPage(3, 0x53, 0);
+        }
+
+        AddPage(4, 0x54, 4);
+        SealWalChecksums(wal);
+        if (completeGrowth)
+        {
+            var result = new byte[4 * pageSize];
+            expected.CopyTo(result, 0);
+            for (var page = 3; page <= 4; page++)
+            {
+                var fresh = MarkedPage(plaintext, page - 1, page == 3 ? (byte)0x53 : (byte)0x54);
+                fresh.AsSpan(SqlCipherPageCipher.IvOffset).Clear();
+                fresh.CopyTo(result, (page - 1) * pageSize);
+            }
+
+            expected = result;
+        }
+
+        return new PageEvidenceScenario(
+            main, [.. wal], expected, (regrowth ? 2 : 1) + (completeGrowth ? 3 : 0),
+            new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key));
+    }
+
+    internal sealed record PageEvidenceScenario(
+        byte[] Main, byte[] Wal, byte[] ExpectedImage, int ExpectedApplied, WeChatDatabaseKey DatabaseKey);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PlaintextWalScannerRejectsGrowthGapsBeforeSqliteCanRecover(bool regrowth)
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("seed.db"), rows: 40);
+        var fixture = CreatePageEvidenceScenario(plaintext, regrowth, completeGrowth: false);
+        var path = temp.Combine("plain.db");
+        File.WriteAllBytes(path, plaintext[..((regrowth ? 4 : 2) * SqlCipherPageCipher.PageSize)]);
+        // The plaintext scanner checks framing and page evidence without authentication. These
+        // checksum-valid frame payloads are opaque to that scan; the missing page must reject the
+        // WAL before SQLite backup is reached, regardless of its ability to recover a prefix.
+        File.WriteAllBytes(path + "-wal", fixture.Wal);
+        using var cache = new SqlCipherDatabaseCache(new WeChatKeySet([]));
+
+        var exception = Assert.Throws<WeChatKeyUnavailableException>(() => cache.GetPlaintext(path));
+
+        Assert.Contains("invalid or incomplete plaintext SQLite WAL evidence", exception.Message);
+        Assert.Equal(fixture.Wal, File.ReadAllBytes(path + "-wal"));
     }
 
     private static byte[] MarkedPage(byte[] database, int pageIndex, byte marker)

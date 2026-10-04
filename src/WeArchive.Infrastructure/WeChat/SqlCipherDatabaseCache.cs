@@ -169,7 +169,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
                 return new DecryptionOutcome(path, checked((int)(mainLength / pageSize)), 0, 0, true);
             }
 
-            var wal = ReadPlaintextWal(path, pageSize);
+            var wal = ReadPlaintextWal(path, pageSize, checked((uint)(mainLength / pageSize)));
             if (wal.Rejected > 0)
             {
                 throw new WeChatKeyUnavailableException(
@@ -273,6 +273,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         var scan = ScanWriteAheadLog(
             wal,
             SqlCipherPageCipher.PageSize,
+            checked((uint)(image.Length / SqlCipherPageCipher.PageSize)),
             (pageNumber, pageOffset) => SqlCipherPageCipher.VerifyPage(
                 macKey, wal.AsSpan(pageOffset, SqlCipherPageCipher.PageSize), pageNumber));
 
@@ -281,40 +282,40 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             return (0, scan.Rejected);
         }
 
-        if (scan.CommittedPageCount > 0)
-        {
-            var required = (long)scan.CommittedPageCount * SqlCipherPageCipher.PageSize;
-            if (required != image.LongLength)
-            {
-                Array.Resize(ref image, (int)required);
-            }
-        }
-
         var applied = 0;
-        for (var frame = 0; frame <= scan.LastCommitFrame; frame++)
+        var transactionStart = 0;
+        for (var commit = 0; commit <= scan.LastCommitFrame; commit++)
         {
-            var (offset, pageNumber, _) = scan.Frames[frame];
-            var page = wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize);
-            var destination = (long)(pageNumber - 1) * SqlCipherPageCipher.PageSize;
-            if (destination + SqlCipherPageCipher.PageSize > image.LongLength)
+            var databaseSize = scan.Frames[commit].DatabaseSize;
+            if (databaseSize == 0)
             {
-                // A later committed truncate legitimately removes pages written by an earlier
-                // transaction in the same WAL generation.
                 continue;
             }
 
-            SqlCipherPageCipher.DecryptPage(key, page, pageNumber).CopyTo(image, destination);
-            applied++;
+            // Resize at each validated commit: a truncate discards its removed pages before a
+            // later growth can expose them again. The scan proves that every newly exposed page
+            // has fresh evidence in this transaction, so resize cannot invent page content.
+            Array.Resize(ref image, checked((int)((long)databaseSize * SqlCipherPageCipher.PageSize)));
+            for (var frame = transactionStart; frame <= commit; frame++)
+            {
+                var (offset, pageNumber, _) = scan.Frames[frame];
+                var page = wal.AsSpan(offset + 24, SqlCipherPageCipher.PageSize);
+                var destination = (long)(pageNumber - 1) * SqlCipherPageCipher.PageSize;
+                SqlCipherPageCipher.DecryptPage(key, page, pageNumber).CopyTo(image, destination);
+                applied++;
+            }
+
+            transactionStart = commit + 1;
         }
 
         return (applied, scan.Rejected);
     }
 
-    private static WalScanResult ReadPlaintextWal(string databasePath, int pageSize)
+    private static WalScanResult ReadPlaintextWal(string databasePath, int pageSize, uint mainPageCount)
     {
         var walPath = databasePath + "-wal";
         return File.Exists(walPath)
-            ? ScanWriteAheadLog(ReadAll(walPath), pageSize)
+            ? ScanWriteAheadLog(ReadAll(walPath), pageSize, mainPageCount)
             : WalScanResult.Empty;
     }
 
@@ -326,6 +327,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
     private static WalScanResult ScanWriteAheadLog(
         byte[] wal,
         int expectedPageSize,
+        uint mainPageCount,
         Func<uint, int, bool>? validatePage = null)
     {
         const int headerSize = 32;
@@ -362,8 +364,9 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         var frameCount = (wal.Length - headerSize) / frameSize;
         var rollingChecksum0 = checksum0;
         var rollingChecksum1 = checksum1;
-        uint committedPageCount = 0;
+        var committedPageCount = mainPageCount;
         uint transactionMaxPage = 0;
+        var transactionNewPages = new HashSet<uint>();
         var lastCommitFrame = -1;
         var rejected = 0;
         var reachedOlderGeneration = false;
@@ -403,9 +406,19 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
 
             var databaseSize = BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 4, 4));
             transactionMaxPage = Math.Max(transactionMaxPage, pageNumber);
+            if (pageNumber > committedPageCount)
+            {
+                transactionNewPages.Add(pageNumber);
+            }
+
             if (databaseSize != 0)
             {
-                if (transactionMaxPage > databaseSize)
+                // A valid commit must explain every page added since the previous logical size.
+                // Distinct page evidence matters: repeated writes cannot fill a missing page,
+                // and pages discarded by an earlier truncate cannot support later regrowth.
+                if (transactionMaxPage > databaseSize ||
+                    (databaseSize > committedPageCount &&
+                     databaseSize - committedPageCount != (uint)transactionNewPages.Count))
                 {
                     rejected++;
                     break;
@@ -414,6 +427,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
                 committedPageCount = databaseSize;
                 lastCommitFrame = frame;
                 transactionMaxPage = 0;
+                transactionNewPages.Clear();
             }
 
             frames.Add((offset, pageNumber, databaseSize));

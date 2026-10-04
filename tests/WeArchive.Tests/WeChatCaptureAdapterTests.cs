@@ -376,6 +376,58 @@ public sealed class WeChatCaptureAdapterTests
         Assert.NotNull(baselineGeneration!.Manifest.CaptureCheckpoint);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task AuthenticatedWalGrowthCoverageControlsCompletenessAndCheckpoint(
+        bool regrowth, bool completeGrowth)
+    {
+        using var source = new TempDirectory();
+        using var vaultDirectory = new TempDirectory();
+        var session = CreatePlaintextDatabase(source.Combine("session", "session.db"));
+        var message = CreatePlaintextDatabase(source.Combine("message", "message_0.db"));
+        // This helper creates a two-page SQLite image; expand fixture payload pages to four.
+        var pageSource = new byte[4 * 4096];
+        File.ReadAllBytes(message).CopyTo(pageSource, 0);
+        pageSource.AsSpan(2 * 4096).Fill(0x39);
+        var fixture = SqlCipherTests.CreatePageEvidenceScenario(pageSource, regrowth, completeGrowth);
+        File.WriteAllBytes(message, fixture.Main);
+        var environment = CreateEnvironment(source, session, message);
+        environment.UseRealSqlCipherMaterializer = true;
+        var keys = new RecordingKeyAcquirer { DatabaseKeys = [fixture.DatabaseKey] };
+        using var adapter = new WeChatCaptureAdapter(keys, environment);
+        var (service, vault, clock) = CreateService(vaultDirectory, adapter);
+
+        var baseline = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+        Assert.True(baseline.Succeeded);
+        Assert.Equal(RawGenerationCompleteness.Complete, baseline.Completeness);
+        var baselineGeneration = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
+        var baselineArtifact = baselineGeneration!.Manifest.Artifacts.Single(a => a.Name == "message_0.db");
+        var priorBytes = File.ReadAllBytes(Path.Combine(baselineGeneration.GenerationDirectory, baselineArtifact.ContentRef));
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(1);
+        File.WriteAllBytes(message + "-wal", fixture.Wal);
+        var result = await service.CaptureAccountAsync(new CaptureRequest(), null, CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(completeGrowth ? RawGenerationCompleteness.Complete : RawGenerationCompleteness.Partial, result.Completeness);
+        Assert.Equal(!completeGrowth, result.Diagnostics.Any(d => d.Code == DiagnosticCodes.WalFramesRejected));
+        var generation = await vault.OpenGenerationAsync(result.AccountId, result.GenerationId, CancellationToken.None);
+        Assert.NotNull(generation);
+        Assert.Equal(completeGrowth, generation.Manifest.CaptureCheckpoint is not null);
+        var artifact = generation.Manifest.Artifacts.Single(a => a.Name == "message_0.db");
+        Assert.Equal(completeGrowth ? "4" : "2", artifact.Metadata!["page_count"]);
+        Assert.Equal(fixture.ExpectedImage, File.ReadAllBytes(Path.Combine(generation.GenerationDirectory, artifact.ContentRef)));
+        Assert.Equal(fixture.Main, File.ReadAllBytes(message));
+        Assert.Equal(fixture.Wal, File.ReadAllBytes(message + "-wal"));
+        var reopenedBaseline = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
+        Assert.NotNull(reopenedBaseline!.Manifest.CaptureCheckpoint);
+        var priorArtifact = reopenedBaseline.Manifest.Artifacts.Single(a => a.Name == "message_0.db");
+        Assert.Equal(priorBytes, File.ReadAllBytes(Path.Combine(reopenedBaseline.GenerationDirectory, priorArtifact.ContentRef)));
+    }
+
     [Fact]
     public async Task CurrentGenerationPlaintextWalShortTailProducesUnavailableCoverageWithoutCheckpoint()
     {
@@ -811,6 +863,10 @@ public sealed class WeChatCaptureAdapterTests
         {
             CaptureCheckpoint = m.CaptureCheckpoint! with { CaptureAdapterVersion = "0.2.0" },
         })));
+        Assert.Null(WeChatCaptureAdapter.BuildPriorMap(WithManifest(valid, m => m with
+        {
+            CaptureCheckpoint = m.CaptureCheckpoint! with { CaptureAdapterVersion = "0.3.0" },
+        })));
         // A partial predecessor cannot establish that its coverage is still current.
         Assert.Null(WeChatCaptureAdapter.BuildPriorMap(WithManifest(valid, m => m with
         {
@@ -1049,6 +1105,8 @@ public sealed class WeChatCaptureAdapterTests
 
         public string? FailureMessage { get; set; }
 
+        public IReadOnlyList<WeChatDatabaseKey> DatabaseKeys { get; init; } = [];
+
         /// <summary>The exact partition list the adapter asked to verify a key against.</summary>
         public IReadOnlyList<string> LastDatabasePaths { get; private set; } = [];
 
@@ -1057,7 +1115,7 @@ public sealed class WeChatCaptureAdapterTests
             AcquireCount++;
             LastDatabasePaths = databasePaths;
             return FailureMessage is null
-                ? WeChatDatabaseKeyAcquisitionResult.Success(new WeChatKeySet([]), "synthetic key set")
+                ? WeChatDatabaseKeyAcquisitionResult.Success(new WeChatKeySet(DatabaseKeys), "synthetic key set")
                 : WeChatDatabaseKeyAcquisitionResult.Failure(FailureMessage);
         }
     }

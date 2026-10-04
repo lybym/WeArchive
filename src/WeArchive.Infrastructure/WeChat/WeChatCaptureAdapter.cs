@@ -49,7 +49,7 @@ public sealed class WeChatCaptureAdapter : IIncrementalSourceCaptureAdapter, IDi
     /// It advances whenever validation semantics change, so older checkpoints cannot let a newly
     /// validated source partition bypass full materialization.
     /// </summary>
-    public const string Version = "0.3.0";
+    public const string Version = "0.4.0";
 
     private const string SourceDatabaseRole = "source-database";
 

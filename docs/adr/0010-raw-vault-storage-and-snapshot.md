@@ -62,6 +62,8 @@ The WeChat capture adapter reuses the existing `SqlCipherDatabaseCache`, which:
 - opens source files with shared read access (read-only, NFR-02);
 - authenticates every encrypted main page and validates WAL header/version/checksums, frame
   salts/checksums, page HMACs and commit/database-size markers before replaying committed frames;
+- checks each commit's growth for distinct valid evidence covering every newly exposed page;
+  a truncate discards removed pages and later regrowth requires fresh transaction evidence;
 - uses SQLite's read-only backup path for plaintext DB + WAL pairs so committed plaintext frames
   are included without changing the source;
 - materializes each encrypted SQLCipher database as a decrypted, ordinary SQLite image in a
