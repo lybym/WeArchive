@@ -485,9 +485,12 @@ For WeChat Windows adapter `0.2.0`, encrypted source pages are authenticated bef
 main database and plaintext database lengths must end on a complete SQLite page. Encrypted WAL
 replay checks the supported SQLite WAL magic/version/page size, header and rolling frame
 checksums, generation salts, SQLCipher page HMACs, and transaction commit/database-size markers.
-Only frames through the last valid commit are applied. A malformed or truncated WAL, failed page
-authentication, or unmaterializable plaintext WAL is recorded as unavailable/partial coverage;
-it cannot produce a complete generation or advance its capture checkpoint. Plaintext DB + WAL
+Only frames through the last valid commit are applied. SQLite may reuse a WAL without truncating
+it after a checkpoint; a frame whose salts differ from the current WAL header marks the end of the
+current generation, and bytes beyond that logical boundary are ignored as leftovers. A short tail
+before a stale-generation boundary, a malformed header/frame, failed page authentication, or
+unmaterializable plaintext WAL is recorded as unavailable/partial coverage; it cannot produce a
+complete generation or advance its capture checkpoint. Plaintext DB + WAL
 snapshots are made through SQLite's read-only backup API so committed plaintext WAL rows are not
 omitted and the source remains untouched. A mutation detected by the existing before/after
 source fingerprints makes the capture incomplete and discards staging.

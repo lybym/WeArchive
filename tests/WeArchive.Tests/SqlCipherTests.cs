@@ -189,8 +189,10 @@ public sealed class SqlCipherTests
         Assert.Equal(originalEncrypted, File.ReadAllBytes(encryptedPath));
     }
 
-    [Fact]
-    public void ReaderAppliesOnlyCommittedFramesFromTheCurrentWalGeneration()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReaderIgnoresAStaleGenerationTailAfterTheCurrentWalFrames(bool checksumBigEndian)
     {
         using var temp = new TempDirectory();
         var plaintextPath = temp.Combine("plain.db");
@@ -203,9 +205,10 @@ public sealed class SqlCipherTests
         const uint salt2 = 0x3824DAB3;
         const byte marker = 0x41;
 
-        // Build a WAL carrying: one committed update to page 2, a commit marker, then a frame
-        // from a previous WAL generation that must be ignored.
-        var wal = CreateWal(salt1, salt2);
+        // Build a reused WAL carrying a committed update to page 2, then a full stale-generation
+        // frame and a short physical tail. The stale salt is the logical end of the current WAL;
+        // old bytes after it must not downgrade the committed snapshot.
+        var wal = CreateWal(salt1, salt2, checksumBigEndian);
 
         wal.AddRange(BuildFrame(
             EncryptPage(Key, macKey, MarkedPage(plaintext, pageIndex: 1, marker), 2, Salt),
@@ -226,7 +229,7 @@ public sealed class SqlCipherTests
             databaseSize: 0,
             frameSalt1: salt1 - 1,
             frameSalt2: salt2));
-        wal.Add(0x7F); // incomplete trailing frame must not be silently accepted as complete
+        wal.AddRange([0x7F, 0x41, 0x20]); // leftover bytes after the stale-generation boundary
 
         SealWalChecksums(wal);
 
@@ -237,7 +240,8 @@ public sealed class SqlCipherTests
         var outcome = cache.GetPlaintext(encryptedPath);
 
         Assert.Equal(2, outcome.WalFramesApplied);
-        Assert.Equal(1, outcome.WalFramesRejected);
+        Assert.Equal(0, outcome.WalFramesRejected);
+        Assert.Equal(plaintext.Length / SqlCipherPageCipher.PageSize, outcome.PageCount);
 
         var image = File.ReadAllBytes(outcome.PlaintextPath);
 
@@ -249,6 +253,74 @@ public sealed class SqlCipherTests
         Assert.Equal(
             originalPage4[..64].ToArray(),
             image.AsSpan(3 * SqlCipherPageCipher.PageSize, 64).ToArray());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReaderKeepsACurrentGenerationShortWalTailPartial(bool checksumBigEndian)
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"), rows: 40);
+        var encryptedPath = temp.Combine("message_0.db");
+        File.WriteAllBytes(encryptedPath, EncryptDatabase(plaintext, Key, Salt));
+        var keys = new WeChatKeySet([new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key)]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+        var baseline = cache.GetPlaintext(encryptedPath);
+        var expected = File.ReadAllBytes(baseline.PlaintextPath);
+
+        var macKey = SqlCipherPageCipher.DeriveMacKey(Key, Salt);
+        const uint salt1 = 0x32D1F04A;
+        const uint salt2 = 0x3824DAB3;
+        const byte marker = 0x47;
+        var wal = CreateWal(salt1, salt2, checksumBigEndian);
+        wal.AddRange(BuildFrame(
+            EncryptPage(Key, macKey, MarkedPage(plaintext, pageIndex: 1, marker), 2, Salt),
+            2,
+            (uint)(plaintext.Length / SqlCipherPageCipher.PageSize),
+            salt1,
+            salt2));
+        var partialCurrentFrame = BuildFrame(
+            EncryptPage(Key, macKey, MarkedPage(plaintext, pageIndex: 2, marker: 0x48), 3, Salt),
+            3,
+            0,
+            salt1,
+            salt2);
+        wal.AddRange(partialCurrentFrame.AsSpan(0, 40).ToArray()); // includes the current salts, but not a full frame
+        SealWalChecksums(wal);
+        File.WriteAllBytes(encryptedPath + "-wal", [.. wal]);
+
+        var outcome = cache.GetPlaintext(encryptedPath);
+        expected.AsSpan(SqlCipherPageCipher.PageSize, 64).Fill(marker);
+
+        Assert.Equal(1, outcome.WalFramesApplied);
+        Assert.Equal(1, outcome.WalFramesRejected);
+        Assert.Equal(plaintext.Length / SqlCipherPageCipher.PageSize, outcome.PageCount);
+        Assert.Equal(expected, File.ReadAllBytes(outcome.PlaintextPath));
+    }
+
+    [Fact]
+    public void ReaderRejectsAWalHeaderShorterThanItsFixedHeader()
+    {
+        using var temp = new TempDirectory();
+        var plaintext = CreatePlaintextDatabase(temp.Combine("plain.db"), rows: 40);
+        var encryptedPath = temp.Combine("message_0.db");
+        File.WriteAllBytes(encryptedPath, EncryptDatabase(plaintext, Key, Salt));
+        var keys = new WeChatKeySet([new WeChatDatabaseKey(Convert.ToHexString(Salt).ToLowerInvariant(), Key)]);
+        using var cache = new SqlCipherDatabaseCache(keys);
+        var baseline = cache.GetPlaintext(encryptedPath);
+        var expected = File.ReadAllBytes(baseline.PlaintextPath);
+
+        var wal = CreateWal(0x32D1F04A, 0x3824DAB3);
+        wal.RemoveRange(31, wal.Count - 31);
+        File.WriteAllBytes(encryptedPath + "-wal", [.. wal]);
+
+        var outcome = cache.GetPlaintext(encryptedPath);
+
+        Assert.Equal(0, outcome.WalFramesApplied);
+        Assert.Equal(1, outcome.WalFramesRejected);
+        Assert.Equal(plaintext.Length / SqlCipherPageCipher.PageSize, outcome.PageCount);
+        Assert.Equal(expected, File.ReadAllBytes(outcome.PlaintextPath));
     }
 
     [Fact]
@@ -719,11 +791,11 @@ public sealed class SqlCipherTests
         return frame;
     }
 
-    private static List<byte> CreateWal(uint salt1, uint salt2)
+    private static List<byte> CreateWal(uint salt1, uint salt2, bool checksumBigEndian = false)
     {
         var wal = new List<byte>();
         var header = new byte[32];
-        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(0, 4), 0x377F0682);
+        BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(0, 4), checksumBigEndian ? 0x377F0683u : 0x377F0682u);
         BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(4, 4), 3_007_000);
         BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(8, 4), SqlCipherPageCipher.PageSize);
         BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(16, 4), salt1);

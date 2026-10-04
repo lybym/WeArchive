@@ -300,7 +300,8 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
         var rollingChecksum0 = checksum0;
         var rollingChecksum1 = checksum1;
         var validFrames = new List<(int Offset, uint PageNumber, uint DatabaseSize)>();
-        var rejected = hasIncompleteTail ? 1 : 0;
+        var rejected = 0;
+        var reachedOlderGeneration = false;
         uint transactionMaxPage = 0;
 
         for (var frame = 0; frame < frameCount; frame++)
@@ -310,6 +311,7 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
                 || BinaryPrimitives.ReadUInt32BigEndian(wal.AsSpan(offset + 12, 4)) != salt2)
             {
                 // The ring buffer still holds older generations beyond this point.
+                reachedOlderGeneration = true;
                 break;
             }
 
@@ -350,6 +352,15 @@ internal sealed class SqlCipherDatabaseCache : IDisposable
             }
 
             validFrames.Add((offset, pageNumber, databaseSize));
+        }
+
+        // SQLite may reuse a WAL file without truncating it. A stale-salt frame marks the end of
+        // the current generation, so any physical short tail after that boundary is leftover
+        // storage from older generations, not an incomplete frame in the current WAL. Before such
+        // a boundary, the same short tail remains ambiguous and must keep the snapshot partial.
+        if (hasIncompleteTail && !reachedOlderGeneration)
+        {
+            rejected++;
         }
 
         if (lastCommitFrame < 0)
