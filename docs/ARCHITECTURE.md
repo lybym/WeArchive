@@ -668,3 +668,13 @@ A code change is architecture-compliant when:
 9. persistent changes include migration/provenance implications;
 10. implementation does not silently strengthen reliability semantics beyond the PRD/Issue/milestone;
 11. docs change with behavior or architecture.
+
+### Retained-vault inspection
+
+Issue #84 adds `VaultInspectionService` in Infrastructure/RawVault as a source-neutral read-only
+application boundary used by the thin `vault stats` / `vault verify` CLI transport. It builds
+transient locations by validating authoritative packs rather than trusting the derived lookup index,
+then uses the existing streaming artifact verification path. No source adapter or canonical archive
+is constructed for these commands; no persistent schema or publication protocol changes.
+See RAW_VAULT.md and CLI.md for accounting, failure and JSON contracts (PRD FR-02/04/05/06/22,
+G1/G3/G8/G10; M1.5; ADR 0011).

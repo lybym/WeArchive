@@ -18,7 +18,17 @@ internal sealed class RawVaultV2PackStore
     private readonly bool _compressObjects;
     private readonly int _targetPackBytes;
     private readonly Action? _beforePackPublish;
+    private readonly RawVaultPackInventory? _inventory;
     internal RawCaptureStorageCounters Counters { get; private set; } = new();
+
+    // Inspection deliberately bypasses the disposable index and never opens a writer lock.
+    internal RawVaultV2PackStore(string accountDirectory, RawVaultPackInventory inventory)
+    {
+        _root = Path.Combine(accountDirectory, "objects"); _packs = Path.Combine(_root, "packs");
+        _index = Path.Combine(_root, "lookup.sqlite"); _lockPath = Path.Combine(_root, "writer.lock");
+        _targetPackBytes = TargetPackBytes;
+        _inventory = inventory;
+    }
 
     internal RawVaultV2PackStore(string accountDirectory, bool compressObjects = true, int targetPackBytes = TargetPackBytes,
         Action? beforePackPublish = null)
@@ -38,6 +48,7 @@ internal sealed class RawVaultV2PackStore
         Action? afterPackPublished = null)
     {
         ArgumentNullException.ThrowIfNull(values);
+        if (_inventory is not null) throw new InvalidOperationException("The inspection pack store is read-only.");
         EnsureIndex();
         using var writerLock = new FileStream(_lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var pendingPack = new List<(RawVaultV2Format.StoredObject Value, byte[] Bytes)>();
@@ -175,7 +186,14 @@ internal sealed class RawVaultV2PackStore
         using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
         var path = new HashSet<string>(StringComparer.Ordinal);
         long written = 0;
-        Visit(artifact.Root, expectedLevel: null, artifact.BlockCount, checked((ulong)artifact.Size));
+        byte rootLevel = 0;
+        var rootNodes = artifact.BlockCount;
+        while (rootNodes > RawVaultV2Format.Fanout)
+        {
+            rootNodes = (rootNodes - 1) / RawVaultV2Format.Fanout + 1;
+            rootLevel++;
+        }
+        Visit(artifact.Root, rootLevel, artifact.BlockCount, checked((ulong)artifact.Size));
         if (written != artifact.Size || Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() != artifact.Sha256)
             throw new InvalidDataException("Raw Vault v2 reconstructed artifact integrity check failed.");
 
@@ -209,8 +227,19 @@ internal sealed class RawVaultV2PackStore
             }
             else
             {
+                ulong childCapacity = 1;
+                for (var level = 0; level < node.Level; level++)
+                    childCapacity = checked(childCapacity * RawVaultV2Format.Fanout);
+                var remainingBlocks = expectedBlocks;
                 foreach (var child in node.Children)
+                {
+                    var canonicalBlocks = Math.Min(remainingBlocks, childCapacity);
+                    if (canonicalBlocks == 0 || child.Blocks != canonicalBlocks)
+                        throw new InvalidDataException("Raw Vault v2 map is not canonically packed.");
                     Visit(child.Digest, checked((byte)(node.Level - 1)), child.Blocks, child.Bytes);
+                    remainingBlocks -= canonicalBlocks;
+                }
+                if (remainingBlocks != 0) throw new InvalidDataException("Raw Vault v2 map is not canonically packed.");
             }
             path.Remove(key);
         }
@@ -224,6 +253,8 @@ internal sealed class RawVaultV2PackStore
     private IReadOnlyList<RawVaultV2Format.StoredObject> GetMany(byte kind, IReadOnlyList<byte[]> digests)
     {
         if (digests.Count == 0) return [];
+        if (_inventory is not null)
+            return _inventory.ReadMany(kind, digests);
         try
         {
             if (TryReadMany(kind, digests, out var indexedValues)) return indexedValues;

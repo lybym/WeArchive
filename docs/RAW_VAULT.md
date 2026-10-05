@@ -632,3 +632,40 @@ wearchive ingest --account <id> [--conversation <source-id>] [--replay]
 `capture` is a thin adapter over `CaptureService`; `ingest` uses the Raw Vault as the read-only
 source and writes canonical conversations transactionally. See [CLI.md](CLI.md) for the full
 contract.
+
+## Read-only vault inspection (Issue #84)
+
+`wearchive vault stats` and `wearchive vault verify` inspect **all retained generations** in
+v1, v2 or mixed accounts, independently of live WeChat, keys or canonical SQLite. Both currently
+perform a full observed scan: validate manifests/lineage and all sealed packs, traverse artifact
+maps, and stream each artifact through its historical size/SHA-256 checks. `stats` does not
+claim cheap directory-size estimates. `verify` is the explicit expensive integrity entry point.
+
+`VaultInspectionService` owns these rules in Infrastructure/RawVault; the CLI only parses options
+and renders results. Pack locations are derived in memory from authoritative sealed packs.
+The on-disk lookup index is opened read-only for consistency diagnostics and never used to establish
+artifact integrity. Missing, corrupt or inconsistent indexes are reported as rebuildable when
+packs validate; inspection does not rebuild them on disk. No evidence, index, writer lock, cache,
+capture checkpoint or canonical database is created or modified, including on caught failure or
+cancellation. This adds no publication/recovery protocol or persisted schema.
+
+Accounting deduplicates typed objects within each account, never across accounts. Logical generation
+bytes sum artifact references, including shared artifacts in every retained generation. V1 whole
+artifact bytes count distinct generation-relative files. Unique v2 payload and map metadata lengths
+are uncompressed; separate stored byte metrics describe record payload representation. All physical
+record payload bytes and duplicate record bytes remain visible. Unique stored byte values choose the
+first record in ordinal pack-path order if duplicates have different representations. Pack logical
+bytes include headers, framing, duplicate records and footers. Pack allocated bytes use Windows
+`FILE_STANDARD_INFO.AllocationSize` and become unavailable if the filesystem/API cannot report them.
+
+Reachability is the union of every retained artifact's map/data closure; unreferenced validated data
+and map bytes are reported separately. Orphan sealed packs are scanned and validated too. Generation
+and pack staging files are counted as temporary bytes, never evidence. There is no persistent
+materialized cache; its metric is not applicable. Historical scratch peaks, source changed pages,
+storage changed blocks and a write-amplification denominator cannot be reconstructed from a retained
+vault and remain unavailable/not applicable. No zero-denominator ratio is fabricated.
+
+Unsupported/corrupt authoritative content is an explicit failure with account, generation, artifact
+and object/pack details where available. The first failure terminates the scan and **all aggregate
+metrics are withheld**; partial counts are never presented as verified totals. Run inspection while
+capture is idle: this is an observed read, not a concurrent-writer snapshot or multi-process protocol.
