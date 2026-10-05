@@ -166,14 +166,23 @@ if ($IncludeKillCapture) {
     $stagingBytes = [int64]$statsAfter.Json.metrics.vault_staging_bytes.value
 
     $verify = Assert-BoundaryVaultVerified -Vault $vaultRoot
-    $passed = ($generationsAfter -eq $generationsBefore) -and $verify.Succeeded
-    $observation = ('killed={0} generation_count {1}->{2} (no incomplete publication), staging_bytes={3}, verify={4}' -f
-        $killed, $generationsBefore, $generationsAfter, $stagingBytes, $verify.Succeeded)
-    Add-BoundaryRecord -Exercise 'boundary-kill-capture' -Passed $passed -Observation $observation -Result $statsAfter
-    if (-not $passed) {
-        throw 'boundary-kill-capture FAILED: an incomplete generation must never be published.'
+    if (-not $killed) {
+        # The capture finished before the kill window: inconclusive, not a violation.
+        $observation = ('inconclusive: the capture completed before the kill window ({0}s); ' +
+            'generation_count {1}->{2}, verify={3}. Re-run with a smaller -KillCaptureAfterSeconds.') -f
+            $KillCaptureAfterSeconds, $generationsBefore, $generationsAfter, $verify.Succeeded
+        Add-BoundaryRecord -Exercise 'boundary-kill-capture' -Passed $false -Observation $observation -Result $statsAfter
+        Write-Warning "  INCONCLUSIVE: $observation"
+    } else {
+        $passed = ($generationsAfter -eq $generationsBefore) -and $verify.Succeeded
+        $observation = ('killed={0} generation_count {1}->{2} (no incomplete publication), staging_bytes={3}, verify={4}' -f
+            $killed, $generationsBefore, $generationsAfter, $stagingBytes, $verify.Succeeded)
+        Add-BoundaryRecord -Exercise 'boundary-kill-capture' -Passed $passed -Observation $observation -Result $statsAfter
+        if (-not $passed) {
+            throw 'boundary-kill-capture FAILED: an incomplete generation must never be published.'
+        }
+        Write-Host "  PASS: $observation"
     }
-    Write-Host "  PASS: $observation"
 }
 
 # ---------------------------------------------------------------------------

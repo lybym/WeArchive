@@ -228,6 +228,12 @@ $outcome = Get-AcceptancePointOutcome `
     -VerifyExitCode $verifyExit -VerifyJson $verifyJson
 
 $explanation = $null
+if ($SkipVerify -and $capture.ExitCode -eq 0 -and $outcome -eq 'failed_verify') {
+    # No verify ran; the published generation is counted as published-but-unverified.
+    $outcome = 'success_partial'
+}
+
+$explanation = $null
 if ($outcome -eq 'failed_capture') {
     $code = $null
     if ($capture.Json -and $capture.Json.PSObject.Properties['error']) {
@@ -242,12 +248,17 @@ if ($outcome -eq 'failed_capture') {
         'This is an acceptance-blocking failure that must be investigated before the run continues.'
     Write-Warning "Point $current classified $outcome."
 } elseif ($outcome -eq 'success_partial') {
-    $diagnostics = @()
-    if ($capture.Json -and $capture.Json.PSObject.Properties['diagnostics']) {
-        $diagnostics = @($capture.Json.diagnostics | ForEach-Object { $_.code })
+    if ($SkipVerify) {
+        $explanation = 'Authoritative vault verify was skipped by operator (-SkipVerify); the published ' +
+            'generation is recorded as published-but-unverified and cannot count as a fully verified success.'
+    } else {
+        $diagnostics = @()
+        if ($capture.Json -and $capture.Json.PSObject.Properties['diagnostics']) {
+            $diagnostics = @($capture.Json.diagnostics | ForEach-Object { $_.code })
+        }
+        $explanation = 'Published generation is partial; coverage gaps: ' +
+            (($diagnostics | Select-Object -Unique) -join ', ') + '.'
     }
-    $explanation = 'Published generation is partial; coverage gaps: ' +
-        (($diagnostics | Select-Object -Unique) -join ', ') + '.'
     Write-Warning "Point $current classified $outcome. $explanation"
 }
 
