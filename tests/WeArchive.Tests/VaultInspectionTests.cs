@@ -88,6 +88,77 @@ public sealed class VaultInspectionTests
     }
 
     [Theory]
+    [InlineData("stats", false)] [InlineData("verify", false)]
+    [InlineData("stats", true)] [InlineData("verify", true)]
+    public async Task RealWalIndexWithoutSidecarsCannotCreateOrChangeVaultFiles(string operation, bool v2)
+    {
+        using var fixture = new VaultFixture();
+        if (v2) fixture.AddV2("g1"); else fixture.AddV1("g1");
+        var index = Path.Combine(fixture.Account, "objects", "lookup.sqlite");
+        Directory.CreateDirectory(Path.GetDirectoryName(index)!);
+        using (var connection = new SqliteConnection($"Data Source={index};Pooling=False"))
+        {
+            connection.Open(); using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode=WAL";
+            Assert.Equal("wal", command.ExecuteScalar());
+            command.CommandText = "CREATE TABLE IF NOT EXISTS objects(kind INTEGER,digest BLOB,pack_file TEXT,record_offset INTEGER,record_length INTEGER)";
+            command.ExecuteNonQuery();
+        }
+        Assert.Equal(2, File.ReadAllBytes(index)[18]);
+        Assert.False(File.Exists(index + "-wal")); Assert.False(File.Exists(index + "-shm"));
+        var before = fixture.Snapshot();
+        var result = await RunCli(fixture, ["vault", operation, "--json", "--no-input"]);
+        Assert.Equal(0, result.Exit); Assert.Empty(result.Error);
+        using var json = JsonDocument.Parse(result.Output);
+        Assert.True(json.RootElement.GetProperty("succeeded").GetBoolean());
+        Assert.Equal("inconsistent_rebuildable", json.RootElement.GetProperty("accounts")[0].GetProperty("derived_index_status").GetString());
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Theory]
+    [InlineData("NULL,zeroblob(32),'pack.rvpk',16,48")]
+    [InlineData("1,NULL,'pack.rvpk',16,48")]
+    [InlineData("1,zeroblob(32),NULL,16,48")]
+    [InlineData("1,zeroblob(32),'pack.rvpk',NULL,48")]
+    [InlineData("1,zeroblob(32),'pack.rvpk',16,NULL")]
+    [InlineData("257,zeroblob(32),'pack.rvpk',16,48")]
+    [InlineData("-1,zeroblob(32),'pack.rvpk',16,48")]
+    [InlineData("1,zeroblob(31),'pack.rvpk',16,48")]
+    [InlineData("1,'not-a-blob','pack.rvpk',16,48")]
+    [InlineData("1,zeroblob(32),17,16,48")]
+    [InlineData("1,zeroblob(32),'../pack.rvpk',16,48")]
+    [InlineData("1,zeroblob(32),'pack.rvpk',-1,48")]
+    [InlineData("1,zeroblob(32),'pack.rvpk','bad-offset',48")]
+    [InlineData("1,zeroblob(32),'pack.rvpk',16,2147483648")]
+    [InlineData("1,zeroblob(32),'pack.rvpk',16,47")]
+    [InlineData("1,zeroblob(32),'pack.rvpk',16,48.5")]
+    [InlineData("'bad-kind',zeroblob(32),'pack.rvpk',16,48")]
+    [InlineData("missing_schema")]
+    public async Task MalformedDerivedRowsAndSchemasCannotFailValidAuthority(string values)
+    {
+        using var fixture = new VaultFixture(); fixture.AddV2("g1");
+        var index = Path.Combine(fixture.Account, "objects", "lookup.sqlite");
+        using (var connection = new SqliteConnection($"Data Source={index};Pooling=False"))
+        {
+            connection.Open(); using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE objects; CREATE TABLE objects(kind,digest,pack_file,record_offset,record_length)";
+            command.ExecuteNonQuery();
+            command.CommandText = values == "missing_schema" ? "DROP TABLE objects; CREATE TABLE objects(unrelated)" : $"INSERT INTO objects VALUES ({values})";
+            command.ExecuteNonQuery();
+        }
+        var before = fixture.Snapshot();
+        foreach (var operation in new[] { "stats", "verify" })
+        {
+            var result = await RunCli(fixture, ["vault", operation, "--json", "--no-input"]);
+            Assert.Equal(0, result.Exit); Assert.Empty(result.Error);
+            using var json = JsonDocument.Parse(result.Output);
+            Assert.True(json.RootElement.GetProperty("succeeded").GetBoolean());
+            Assert.Equal("corrupt_rebuildable", json.RootElement.GetProperty("accounts")[0].GetProperty("derived_index_status").GetString());
+            Assert.Equal(before, fixture.Snapshot());
+        }
+    }
+
+    [Theory]
     [InlineData("missing_pack")] [InlineData("corrupt_pack")] [InlineData("missing_map")]
     [InlineData("missing_data")] [InlineData("bad_sha")] [InlineData("manifest_version")]
     [InlineData("vault_version")] [InlineData("object_version")] [InlineData("bad_map")]

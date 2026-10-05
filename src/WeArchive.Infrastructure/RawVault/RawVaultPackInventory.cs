@@ -83,6 +83,17 @@ internal sealed class RawVaultPackInventory
         if (File.Exists(path + "-wal")) return "inconsistent_rebuildable";
         try
         {
+            // WAL mode persists in the database header after checkpoint/last close removes
+            // its sidecars. Inspect it before SQLite can create new WAL/shared-memory files.
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Span<byte> header = stackalloc byte[20];
+                file.ReadExactly(header);
+                if (!header[..16].SequenceEqual("SQLite format 3\0"u8)) return "corrupt_rebuildable";
+                if (header[18] == 2 || header[19] == 2) return "inconsistent_rebuildable";
+                if (header[18] != 1 || header[19] != 1) return "corrupt_rebuildable";
+            }
+            token.ThrowIfCancellationRequested();
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
             connection.Open();
@@ -96,13 +107,22 @@ internal sealed class RawVaultPackInventory
             while (reader.Read())
             {
                 token.ThrowIfCancellationRequested();
-                var key = Key(reader.GetByte(0), (byte[])reader[1]);
-                if (!found.Add(key) || !locations.Contains((key, reader.GetString(2), reader.GetInt64(3), reader.GetInt32(4))))
+                // Validate SQLite storage classes before conversions: derived rows can be
+                // NULL, textual or numerically out of range even when quick_check succeeds.
+                if (reader.GetValue(0) is not long kind || kind is not (1 or 2) ||
+                    reader.GetValue(1) is not byte[] digest || digest.Length != 32 ||
+                    reader.GetValue(2) is not string pack || string.IsNullOrWhiteSpace(pack) || Path.GetFileName(pack) != pack ||
+                    reader.GetValue(3) is not long offset || offset < 16 ||
+                    reader.GetValue(4) is not long length || length is < 48 or > int.MaxValue)
+                    return "corrupt_rebuildable";
+                var key = Key((byte)kind, digest);
+                if (!found.Add(key) || !locations.Contains((key, pack, offset, (int)length)))
                     return "inconsistent_rebuildable";
             }
             return found.SetEquals(Objects.Keys) ? "consistent" : "inconsistent_rebuildable";
         }
-        catch (Exception ex) when (ex is SqliteException or InvalidCastException or IOException)
+        catch (Exception ex) when (ex is SqliteException or InvalidCastException or IOException or
+            InvalidOperationException or OverflowException or FormatException or UnauthorizedAccessException)
         { return "corrupt_rebuildable"; }
     }
 
