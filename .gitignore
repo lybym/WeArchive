@@ -509,5 +509,10 @@ conversations.yaml
 collections.yaml
 manifest.json
 
+# The filled-in acceptance config is machine-private (user-provided paths and
+# account selectors); only the committed config.example.json may exist here.
+# See acceptance/README.md.
+/acceptance/config.json
+
 # Keep the repository's own fixture data and any intentional sample data.
 !tests/**/*.db
