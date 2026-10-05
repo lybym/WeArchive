@@ -59,7 +59,14 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
     }
 
     internal WeChatWindowsSourceAdapter(SourceAccount capturedAccount, SourceDescriptor capturedDescriptor, WeChatAccountReader capturedReader, SqlCipherDatabaseCache capturedCache, IDisposable? capturedArtifacts = null)
-        : this(new WcdbCipherConfigKeyAcquirer())
+        : this(capturedAccount, capturedDescriptor, capturedReader, capturedCache, new WcdbCipherConfigKeyAcquirer(), capturedArtifacts)
+    {
+    }
+
+    internal WeChatWindowsSourceAdapter(SourceAccount capturedAccount, SourceDescriptor capturedDescriptor,
+        WeChatAccountReader capturedReader, SqlCipherDatabaseCache capturedCache,
+        IWeChatDatabaseKeyAcquirer keyAcquirer, IDisposable? capturedArtifacts = null)
+        : this(keyAcquirer)
     {
         _capturedAccount = capturedAccount;
         _capturedDescriptor = capturedDescriptor;

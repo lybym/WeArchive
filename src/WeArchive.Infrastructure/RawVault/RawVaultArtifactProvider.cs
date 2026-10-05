@@ -14,6 +14,8 @@ internal sealed class RawVaultArtifactProvider : IDisposable
     private readonly string? _materializationRoot;
     private bool _disposed;
 
+    internal string? MaterializationRoot => _materializationRoot;
+
     private RawVaultArtifactProvider(RawGeneration generation)
     {
         _generation = generation;

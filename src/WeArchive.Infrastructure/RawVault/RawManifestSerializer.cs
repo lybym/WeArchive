@@ -62,7 +62,7 @@ internal static class RawManifestSerializer
 
         foreach (var artifact in manifest.Artifacts)
         {
-            if (string.IsNullOrWhiteSpace(artifact.Role) || string.IsNullOrWhiteSpace(artifact.Name) || artifact.Size < 0)
+            if (artifact is null || string.IsNullOrWhiteSpace(artifact.Role) || string.IsNullOrWhiteSpace(artifact.Name) || artifact.Size < 0)
                 return null;
 
             if (manifest.VaultFormatVersion == 1)

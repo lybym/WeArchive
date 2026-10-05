@@ -3,6 +3,7 @@ using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 using WeArchive.Infrastructure.RawVault;
+using WeArchive.Infrastructure.WeChat.KeyAcquisition;
 using WeArchive.Infrastructure.WeChat.Compatibility;
 
 namespace WeArchive.Infrastructure.WeChat;
@@ -15,13 +16,16 @@ namespace WeArchive.Infrastructure.WeChat;
 [SupportedOSPlatform("windows")]
 internal static class CapturedWeChatSourceAdapter
 {
-    public static WeChatWindowsSourceAdapter Create(RawGeneration generation)
+    public static WeChatWindowsSourceAdapter Create(RawGeneration generation) => Create(generation, new WcdbCipherConfigKeyAcquirer());
+
+    internal static WeChatWindowsSourceAdapter Create(RawGeneration generation, IWeChatDatabaseKeyAcquirer keyAcquirer)
     {
         ArgumentNullException.ThrowIfNull(generation);
+        ArgumentNullException.ThrowIfNull(keyAcquirer);
         var artifacts = RawVaultArtifactProvider.Create(generation);
         try
         {
-            return CreateCore(generation, artifacts);
+            return CreateCore(generation, artifacts, keyAcquirer);
         }
         catch
         {
@@ -30,7 +34,8 @@ internal static class CapturedWeChatSourceAdapter
         }
     }
 
-    private static WeChatWindowsSourceAdapter CreateCore(RawGeneration generation, RawVaultArtifactProvider artifacts)
+    private static WeChatWindowsSourceAdapter CreateCore(RawGeneration generation, RawVaultArtifactProvider artifacts,
+        IWeChatDatabaseKeyAcquirer keyAcquirer)
     {
         var manifest = generation.Manifest;
         if (manifest.AccountId != generation.AccountId
@@ -122,7 +127,7 @@ internal static class CapturedWeChatSourceAdapter
             SourceProductName = manifest.Source.SourceProductName,
             IsAvailable = true,
         };
-        return new WeChatWindowsSourceAdapter(sourceAccount, descriptor, reader, cache, artifacts);
+        return new WeChatWindowsSourceAdapter(sourceAccount, descriptor, reader, cache, keyAcquirer, artifacts);
     }
 
     /// <summary>

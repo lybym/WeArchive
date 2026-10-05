@@ -36,6 +36,15 @@ public sealed class RawVaultArtifactProviderTests
     }
 
     [Fact]
+    public void NullArtifactEntryIsRejectedAsAnInvalidManifest()
+    {
+        var manifest = Manifest("gen_3333333333333333", "a_0123456789abcdef", DateTimeOffset.UtcNow,
+            [null!], 1, 1, null);
+
+        Assert.Null(RawManifestSerializer.TryDeserialize(RawManifestSerializer.Serialize(manifest)));
+    }
+
+    [Fact]
     public async Task V2GenerationReconstructsVerifiedArtifactAndRebuildsDeletedIndex()
     {
         var fixture = CreateV2Generation();
@@ -61,6 +70,32 @@ public sealed class RawVaultArtifactProviderTests
             }
 
             Assert.False(File.Exists(materialized));
+        }
+        finally
+        {
+            Directory.Delete(fixture.Root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CancelledV2MaterializationDoesNotLeaveAnArtifactFile()
+    {
+        var fixture = CreateV2Generation();
+        try
+        {
+            var store = new RawVaultStore(fixture.Root);
+            var opened = await store.OpenGenerationAsync(fixture.AccountId, fixture.GenerationId, CancellationToken.None);
+            Assert.NotNull(opened);
+            using var provider = RawVaultArtifactProvider.Create(opened!);
+            var materializationRoot = Assert.IsType<string>(provider.MaterializationRoot);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+
+            Assert.Throws<OperationCanceledException>(() =>
+                provider.GetVerifiedPath(opened!.Manifest.Artifacts[0], cancellation.Token));
+            Assert.Empty(Directory.GetFiles(materializationRoot));
+            provider.Dispose();
+            Assert.False(Directory.Exists(materializationRoot));
         }
         finally
         {
