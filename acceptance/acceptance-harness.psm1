@@ -367,6 +367,131 @@ function Get-AcceptancePointOutcome {
     return 'success'
 }
 
+function Get-AcceptanceCaptureSummary {
+    <#
+    .SYNOPSIS
+        Renders the one-line presentation summary of a capture result.
+    .DESCRIPTION
+        The RC emits `{"error":{code,message}}` on stdout for EVERY failed capture,
+        so a truthy Json document does NOT imply the success shape. This renderer is
+        the single strict-mode-safe place that distinguishes the two shapes; capture
+        presentation must never read success-shape fields off an unverified document.
+    #>
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Result
+    )
+
+    $exitCode = Get-AcceptanceJsonProperty -Object $Result -Name 'ExitCode'
+    $json = Get-AcceptanceJsonProperty -Object $Result -Name 'Json'
+
+    if ($exitCode -eq 0) {
+        if ($null -eq $json) {
+            return "exit=0 (no JSON document; CLI contract violation)"
+        }
+        $generationId = Get-AcceptanceJsonProperty -Object $json -Name 'generation_id'
+        $mode = Get-AcceptanceJsonProperty -Object $json -Name 'mode'
+        $completeness = Get-AcceptanceJsonProperty -Object $json -Name 'completeness'
+        if ($null -eq $generationId -or $null -eq $completeness) {
+            return "exit=0 (JSON document lacks the capture success shape; CLI contract violation)"
+        }
+        $coverage = Get-AcceptanceJsonProperty -Object $json -Name 'coverage_summary'
+        return 'generation={0} mode={1} completeness={2} expected={3} captured={4} reused={5}' -f
+            $generationId, $mode, $completeness,
+            (Get-AcceptanceJsonProperty -Object $coverage -Name 'expected'),
+            (Get-AcceptanceJsonProperty -Object $coverage -Name 'captured'),
+            (Get-AcceptanceJsonProperty -Object $coverage -Name 'reused')
+    }
+
+    # Failure shape: the standard error envelope (or nothing at all).
+    $errorCode = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $json -Name 'error') -Name 'code'
+    $errorMessage = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $json -Name 'error') -Name 'message'
+    $summary = "failed: exit=$exitCode code=$errorCode"
+    if ($errorMessage) {
+        $summary += ' message=' + (($errorMessage -replace '\s+', ' '))
+        if ($summary.Length -gt 400) { $summary = $summary.Substring(0, 400) + ' [...]' }
+    }
+    return $summary
+}
+
+function Test-AcceptanceOfflineCaptureProof {
+    <#
+    .SYNOPSIS
+        Classifies one RC capture attempt as proof (or not) of the offline premise:
+        the live WeChat source/key path cannot succeed.
+    .DESCRIPTION
+        Validated against the RC's capture-failure taxonomy at the pinned RC commit
+        (docs/CLI.md + CaptureCommand.cs): failed captures emit the standard error
+        envelope with code `failure` (the key-acquisition-failed fatal lands here,
+        with the "WeChat is not running..." message), `source_unavailable`,
+        `no_accounts` or `account_not_found`; exit 2 usage; exit 130 cancellation.
+
+        Proof classes:
+          - capture-refusal (source/key path): exit != 0 with code `source_unavailable`
+            (the source data path is gone) or code `failure` whose message indicates
+            the client/key path ("not running" / "key"), i.e. key acquisition cannot
+            succeed with the client closed.
+          - zero-new-payload: exit 0 with zero new data bytes and zero new map nodes
+            (all evidence reused; no key acquisition was required).
+        Everything else — including `account_not_found`/`no_accounts` (configuration
+        problems, not offline evidence), cancellation, or an unrelated `failure` — is
+        INCONCLUSIVE and must abort the phase instead of being recorded as proof.
+    #>
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Result
+    )
+
+    $exitCode = Get-AcceptanceJsonProperty -Object $Result -Name 'ExitCode'
+    $json = Get-AcceptanceJsonProperty -Object $Result -Name 'Json'
+
+    if ($exitCode -eq 0) {
+        $counters = Get-AcceptanceJsonProperty -Object $json -Name 'storage_counters'
+        $newBytes = [int64](Get-AcceptanceJsonProperty -Object $counters -Name 'new_data_bytes' -Default 0)
+        $newNodes = [int64](Get-AcceptanceJsonProperty -Object $counters -Name 'new_map_nodes' -Default 0)
+        if ($newBytes -eq 0 -and $newNodes -eq 0) {
+            return [pscustomobject]@{
+                Proven = $true
+                Class = 'zero-new-payload'
+                Reason = 'capture succeeded but reused all evidence (new_data_bytes=0, new_map_nodes=0); no key acquisition was required.'
+            }
+        }
+        return [pscustomobject]@{
+            Proven = $false
+            Class = 'materialized'
+            Reason = ("capture succeeded and materialized new evidence (new_data_bytes={0}, new_map_nodes={1}); " +
+                      'the source key acquisition succeeded, so the live source/key path was NOT unavailable.') -f
+                $newBytes, $newNodes
+        }
+    }
+
+    $errorCode = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $json -Name 'error') -Name 'code'
+    $errorMessage = [string](Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $json -Name 'error') -Name 'message')
+
+    if ($errorCode -eq 'source_unavailable') {
+        return [pscustomobject]@{
+            Proven = $true
+            Class = 'capture-refusal-source-path'
+            Reason = 'capture refused with source_unavailable: the WeChat source data path is unavailable.'
+        }
+    }
+
+    if ($errorCode -eq 'failure' -and
+        $errorMessage -match '(not running|database key|key acquisition)') {
+        return [pscustomobject]@{
+            Proven = $true
+            Class = 'capture-refusal-key-path'
+            Reason = 'capture refused on the client/key path: key acquisition cannot succeed while the client is unavailable.'
+        }
+    }
+
+    return [pscustomobject]@{
+        Proven = $false
+        Class = 'inconclusive'
+        Reason = ("capture failed for a reason that does not evidence the offline premise " +
+                  "(exit {0}, code {1}, message {2}); re-run the phase under a real offline state.") -f
+            $exitCode, $errorCode, $errorMessage
+    }
+}
+
 function Get-AcceptanceCurrentPointIndex {
     <#
     .SYNOPSIS
@@ -1080,6 +1205,8 @@ Export-ModuleMember -Function @(
     'Get-AcceptanceRcExe',
     'Invoke-WearchiveRc',
     'Get-AcceptanceJsonProperty',
+    'Get-AcceptanceCaptureSummary',
+    'Test-AcceptanceOfflineCaptureProof',
     'Get-AcceptancePointOutcome',
     'Get-AcceptanceCurrentPointIndex',
     'Get-AcceptancePlannedPointTime',

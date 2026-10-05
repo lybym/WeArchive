@@ -130,10 +130,10 @@ if ($rebuildBaseline.ExitCode -ne 0 -or $rebuildSucceeded -ne $true) {
     throw 'Pre-state canonical rebuild failed.'
 }
 $baselineCounts = [ordered]@{
-    account_count = [int]$rebuildBaseline.Json.account_count
-    participant_count = [int]$rebuildBaseline.Json.participant_count
-    conversation_count = [int]$rebuildBaseline.Json.conversation_count
-    message_count = [int]$rebuildBaseline.Json.message_count
+    account_count = [int](Get-AcceptanceJsonProperty -Object $rebuildBaseline.Json -Name 'account_count' -Default 0)
+    participant_count = [int](Get-AcceptanceJsonProperty -Object $rebuildBaseline.Json -Name 'participant_count' -Default 0)
+    conversation_count = [int](Get-AcceptanceJsonProperty -Object $rebuildBaseline.Json -Name 'conversation_count' -Default 0)
+    message_count = [int](Get-AcceptanceJsonProperty -Object $rebuildBaseline.Json -Name 'message_count' -Default 0)
 }
 Add-RecoveryRecord -Step 'pre-state-rebuild' -Passed $true -Observation ($baselineCounts | ConvertTo-Json -Compress) -Result $rebuildBaseline
 Write-Host ("  baseline counts: $($baselineCounts | ConvertTo-Json -Compress)")
@@ -154,34 +154,24 @@ Write-Host ("  doctor source.available = {0} (source_version = {1})" -f $sourceA
 
 # The RC's own attempt is the key-acquisition proof: when materialization is required
 # (new/changed evidence), the key can only come from a running, signed-in client.
-$capture = Invoke-RecoveryStep -Arguments @('capture', '--json', '--no-input')
+# Every capture selects the account explicitly (README §4).
+$capture = Invoke-RecoveryStep -Arguments @(
+    'capture', '--account', $config.capture.account_selector, '--json', '--no-input')
 $offlineState = 'doctor source.available={0}, source_version={1}' -f $sourceAvailable, $sourceVersion
-if ($capture.ExitCode -eq 0) {
-    $counters = Get-AcceptanceJsonProperty -Object $capture.Json -Name 'storage_counters'
-    $newBytes = [int64](Get-AcceptanceJsonProperty -Object $counters -Name 'new_data_bytes' -Default 0)
-    $newNodes = [int64](Get-AcceptanceJsonProperty -Object $counters -Name 'new_map_nodes' -Default 0)
-    if ($newBytes -ne 0 -or $newNodes -ne 0) {
-        # New evidence WAS materialized, so keys WERE acquirable: the offline premise
-        # does not hold. Fail closed and abort — the phase must be re-run with the
-        # source/key path actually unavailable.
-        $observation = ('FAILED premise: capture succeeded and materialized new evidence ' +
-            '(new_data_bytes={0}, new_map_nodes={1}); the source key acquisition succeeded, so ' +
-            'the live source/key path was NOT unavailable ({2}). Re-run this phase with the ' +
-            'WeChat client closed.') -f $newBytes, $newNodes, $offlineState
-        Add-RecoveryRecord -Step 'source-key-state' -Passed $false -Observation $observation -Result $capture
-        throw $observation
-    }
-    $offlineProof = ('OFFLINE (zero-new-payload path): capture succeeded but reused all evidence ' +
-        '(new_data_bytes=0, new_map_nodes=0), so no key acquisition was required; {0}.') -f $offlineState
-    Add-RecoveryRecord -Step 'source-key-state' -Passed $true -Observation $offlineProof -Result $capture
-    Write-Host "  $offlineProof"
+
+# The proof classification lives in the module (unit-tested against the RC's
+# capture-failure taxonomy): only source/key-path refusals and the zero-new-payload
+# reuse path evidence the offline premise; anything else is inconclusive and aborts.
+$proof = Test-AcceptanceOfflineCaptureProof -Result $capture
+$observation = ('{0}: {1} ({2}. Stderr: {3})' -f
+    $proof.Class, $proof.Reason, $offlineState, ($capture.Stderr.Trim() -replace '\s+', ' '))
+if ($observation.Length -gt 1200) { $observation = $observation.Substring(0, 1200) + ' [...]' }
+Add-RecoveryRecord -Step 'source-key-state' -Passed ([bool]$proof.Proven) -Observation $observation -Result $capture
+if ($proof.Proven) {
+    Write-Host "  OFFLINE PROVEN ($($proof.Class)): $($proof.Reason)"
 } else {
-    $errorCode = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $capture.Json -Name 'error') -Name 'code'
-    $offlineProof = ('OFFLINE (capture-refusal path): capture failed with exit {0}, error code {1}: ' +
-        'the source/key acquisition could not succeed; {2}. Stderr: {3}') -f
-        $capture.ExitCode, $errorCode, $offlineState, ($capture.Stderr.Trim() -replace '\s+', ' ')
-    Add-RecoveryRecord -Step 'source-key-state' -Passed $true -Observation $offlineProof -Result $capture
-    Write-Host "  $offlineProof"
+    Write-Warning "  OFFLINE PREMISE NOT PROVEN ($($proof.Class)): $($proof.Reason)"
+    throw "The offline premise could not be established: $($proof.Reason)"
 }
 
 # --- Step 3-4: derived index + disposable caches ------------------------------
@@ -232,15 +222,18 @@ if (Test-Path -LiteralPath $archiveRoot) {
     Remove-Item -LiteralPath $archiveRoot -Recurse -Force
 }
 $rebuild = Invoke-RecoveryStep -Arguments @('rebuild', '--json', '--no-input')
-if ($rebuild.ExitCode -ne 0 -or -not $rebuild.Json.succeeded) {
-    Add-RecoveryRecord -Step 'fresh-rebuild' -Passed $false -Observation 'fresh canonical rebuild failed offline' -Result $rebuild
+$rebuildSucceeded = Get-AcceptanceJsonProperty -Object $rebuild.Json -Name 'succeeded' -Default $false
+if ($rebuild.ExitCode -ne 0 -or $rebuildSucceeded -ne $true) {
+    Add-RecoveryRecord -Step 'fresh-rebuild' -Passed $false `
+        -Observation ("fresh canonical rebuild failed offline (exit {0}). Stderr: {1}" -f
+            $rebuild.ExitCode, $rebuild.Stderr) -Result $rebuild
     throw 'Offline fresh canonical rebuild failed.'
 }
 $freshCounts = [ordered]@{
-    account_count = [int]$rebuild.Json.account_count
-    participant_count = [int]$rebuild.Json.participant_count
-    conversation_count = [int]$rebuild.Json.conversation_count
-    message_count = [int]$rebuild.Json.message_count
+    account_count = [int](Get-AcceptanceJsonProperty -Object $rebuild.Json -Name 'account_count' -Default 0)
+    participant_count = [int](Get-AcceptanceJsonProperty -Object $rebuild.Json -Name 'participant_count' -Default 0)
+    conversation_count = [int](Get-AcceptanceJsonProperty -Object $rebuild.Json -Name 'conversation_count' -Default 0)
+    message_count = [int](Get-AcceptanceJsonProperty -Object $rebuild.Json -Name 'message_count' -Default 0)
 }
 $countsMatch = ($freshCounts.account_count -eq $baselineCounts.account_count) -and
     ($freshCounts.participant_count -eq $baselineCounts.participant_count) -and

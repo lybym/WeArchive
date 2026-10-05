@@ -114,15 +114,16 @@ if ($versionExit -ne 0) {
     throw "RC --version --json exited with $versionExit. Output: $versionText"
 }
 $versionDoc = $versionText | ConvertFrom-Json
-if (-not $versionDoc.version) {
+$reportedVersion = Get-AcceptanceJsonProperty -Object $versionDoc -Name 'version'
+if ([string]::IsNullOrWhiteSpace($reportedVersion)) {
     throw "RC --version --json did not report a version field. Output: $versionText"
 }
-if ($versionDoc.version -ne $config.rc.expected_version) {
+if ($reportedVersion -ne $config.rc.expected_version) {
     throw ("RC reports version '{0}' but the acceptance config binds '{1}'. " +
            'A dev build or a different release must never run the acceptance.') -f
-        $versionDoc.version, $config.rc.expected_version
+        $reportedVersion, $config.rc.expected_version
 }
 
-Write-Host ("Official RC verified: version {0}, commit {1}" -f $versionDoc.version, $config.rc.commit_sha)
+Write-Host ("Official RC verified: version {0}, commit {1}" -f $reportedVersion, $config.rc.commit_sha)
 Write-Host ("Binary: {0}" -f (ConvertTo-PrivacySafePath -Path $extractDir -AcceptanceRoot $root))
 Write-Host 'Gate 1 passed.'

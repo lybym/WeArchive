@@ -114,7 +114,9 @@ function Assert-BoundaryVaultVerified {
 
     $verify = Invoke-WearchiveRc -AcceptanceRoot $root `
         -Arguments @('vault', 'verify', '--vault-root', $Vault, '--json', '--no-input') -TimeoutSeconds 7200
-    $succeeded = $verify.ExitCode -eq 0 -and $verify.Json.succeeded
+    # StrictMode-safe: verify failure shapes carry the error envelope (no `succeeded`).
+    $succeeded = $verify.ExitCode -eq 0 -and
+        (Get-AcceptanceJsonProperty -Object $verify.Json -Name 'succeeded') -eq $true
     return @{ Result = $verify; Succeeded = $succeeded }
 }
 
@@ -177,7 +179,10 @@ if ($IncludeKillCapture) {
     $drive = [System.IO.Path]::GetPathRoot($home_).TrimEnd('\', '/')
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $exe
-    $startInfo.Arguments = 'capture --json --no-input'
+    # Every capture selects the account explicitly (README §4) — including the kill
+    # exercise, which targets the configured acceptance account.
+    $startInfo.Arguments = ('capture --account "{0}" --json --no-input' -f
+        ($config.capture.account_selector -replace '"', '\"'))
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true

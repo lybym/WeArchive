@@ -163,6 +163,145 @@ public sealed class AcceptanceHarnessTests
     }
 
     // ------------------------------------------------------------------
+    // Capture presentation + offline premise (regression: review round 2,
+    // P0-1 — the RC emits the error envelope on stdout for every failed
+    // capture, so a truthy Json document does not imply the success shape)
+    // ------------------------------------------------------------------
+
+    [PwshFact]
+    public void CaptureErrorEnvelopeRendersFailedSummaryWithoutCrashing()
+    {
+        var summary = EvalValue(
+            "Get-AcceptanceCaptureSummary -Result ([pscustomobject]@{ExitCode=1; " +
+            "Json=[pscustomobject]@{error=[pscustomobject]@{code='failure'; " +
+            "message='WeChat is not running. The local database key can only be recovered.'}}; " +
+            "SingleJsonDocument=$true})");
+        var text = summary.GetString();
+        Assert.StartsWith("failed:", text, StringComparison.Ordinal);
+        Assert.Contains("code=failure", text, StringComparison.Ordinal);
+        Assert.Contains("WeChat is not running", text, StringComparison.Ordinal);
+    }
+
+    [PwshFact]
+    public void CaptureSuccessShapeRendersGenerationSummary()
+    {
+        var summary = EvalValue(
+            "Get-AcceptanceCaptureSummary -Result ([pscustomobject]@{ExitCode=0; " +
+            "Json=[pscustomobject]@{generation_id='gen_x'; mode='incremental'; completeness='complete'; " +
+            "coverage_summary=[pscustomobject]@{expected=5;captured=1;reused=4}}; SingleJsonDocument=$true})");
+        var text = summary.GetString();
+        Assert.StartsWith("generation=gen_x", text, StringComparison.Ordinal);
+        Assert.Contains("captured=1", text, StringComparison.Ordinal);
+        Assert.Contains("reused=4", text, StringComparison.Ordinal);
+    }
+
+    [PwshFact]
+    public void CaptureExitZeroWithoutJsonIsReportedAsContractViolation()
+    {
+        var summary = EvalValue(
+            "Get-AcceptanceCaptureSummary -Result ([pscustomobject]@{ExitCode=0; Json=$null; SingleJsonDocument=$false})");
+        Assert.Contains("contract violation", summary.GetString(), StringComparison.Ordinal);
+    }
+
+    [PwshFact]
+    public void FailedCaptureRecordIsWrittenAndValidFromTheErrorEnvelope()
+    {
+        // The point must still be recorded when capture fails with the error envelope;
+        // a missing record would be fabricated as missed_no_execution by the next cycle.
+        var result = EvalObject(
+            "$config = [pscustomobject]@{schema_version=1; acceptance_root='" +
+            NewTempDirectory().Replace("'", "''") + "'; " +
+            "run=[pscustomobject]@{planned_hours=168; started_at_local=(Get-Date).AddHours(-3).ToString('o')}; " +
+            "rc=[pscustomobject]@{release_tag='v0.6.0-rc.1'; asset_url='u'; asset_sha256='" + ShaPlaceholder() + "'; " +
+            "expected_version='0.6.0-rc.1'; commit_sha='c'}; " +
+            "capture=[pscustomobject]@{account_selector='a_test000000000000'}}\n" +
+            "$capture = [pscustomobject]@{ExitCode=1; DurationMs=5; " +
+            "Json=[pscustomobject]@{error=[pscustomobject]@{code='failure'; " +
+            "message='WeChat is not running.'}}; SingleJsonDocument=$true}\n" +
+            "$record = New-AcceptanceCaptureRecord -Config $config -AcceptanceRoot $config.acceptance_root " +
+            "-PointIndex 9 -Outcome 'failed_capture' -ExecutedAt (Get-Date) -CaptureResult $capture " +
+            "-Explanation 'Capture failed (exit 1, error code: failure). WeChat is not running.'\n" +
+            "$script:Result = @{ valid = (Assert-AcceptanceRecordValid -Record $record); " +
+            "exitCode = $record.capture.exit_code; outcome = $record.planned_point.outcome }");
+        Assert.True(result.GetProperty("valid").GetBoolean());
+        Assert.Equal(1, result.GetProperty("exitCode").GetInt32());
+        Assert.Equal("failed_capture", result.GetProperty("outcome").GetString());
+    }
+
+    // ------------------------------------------------------------------
+    // Offline-premise classification (regression: review round 2, P1-1 —
+    // only source/key-path refusals may count as offline proof)
+    // ------------------------------------------------------------------
+
+    [PwshFact]
+    public void OfflineProofAcceptsSourceUnavailableRefusal()
+    {
+        var proof = EvalObject(
+            "$p = Test-AcceptanceOfflineCaptureProof -Result ([pscustomobject]@{ExitCode=1; " +
+            "Json=[pscustomobject]@{error=[pscustomobject]@{code='source_unavailable'; message='no data'}}})\n" +
+            "$script:Result = @{ proven = $p.Proven; class = $p.Class }");
+        Assert.True(proof.GetProperty("proven").GetBoolean());
+        Assert.Equal("capture-refusal-source-path", proof.GetProperty("class").GetString());
+    }
+
+    [PwshFact]
+    public void OfflineProofAcceptsClientClosedKeyRefusal()
+    {
+        var proof = EvalObject(
+            "$p = Test-AcceptanceOfflineCaptureProof -Result ([pscustomobject]@{ExitCode=1; " +
+            "Json=[pscustomobject]@{error=[pscustomobject]@{code='failure'; " +
+            "message='WeChat is not running. The local database key can only be recovered while the client is running and signed in.'}}})\n" +
+            "$script:Result = @{ proven = $p.Proven; class = $p.Class }");
+        Assert.True(proof.GetProperty("proven").GetBoolean());
+        Assert.Equal("capture-refusal-key-path", proof.GetProperty("class").GetString());
+    }
+
+    [PwshFact]
+    public void OfflineProofRejectsUnrelatedRefusals()
+    {
+        // account_not_found is a configuration failure, not offline evidence.
+        var proof = EvalObject(
+            "$p = Test-AcceptanceOfflineCaptureProof -Result ([pscustomobject]@{ExitCode=1; " +
+            "Json=[pscustomobject]@{error=[pscustomobject]@{code='account_not_found'; message='no match'}}})\n" +
+            "$script:Result = @{ proven = $p.Proven; class = $p.Class }");
+        Assert.False(proof.GetProperty("proven").GetBoolean());
+        Assert.Equal("inconclusive", proof.GetProperty("class").GetString());
+    }
+
+    [PwshFact]
+    public void OfflineProofRejectsFailureWithUnrelatedMessage()
+    {
+        var proof = EvalObject(
+            "$p = Test-AcceptanceOfflineCaptureProof -Result ([pscustomobject]@{ExitCode=1; " +
+            "Json=[pscustomobject]@{error=[pscustomobject]@{code='failure'; message='disk full'}}})\n" +
+            "$script:Result = @{ proven = $p.Proven; class = $p.Class }");
+        Assert.False(proof.GetProperty("proven").GetBoolean());
+        Assert.Equal("inconclusive", proof.GetProperty("class").GetString());
+    }
+
+    [PwshFact]
+    public void OfflineProofRejectsMaterializedCapture()
+    {
+        var proof = EvalObject(
+            "$p = Test-AcceptanceOfflineCaptureProof -Result ([pscustomobject]@{ExitCode=0; " +
+            "Json=[pscustomobject]@{storage_counters=[pscustomobject]@{new_data_bytes=4096; new_map_nodes=0}}})\n" +
+            "$script:Result = @{ proven = $p.Proven; class = $p.Class }");
+        Assert.False(proof.GetProperty("proven").GetBoolean());
+        Assert.Equal("materialized", proof.GetProperty("class").GetString());
+    }
+
+    [PwshFact]
+    public void OfflineProofAcceptsZeroNewPayloadCapture()
+    {
+        var proof = EvalObject(
+            "$p = Test-AcceptanceOfflineCaptureProof -Result ([pscustomobject]@{ExitCode=0; " +
+            "Json=[pscustomobject]@{storage_counters=[pscustomobject]@{new_data_bytes=0; new_map_nodes=0}}})\n" +
+            "$script:Result = @{ proven = $p.Proven; class = $p.Class }");
+        Assert.True(proof.GetProperty("proven").GetBoolean());
+        Assert.Equal("zero-new-payload", proof.GetProperty("class").GetString());
+    }
+
+    // ------------------------------------------------------------------
     // No-change hour expectation (zero new payload for unchanged artifacts)
     // ------------------------------------------------------------------
 

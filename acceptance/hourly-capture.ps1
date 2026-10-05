@@ -203,15 +203,10 @@ $vaultRoot = Get-AcceptanceVaultRoot -AcceptanceRoot $root
 $capture = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
     'capture', '--account', $config.capture.account_selector, '--json', '--no-input')
 
-$captureSummary = if ($capture.Json) {
-    'generation={0} mode={1} completeness={2} expected={3} captured={4} reused={5}' -f
-        $capture.Json.generation_id, $capture.Json.mode, $capture.Json.completeness,
-        $capture.Json.coverage_summary.expected,
-        $capture.Json.coverage_summary.captured,
-        $capture.Json.coverage_summary.reused
-} else {
-    "exit=$($capture.ExitCode) (no JSON document)"
-}
+# StrictMode-safe presentation: the RC emits the error envelope on stdout for every
+# failed capture, so a truthy Json document does NOT imply the capture success shape.
+# Get-AcceptanceCaptureSummary is the single place that distinguishes the two shapes.
+$captureSummary = Get-AcceptanceCaptureSummary -Result $capture
 Write-Host "  capture: $captureSummary"
 
 $verify = $null

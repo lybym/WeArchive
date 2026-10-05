@@ -236,15 +236,39 @@ function Add-FixtureTraceRecord {
 
 # --- Step 1: baseline capture -------------------------------------------------
 
+# Shared strict-mode-safe success-shape reader for the fixture captures: exit 0
+# must carry the capture success shape, and every read goes through the helper.
+function Get-FixtureCaptureField {
+    param([AllowNull()] $Result, [Parameter(Mandatory)][string] $Path)
+
+    $json = Get-AcceptanceJsonProperty -Object $Result -Name 'Json'
+    if ($null -eq $json) {
+        throw ("Capture returned exit 0 without a JSON document (CLI contract violation); " +
+               "cannot read '{0}'." -f $Path)
+    }
+    $segments = $Path.Split('.')
+    $current = $json
+    foreach ($segment in $segments) {
+        $current = Get-AcceptanceJsonProperty -Object $current -Name $segment
+        if ($null -eq $current) {
+            throw ("Capture success document lacks '{0}' (CLI contract violation)." -f $Path)
+        }
+    }
+    return $current
+}
+
 Write-Host 'Fixture step 1/4: baseline capture (also proves the source discovery seam)...'
 $baseline = Invoke-WearchiveRc -AcceptanceRoot $root -HomeDirectory $scenarioHome `
     -Arguments @('capture', '--account', 'wxid_acceptance_fixture', '--json', '--no-input')
 if ($baseline.ExitCode -ne 0) {
-    Add-FixtureTraceRecord -Step 'baseline' -Result $baseline -Observation "failed: $($baseline.Stderr)"
+    $summary = Get-AcceptanceCaptureSummary -Result $baseline
+    Add-FixtureTraceRecord -Step 'baseline' -Result $baseline -Observation "failed: $summary. $($baseline.Stderr)"
     throw "Fixture baseline capture failed (exit $($baseline.ExitCode)). Stderr: $($baseline.Stderr)"
 }
-$baselineObservation = 'generation={0} mode={1} counters={2}' -f $baseline.Json.generation_id, $baseline.Json.mode,
-    ($baseline.Json.storage_counters | ConvertTo-Json -Compress)
+$baselineObservation = 'generation={0} mode={1} counters={2}' -f
+    (Get-FixtureCaptureField -Result $baseline -Path 'generation_id'),
+    (Get-FixtureCaptureField -Result $baseline -Path 'mode'),
+    ((Get-FixtureCaptureField -Result $baseline -Path 'storage_counters') | ConvertTo-Json -Compress)
 Add-FixtureTraceRecord -Step 'baseline' -Result $baseline -Observation $baselineObservation
 Write-Host "  $baselineObservation"
 
@@ -255,13 +279,16 @@ New-FixtureShard -MessagesPerConversation 10 -StartId 1
 $append = Invoke-WearchiveRc -AcceptanceRoot $root -HomeDirectory $scenarioHome `
     -Arguments @('capture', '--account', 'wxid_acceptance_fixture', '--json', '--no-input')
 if ($append.ExitCode -ne 0) {
-    Add-FixtureTraceRecord -Step 'append' -Result $append -Observation "failed: $($append.Stderr)"
+    $summary = Get-AcceptanceCaptureSummary -Result $append
+    Add-FixtureTraceRecord -Step 'append' -Result $append -Observation "failed: $summary. $($append.Stderr)"
     throw "Fixture append capture failed (exit $($append.ExitCode)). Stderr: $($append.Stderr)"
 }
 $appendObservation = 'mode={0} new_data_bytes={1} new_map_nodes={2} reused={3} captured={4}' -f
-    $append.Json.mode, $append.Json.storage_counters.new_data_bytes,
-    $append.Json.storage_counters.new_map_nodes,
-    $append.Json.coverage_summary.reused, $append.Json.coverage_summary.captured
+    (Get-FixtureCaptureField -Result $append -Path 'mode'),
+    (Get-FixtureCaptureField -Result $append -Path 'storage_counters.new_data_bytes'),
+    (Get-FixtureCaptureField -Result $append -Path 'storage_counters.new_map_nodes'),
+    (Get-FixtureCaptureField -Result $append -Path 'coverage_summary.reused'),
+    (Get-FixtureCaptureField -Result $append -Path 'coverage_summary.captured')
 Add-FixtureTraceRecord -Step 'append' -Result $append -Observation $appendObservation
 Write-Host "  $appendObservation"
 
@@ -272,13 +299,15 @@ New-FixtureShard -MessagesPerConversation 3 -StartId 500
 $rewrite = Invoke-WearchiveRc -AcceptanceRoot $root -HomeDirectory $scenarioHome `
     -Arguments @('capture', '--account', 'wxid_acceptance_fixture', '--json', '--no-input')
 if ($rewrite.ExitCode -ne 0) {
-    Add-FixtureTraceRecord -Step 'rewrite' -Result $rewrite -Observation "failed: $($rewrite.Stderr)"
+    $summary = Get-AcceptanceCaptureSummary -Result $rewrite
+    Add-FixtureTraceRecord -Step 'rewrite' -Result $rewrite -Observation "failed: $summary. $($rewrite.Stderr)"
     throw "Fixture rewrite capture failed (exit $($rewrite.ExitCode)). Stderr: $($rewrite.Stderr)"
 }
 $rewriteObservation = 'mode={0} new_data_bytes={1} new_map_nodes={2} reused={3}' -f
-    $rewrite.Json.mode, $rewrite.Json.storage_counters.new_data_bytes,
-    $rewrite.Json.storage_counters.new_map_nodes,
-    $rewrite.Json.coverage_summary.reused
+    (Get-FixtureCaptureField -Result $rewrite -Path 'mode'),
+    (Get-FixtureCaptureField -Result $rewrite -Path 'storage_counters.new_data_bytes'),
+    (Get-FixtureCaptureField -Result $rewrite -Path 'storage_counters.new_map_nodes'),
+    (Get-FixtureCaptureField -Result $rewrite -Path 'coverage_summary.reused')
 Add-FixtureTraceRecord -Step 'rewrite' -Result $rewrite -Observation $rewriteObservation
 Write-Host "  $rewriteObservation"
 
