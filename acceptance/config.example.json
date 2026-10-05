@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "_comment": "Copy this file OUTSIDE the repository (for example into the acceptance root) as config.json and fill in the user-specific values. Never commit a filled-in config: it carries machine-private paths and account selectors.",
+  "acceptance_root": "<user-provided absolute path, e.g. D:\\wearchive-acceptance\\issue-86>",
+  "run": {
+    "started_at_local": "<ISO-8601 local start, e.g. 2026-10-06T09:00:00+08:00>",
+    "planned_hours": 168,
+    "notes": "7 continuous days, >= 168 planned hourly capture points (Issue #86)."
+  },
+  "rc": {
+    "release_tag": "v0.6.0-rc.1",
+    "asset_url": "https://github.com/lybym/WeArchive/releases/download/v0.6.0-rc.1/WeArchive-win-x64.zip",
+    "asset_sha256": "9BA9D50637B993555F6996C7A419422B7A213AD57E1A45CFA54402D3513CAFFB",
+    "expected_version": "0.6.0-rc.1",
+    "commit_sha": "84128794baa4d2c5f8d452731d4b8a03f8eece64"
+  },
+  "capture": {
+    "account_selector": "<stable account id (a_...) or source profile id recorded by init-root.ps1; every capture selects the account explicitly>"
+  }
+}
