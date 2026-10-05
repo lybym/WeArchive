@@ -208,6 +208,13 @@ Acceptance criteria — met for the capture slice:
 
 Additional acceptance criteria for the active v2 storage slice:
 
+Issue #83 delivers the v2 capture publication path: manifest 3 / vault format 2, verified v1 import,
+unchanged v2 root/block-size preservation, unique-block growth and non-authoritative capture
+accounting. Publication/cancellation/checksum faults are tested before generation publication;
+capture remains R1. Issue #78's snapshot-integrity prerequisite and Issue #82's reader prerequisite
+are complete. Storage verification and the official-RC hourly real-environment gate remain separate
+work; this does not mark M1.5 complete or permit Stable release.
+
 - hourly logical generations must not require a new full physical copy of every unchanged artifact;
 - no-change v2 capture writes zero new artifact payload and reuses the existing immutable map root;
 - a changed large artifact grows authoritative physical payload with newly unique fixed blocks plus

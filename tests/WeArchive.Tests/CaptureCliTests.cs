@@ -71,6 +71,13 @@ public sealed class CaptureCliTests
         Assert.Equal("baseline", doc.RootElement.GetProperty("mode").GetString());
         Assert.Equal("complete", doc.RootElement.GetProperty("completeness").GetString());
         Assert.Equal(3, doc.RootElement.GetProperty("artifact_count").GetInt32());
+        var counters = doc.RootElement.GetProperty("storage_counters");
+        Assert.True(counters.GetProperty("logical_bytes").GetInt64() > 0);
+        Assert.True(counters.GetProperty("new_data_bytes").GetInt64() > 0);
+        Assert.True(counters.GetProperty("new_data_blocks").GetInt64() > 0);
+        Assert.True(counters.GetProperty("new_map_nodes").GetInt64() > 0);
+        Assert.True(counters.GetProperty("new_pack_bytes").GetInt64() > 0);
+        Assert.True(counters.GetProperty("new_packs").GetInt64() > 0);
         Assert.StartsWith("gen_", doc.RootElement.GetProperty("generation_id").GetString());
         Assert.True(doc.RootElement.GetProperty("coverage_summary").TryGetProperty("expected", out _));
         Assert.Equal(JsonValueKind.Array, doc.RootElement.GetProperty("coverage").ValueKind);

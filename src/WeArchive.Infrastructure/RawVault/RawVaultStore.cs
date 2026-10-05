@@ -37,11 +37,18 @@ public sealed class RawVaultStore : IRawVaultStore
     internal const string StagingSuffix = ".staging";
 
     private readonly string _vaultRoot;
+    private readonly bool _writeLegacy;
+    private readonly Action<string>? _publicationStage;
 
-    public RawVaultStore(string vaultRoot)
+    public RawVaultStore(string vaultRoot) : this(vaultRoot, false) { }
+
+    // Legacy writing is retained only for compatibility fixtures, never selected by production.
+    internal RawVaultStore(string vaultRoot, bool writeLegacy, Action<string>? publicationStage = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(vaultRoot);
         _vaultRoot = vaultRoot;
+        _writeLegacy = writeLegacy;
+        _publicationStage = publicationStage;
         Directory.CreateDirectory(_vaultRoot);
     }
 
@@ -69,7 +76,7 @@ public sealed class RawVaultStore : IRawVaultStore
         return Task.FromResult<IReadOnlyList<string>>(ids);
     }
 
-    public Task<IRawGenerationSession> BeginGenerationAsync(
+    public async Task<IRawGenerationSession> BeginGenerationAsync(
         RawGenerationContext context,
         CancellationToken cancellationToken)
     {
@@ -94,8 +101,18 @@ public sealed class RawVaultStore : IRawVaultStore
         TryDeleteDirectory(stagingDir);
         Directory.CreateDirectory(artifactsDir);
 
-        return Task.FromResult<IRawGenerationSession>(
-            new RawVaultGenerationSession(generationId, stagingDir, artifactsDir));
+        var session = new RawVaultGenerationSession(generationId, stagingDir, artifactsDir,
+            _writeLegacy ? null : AccountDirectory(context.AccountId), _publicationStage);
+        if (!_writeLegacy)
+        {
+            var latest = await GetLatestGenerationAsync(context.AccountId, cancellationToken).ConfigureAwait(false);
+            if (latest is not null)
+            {
+                var predecessor = await OpenGenerationAsync(context.AccountId, latest.GenerationId, cancellationToken).ConfigureAwait(false);
+                if (predecessor is not null) session.SetPredecessors(predecessor);
+            }
+        }
+        return session;
     }
 
     public async Task<IReadOnlyList<RawGenerationSummary>> ListGenerationsAsync(
@@ -247,7 +264,7 @@ public sealed class RawVaultStore : IRawVaultStore
     }
 
     /// <summary>Renames the staging directory to its final location (publish-last).</summary>
-    internal static void Publish(RawVaultGenerationSession session, RawManifest manifest)
+    internal static void Publish(RawVaultGenerationSession session, RawManifest manifest, CancellationToken cancellationToken)
     {
         var generationDir = session.StagingDirectory[..^StagingSuffix.Length];
 
@@ -261,6 +278,8 @@ public sealed class RawVaultStore : IRawVaultStore
 
         var manifestPath = Path.Combine(session.StagingDirectory, ManifestFile);
         File.WriteAllText(manifestPath, RawManifestSerializer.Serialize(manifest));
+        session.PublicationStage?.Invoke("manifest-written");
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Atomic rename on the same volume: the generation becomes discoverable only here.
         Directory.Move(session.StagingDirectory, generationDir);
@@ -328,18 +347,40 @@ public sealed class RawVaultStore : IRawVaultStore
 internal sealed class RawVaultGenerationSession : IRawGenerationSession
 {
     private readonly string _artifactsDir;
+    private readonly RawVaultV2PackStore? _v2Store;
+    private readonly string? _accountId;
+    private readonly Dictionary<(string Role, string Name), RawArtifactDescriptor> _predecessors = [];
+    private long _logicalBytes;
     private bool _disposed;
 
-    public RawVaultGenerationSession(string generationId, string stagingDirectory, string artifactsDir)
+    public RawVaultGenerationSession(string generationId, string stagingDirectory, string artifactsDir,
+        string? accountDirectory = null, Action<string>? publicationStage = null)
     {
         GenerationId = generationId;
         StagingDirectory = stagingDirectory;
         _artifactsDir = artifactsDir;
+        PublicationStage = publicationStage;
+        if (accountDirectory is not null)
+        {
+            _accountId = Path.GetFileName(accountDirectory);
+            _v2Store = new RawVaultV2PackStore(accountDirectory,
+                beforePackPublish: () => PublicationStage?.Invoke("pack-sealed"));
+        }
     }
 
     public string GenerationId { get; }
 
     public string StagingDirectory { get; }
+    internal Action<string>? PublicationStage { get; }
+    public int ManifestVersion => _v2Store is null ? 2 : 3;
+    public int VaultFormatVersion => _v2Store is null ? 1 : 2;
+    public RawCaptureStorageCounters StorageCounters => (_v2Store?.Counters ?? new()) with { LogicalBytes = _logicalBytes };
+
+    internal void SetPredecessors(RawGeneration generation)
+    {
+        foreach (var artifact in generation.Manifest.Artifacts)
+            _predecessors.TryAdd((artifact.Role, artifact.Name), artifact);
+    }
 
     public async Task<RawArtifactDescriptor> WriteArtifactAsync(
         string role,
@@ -375,6 +416,29 @@ internal sealed class RawVaultGenerationSession : IRawGenerationSession
 
         var hash = await RawVaultStore.ComputeSha256Async(tempPath, cancellationToken)
             .ConfigureAwait(false);
+
+        if (_v2Store is not null)
+        {
+            _predecessors.TryGetValue((role, name), out var prior);
+            RawArtifactStorage storage;
+            if (prior?.Storage is not null && prior.Size == size && prior.Sha256 == hash)
+                storage = prior.Storage;
+            else
+            {
+                await using var input = File.OpenRead(tempPath);
+                var stored = _v2Store.PutArtifact(input, size,
+                    prior?.Storage?.BlockSize ?? RawVaultV2Format.ProvisionalWriterDefaultBlockSize, cancellationToken);
+                if (stored.Sha256 != hash) throw new InvalidDataException("Artifact changed during block storage.");
+                storage = new RawArtifactStorage { Kind = "fixed-block-map-v1", BlockSize = stored.BlockSize,
+                    BlockCount = stored.BlockCount, Root = Convert.ToHexString(stored.Root).ToLowerInvariant() };
+            }
+            _logicalBytes += size;
+            TryDeleteFile(tempPath);
+            PublicationStage?.Invoke("objects-published");
+            cancellationToken.ThrowIfCancellationRequested();
+            return new RawArtifactDescriptor { Role = role, Name = name, Sha256 = hash, Size = size,
+                SourceFormat = sourceFormat, IsDecrypted = isDecrypted, Metadata = metadata, Storage = storage };
+        }
 
         var artifactFileName = hash + extension;
         var finalPath = Path.Combine(_artifactsDir, artifactFileName);
@@ -414,6 +478,22 @@ internal sealed class RawVaultGenerationSession : IRawGenerationSession
         if (!previous.Manifest.Artifacts.Contains(artifact))
             throw new InvalidDataException("Reused artifact is absent from the verified generation.");
 
+        if (_v2Store is not null)
+        {
+            using var provider = RawVaultArtifactProvider.Create(previous);
+            if (previous.AccountId != _accountId)
+                throw new InvalidDataException("Artifacts cannot be reused across accounts.");
+            if (artifact.Storage is not null)
+            {
+                provider.VerifyArtifact(artifact, cancellationToken);
+                _logicalBytes += artifact.Size;
+                return artifact;
+            }
+            await using var input = File.OpenRead(provider.GetVerifiedPath(artifact, cancellationToken));
+            return await WriteArtifactAsync(artifact.Role, artifact.Name, input, artifact.SourceFormat,
+                artifact.IsDecrypted, artifact.Metadata, cancellationToken).ConfigureAwait(false);
+        }
+
         var contentRef = artifact.ContentRef
             ?? throw new InvalidDataException("A vault-format-v1 writer cannot reuse an artifact without content_ref.");
         var source = Path.GetFullPath(Path.Combine(previous.GenerationDirectory, contentRef));
@@ -436,7 +516,26 @@ internal sealed class RawVaultGenerationSession : IRawGenerationSession
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
 
-        RawVaultStore.Publish(this, manifest);
+        if (_v2Store is not null)
+        {
+            manifest = manifest with { ManifestVersion = ManifestVersion, VaultFormatVersion = VaultFormatVersion };
+            if (RawManifestSerializer.TryDeserialize(RawManifestSerializer.Serialize(manifest)) is null ||
+                manifest.GenerationId != GenerationId || manifest.AccountId != _accountId ||
+                manifest.Capture.ArtifactCount != manifest.Artifacts.Count)
+                throw new InvalidDataException("Candidate manifest is invalid for this generation.");
+            PublicationStage?.Invoke("before-verification");
+            using (var provider = RawVaultArtifactProvider.Create(new RawGeneration
+            {
+                GenerationId = GenerationId,
+                AccountId = manifest.AccountId,
+                Manifest = manifest,
+                GenerationDirectory = StagingDirectory,
+            }))
+                provider.VerifyAll(cancellationToken);
+            PublicationStage?.Invoke("roots-verified");
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        RawVaultStore.Publish(this, manifest, cancellationToken);
 
         var generationDir = StagingDirectory[..^RawVaultStore.StagingSuffix.Length];
         return Task.FromResult(new RawGeneration

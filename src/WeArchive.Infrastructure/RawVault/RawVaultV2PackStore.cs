@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using Microsoft.Data.Sqlite;
+using WeArchive.Core.RawVault;
 
 namespace WeArchive.Infrastructure.RawVault;
 
@@ -17,6 +18,7 @@ internal sealed class RawVaultV2PackStore
     private readonly bool _compressObjects;
     private readonly int _targetPackBytes;
     private readonly Action? _beforePackPublish;
+    internal RawCaptureStorageCounters Counters { get; private set; } = new();
 
     internal RawVaultV2PackStore(string accountDirectory, bool compressObjects = true, int targetPackBytes = TargetPackBytes,
         Action? beforePackPublish = null)
@@ -68,7 +70,7 @@ internal sealed class RawVaultV2PackStore
         void FlushPack()
         {
             if (pendingPack.Count == 0) return;
-            PublishPack(pendingPack.ToArray());
+            PublishPack(pendingPack.ToArray(), cancellationToken);
             afterPackPublished?.Invoke();
             pendingPack.Clear();
             pendingBytes = 16;
@@ -236,7 +238,7 @@ internal sealed class RawVaultV2PackStore
         throw new InvalidDataException("One or more Raw Vault v2 objects are not present in any sealed pack.");
     }
 
-    private void PublishPack((RawVaultV2Format.StoredObject Value, byte[] Bytes)[] records)
+    private void PublishPack((RawVaultV2Format.StoredObject Value, byte[] Bytes)[] records, CancellationToken cancellationToken)
     {
         var packId = Guid.NewGuid().ToString("N"); var fileName = packId + ".rvpk";
         var temp = Path.Combine(_packs, packId + ".staging"); var final = Path.Combine(_packs, fileName);
@@ -253,7 +255,16 @@ internal sealed class RawVaultV2PackStore
         }
         _ = RawVaultV2Format.ReadPack(File.ReadAllBytes(temp));
         _beforePackPublish?.Invoke();
+        cancellationToken.ThrowIfCancellationRequested();
         File.Move(temp, final);
+        Counters = Counters with
+        {
+            NewDataBlocks = Counters.NewDataBlocks + records.LongCount(r => r.Value.Kind == 1),
+            NewDataBytes = Counters.NewDataBytes + records.Where(r => r.Value.Kind == 1).Sum(r => (long)r.Value.Bytes.Length),
+            NewMapNodes = Counters.NewMapNodes + records.LongCount(r => r.Value.Kind == 2),
+            NewPacks = Counters.NewPacks + 1,
+            NewPackBytes = Counters.NewPackBytes + new FileInfo(final).Length,
+        };
         using var connection = OpenIndex(); using var transaction = connection.BeginTransaction();
         long offset = 16;
         foreach (var record in records)

@@ -91,6 +91,8 @@ public sealed record CaptureRequest
 /// <summary>Outcome of a capture attempt.</summary>
 public sealed record CaptureResult
 {
+    /// <summary>Non-authoritative accounting for this capture attempt; never persisted in a manifest.</summary>
+    public RawCaptureStorageCounters StorageCounters { get; init; } = new();
     public required bool Succeeded { get; init; }
 
     public required string GenerationId { get; init; }
@@ -132,6 +134,17 @@ public sealed record CaptureResult
         Diagnostics = diagnostics ?? [],
         FailureMessage = message,
     };
+}
+
+/// <summary>Physical growth of one capture, independent of logical evidence and checkpoints.</summary>
+public sealed record RawCaptureStorageCounters
+{
+    public long LogicalBytes { get; init; }
+    public long NewDataBytes { get; init; }
+    public long NewDataBlocks { get; init; }
+    public long NewMapNodes { get; init; }
+    public long NewPackBytes { get; init; }
+    public long NewPacks { get; init; }
 }
 
 /// <summary>Progress reported by the capture adapter during a capture run.</summary>

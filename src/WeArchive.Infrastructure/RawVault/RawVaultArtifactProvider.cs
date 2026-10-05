@@ -78,20 +78,26 @@ internal sealed class RawVaultArtifactProvider : IDisposable
     internal void VerifyAll(CancellationToken cancellationToken)
     {
         foreach (var artifact in _generation.Manifest.Artifacts)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_generation.Manifest.VaultFormatVersion == 1)
-            {
-                VerifyFile(ResolveV1Path(artifact), artifact, cancellationToken);
-                continue;
-            }
+            VerifyArtifact(artifact, cancellationToken);
+    }
 
-            var storage = artifact.Storage ?? throw new InvalidDataException("A v2 artifact is missing its storage descriptor.");
-            _v2Store!.MaterializeTo(new RawVaultV2Format.Artifact(
-                Convert.FromHexString(storage.Root), artifact.Size, storage.BlockCount, artifact.Sha256, [], storage.BlockSize),
-                Stream.Null,
-                cancellationToken);
+    internal void VerifyArtifact(RawArtifactDescriptor artifact, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_generation.Manifest.Artifacts.Contains(artifact))
+            throw new InvalidDataException("The artifact is not part of this Raw Vault generation.");
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_generation.Manifest.VaultFormatVersion == 1)
+        {
+            VerifyFile(ResolveV1Path(artifact), artifact, cancellationToken);
+            return;
         }
+
+        var storage = artifact.Storage ?? throw new InvalidDataException("A v2 artifact is missing its storage descriptor.");
+        _v2Store!.MaterializeTo(new RawVaultV2Format.Artifact(
+            Convert.FromHexString(storage.Root), artifact.Size, storage.BlockCount, artifact.Sha256, [], storage.BlockSize),
+            Stream.Null,
+            cancellationToken);
     }
 
     private string ResolveV1Path(RawArtifactDescriptor artifact)

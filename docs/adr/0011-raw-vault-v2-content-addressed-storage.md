@@ -84,9 +84,9 @@ One artifact uses one fixed block size. The final block may be shorter. A genera
 artifacts using different supported block sizes.
 
 The first writer default is selected by the Issue #79 benchmark gate after the correctness matrix
-passes. The current cost leader is 4096 bytes with Zstd level 1, but the required candidate
-correctness matrix has no recorded pass results, so no provisional first-RC writer default has been
-selected. Changing the writer default within the already-supported set does not by itself require a
+passes. Issue #79's actual-engine correctness matrix passed and retained 4096 bytes with Zstd
+level 1 and raw fallback as the provisional first-RC writer default. Changing the writer default
+within the already-supported set does not by itself require a
 new vault-format version.
 
 An existing v2 artifact should retain its predecessor block size when reused. A deliberate

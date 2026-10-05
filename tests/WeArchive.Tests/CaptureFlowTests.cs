@@ -72,7 +72,8 @@ public sealed class CaptureFlowTests
         // Every artifact referenced by the manifest has a verifiable SHA-256 checksum.
         foreach (var artifact in generation.Manifest.Artifacts)
         {
-            var path = Path.Combine(generation.GenerationDirectory, artifact.ContentRef);
+            using var provider = RawVaultArtifactProvider.Create(generation);
+            var path = provider.GetVerifiedPath(artifact);
             Assert.True(File.Exists(path));
             var actual = await RawVaultStoreTestsHelper.ComputeSha256Async(path);
             Assert.Equal(artifact.Sha256, actual);
@@ -149,7 +150,8 @@ public sealed class CaptureFlowTests
         // Each artifact must be an ordinary, unencrypted SQLite database readable without any key.
         foreach (var artifact in generation!.Manifest.Artifacts)
         {
-            var path = Path.Combine(generation.GenerationDirectory, artifact.ContentRef);
+            using var provider = RawVaultArtifactProvider.Create(generation);
+            var path = provider.GetVerifiedPath(artifact);
             var cs = new SqliteConnectionStringBuilder
             {
                 DataSource = path,
@@ -188,7 +190,8 @@ public sealed class CaptureFlowTests
         // The fixture's message database has an 'extra_metadata' column the parser does not
         // interpret. It must still be present in the preserved SQLite artifact.
         var messageArtifact = generation!.Manifest.Artifacts.First(a => a.Name == "message_0.db");
-        var path = Path.Combine(generation.GenerationDirectory, messageArtifact.ContentRef);
+        using var provider = RawVaultArtifactProvider.Create(generation);
+        var path = provider.GetVerifiedPath(messageArtifact);
 
         var cs = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly }.ToString();
         using var connection = new SqliteConnection(cs);

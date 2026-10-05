@@ -238,6 +238,8 @@ public sealed class CaptureService
 
         var manifest = new RawManifest
         {
+            ManifestVersion = session.ManifestVersion,
+            VaultFormatVersion = session.VaultFormatVersion,
             GenerationId = session.GenerationId,
             AccountId = accountId,
             SourceProfileId = account.SourceProfileId,
@@ -286,6 +288,7 @@ public sealed class CaptureService
 
         return new CaptureResult
         {
+            StorageCounters = session.StorageCounters,
             Succeeded = true,
             GenerationId = session.GenerationId,
             AccountId = accountId,

@@ -81,6 +81,11 @@ public interface IRawGenerationSession : IAsyncDisposable
 
     string StagingDirectory { get; }
 
+    /// <summary>Writer-selected physical version; legacy/test implementations remain v1.</summary>
+    int ManifestVersion => 2;
+    int VaultFormatVersion => 1;
+    RawCaptureStorageCounters StorageCounters => new();
+
     /// <summary>
     /// Writes one artifact to the staging area and returns its descriptor with a verified
     /// SHA-256 checksum. The artifact content is treated as opaque by the store.

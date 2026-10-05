@@ -69,7 +69,7 @@ public sealed class RawVaultStoreTests
     public async Task ArtifactHasVerifiableSha256()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var content = "hello raw vault"u8.ToArray();
         var expectedHash = Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(content)).ToLowerInvariant();
@@ -88,7 +88,7 @@ public sealed class RawVaultStoreTests
     public async Task PublishedGenerationIsOpenableWithVerifiedChecksums()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         var session = await store.BeginGenerationAsync(Context(accountId, T1), CancellationToken.None);
@@ -107,7 +107,7 @@ public sealed class RawVaultStoreTests
     public async Task TamperedArtifactIsRejected()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         var session = await store.BeginGenerationAsync(Context(accountId, T1), CancellationToken.None);
@@ -129,7 +129,7 @@ public sealed class RawVaultStoreTests
     public async Task ImmutableGenerationCannotBeOverwritten()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         // Publish generation 1.
@@ -152,7 +152,7 @@ public sealed class RawVaultStoreTests
     public async Task LaterCaptureDoesNotEditEarlierGeneration()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         // Generation 1.
@@ -186,7 +186,7 @@ public sealed class RawVaultStoreTests
     public async Task GenerationsAreOrderedByCaptureTime()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         // Publish out of order: T3, T1, T2.
@@ -213,7 +213,7 @@ public sealed class RawVaultStoreTests
     public async Task DiscardedStagingLeavesNoDiscoverableGeneration()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         var session = await store.BeginGenerationAsync(Context(accountId, T1), CancellationToken.None);
@@ -229,7 +229,7 @@ public sealed class RawVaultStoreTests
     public async Task KeyNonPersistence_ManifestContainsNoSecrets()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         var session = await store.BeginGenerationAsync(Context(accountId, T1), CancellationToken.None);
@@ -254,7 +254,7 @@ public sealed class RawVaultStoreTests
     public async Task UnpublishedGenerationWithoutManifestIsNotListed()
     {
         using var temp = new TempDirectory();
-        var store = new RawVaultStore(temp.Combine("vault"));
+        var store = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var accountId = "a_acct";
 
         // Begin but never publish; dispose to simulate a crash.

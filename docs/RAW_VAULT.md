@@ -4,7 +4,7 @@ The Raw Vault is a preservation layer that captures a source-faithful snapshot o
 WeChat account *before* normalization. It is separate from the canonical SQLite archive
 (`archive/wearchive.db`) and has its own format version, manifest and reliability contract.
 
-Normative decisions for the shipped v1 snapshot/storage design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The v2 physical-storage evolution is specified by [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and Issue #77. The dual-format reader supports manifest/vault versions 1/1, 2/1 and 3/2. Capture still writes vault format 1 / manifest version 2 until the v2 writer is delivered.
+Normative decisions for the shipped v1 snapshot/storage design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The v2 physical-storage evolution is specified by [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and Issue #77. The dual-format reader supports manifest/vault versions 1/1, 2/1 and 3/2. Capture writes vault format 2 / manifest version 3 (Issue #83), without migrating historical v1 generations.
 
 ## 1. Purpose
 
@@ -63,7 +63,7 @@ reaches fails closed before that conversation's canonical publication or checkpo
 
 `wearchive sync --conversation` and `wearchive sync --collection` capture once through
 `CaptureService`, then ingest each selected conversation from that run's exact published
-generation. A complete generation is self-contained: unchanged evidence is copied and verified
+generation. A complete generation is self-contained: unchanged evidence is referenced through verified immutable roots
 into it, so an unrelated older partial generation is not part of the live sync's read. A partial
 or otherwise incomplete current generation still fails closed. The live path advances only the
 selected conversation checkpoint(s); it does not mark an account-wide historical scan complete.
@@ -124,9 +124,9 @@ are reported as unavailable and cannot delete prior generations.
 This distinction is intentional historical behavior: Issue #25 shipped incremental **acquisition**
 reuse, not cross-generation incremental physical storage.
 
-### 3.2 Vault format 2 — reader supported; writer pending
+### 3.2 Vault format 2 — reader and capture writer supported
 
-Issue #77 / ADR 0011 authorizes the following representation. The read path and exact persisted encoding are supported as specified in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) records prototype cost evidence and the correctness gate. The first production writer remains scoped to Issue #83:
+Issue #77 / ADR 0011 authorizes the following representation. The read path and exact persisted encoding are supported as specified in [RAW_VAULT_V2_FORMAT.md](RAW_VAULT_V2_FORMAT.md); [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md) records prototype cost evidence and the correctness gate. The production capture writer is implemented by Issue #83:
 
 ```text
 <vault-root>/
@@ -135,9 +135,8 @@ Issue #77 / ADR 0011 authorizes the following representation. The read path and 
       manifest.json
     objects/
       packs/
-        <pack-id>.rvpack
-    indexes/
-      objects.sqlite        # derived / rebuildable
+        <pack-id>.rvpk
+      lookup.sqlite         # derived / rebuildable
 ```
 
 A manifest-v3 / vault-v2 artifact is a complete logical artifact described by:
@@ -151,13 +150,25 @@ A manifest-v3 / vault-v2 artifact is a complete logical artifact described by:
 The map resolves through account-local typed content-addressed objects stored in immutable sealed
 packs. The lookup SQLite database is derived state and may be rebuilt from the packs.
 
+Capture retains the complete plaintext scratch image. Newly captured artifacts use the provisional
+4096-byte writer default, while predecessor v2 artifacts keep their block size; identical logical
+bytes retain the exact map root even when a source fingerprint changed. Valid v1 reuse goes through
+the versioned artifact provider and imports the verified bytes into the block store, leaving all
+historical files untouched. Packs are sealed, validated and published before every generation root
+and full artifact checksum is verified; only then is the staging manifest written and the generation
+published last. Cancellation/I/O failures publish no generation/checkpoint; unreachable packs may
+remain as an R1 space leak. Capture success is retained if subsequent canonical ingest fails.
+
+Capture results expose logical bytes and newly published data bytes/blocks, map nodes and pack
+bytes/count. These metrics are in-memory observations and are never manifest/checkpoint authority.
+
 The Raw Vault storage layer remains source-neutral. SQLite page size, SQLCipher and WAL behavior do
 not enter the v2 storage contract; those remain WeChat-adapter concerns.
 
 The v2 reader accepts fixed block sizes of 4096, 8192, 16384, 32768 and 65536
 bytes. The writer default is selected by Issue #79 after its correctness matrix and actual-engine
-benchmark. The current cost leader is 4096 bytes + Zstd level 1, but the correctness-gate results
-are not recorded, so no provisional first-RC default has been selected. This is not a statement
+benchmark. The actual-engine correctness gate passed and selected 4096 bytes + Zstd level 1 with raw fallback
+as the provisional first-RC writer default. This is not a statement
 that storage blocks must equal SQLite pages.
 
 Writing v2 does not migrate or rewrite existing v1 generations. The intended upgrade path is
@@ -237,11 +248,11 @@ Writing v2 does not migrate or rewrite existing v1 generations. The intended upg
 
 ### 4.1 Versioning
 
-- `manifest_version` — the manifest's own structure version. **Shipped writes currently use 2**;
-  version 1 remains readable. The v2 storage target advances this to manifest version 3 because the
+- `manifest_version` — the manifest's own structure version. **Current writes use 3**;
+  version 1 remains readable. The v2 storage format uses manifest version 3 because the
   artifact descriptor no longer means a generation-relative file path.
-- `vault_format_version` — the physical artifact layout version. **Shipped writes currently use 1**.
-  The fixed-block content-addressed target uses vault format 2.
+- `vault_format_version` — the physical artifact layout version. **Current writes use 2**.
+  Historical generation-local artifacts use vault format 1 and remain readable.
 
 These are independent of each other and of the canonical SQLite, message-schema and export-schema
 versions. New readers must dispatch explicitly by supported manifest/vault-format combinations;

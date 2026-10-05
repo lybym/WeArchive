@@ -603,7 +603,7 @@ If retained for debugging/reproducibility:
 ## 21. Raw Vault data model
 
 The Raw Vault is a separate persistence layer from the canonical SQLite archive. The writer
-currently emits `manifest_version = 2` and `vault_format_version = 1`. The dual-format reader
+now emits `manifest_version = 3` and `vault_format_version = 2` (Issue #83). The dual-format reader
 supports `manifest_version = 3` and `vault_format_version = 2` as defined by Issue #77 / ADR 0011.
 Raw Vault format evolution is independent of canonical SQLite migrations; introducing v2 does not
 reinterpret migration-1 `source_checkpoints` or migration-2 ingest checkpoints.
@@ -636,17 +636,17 @@ Shipped vault format 1:
   artifacts/<sha256><ext>
 ```
 
-Vault format 2 reader layout (Issue #77 / ADR 0011; writing is scoped to Issue #83):
+Vault format 2 reader/writer layout (Issue #77 / ADR 0011 / Issue #83):
 
 ```text
 <vault-root>/accounts/<account-id>/
   generations/<generation-id>/
     manifest.json
-  objects/packs/<pack-id>.rvpack
-  indexes/objects.sqlite
+  objects/packs/<pack-id>.rvpk
+  objects/lookup.sqlite
 ```
 
-The v2 `objects.sqlite` index is derived/rebuildable state, not evidence authority. Generation
+The v2 `lookup.sqlite` index is derived/rebuildable state, not evidence authority. Generation
 manifests and their reachable immutable pack objects are authoritative preserved state.
 
 ### 21.3 Manifest
@@ -764,6 +764,13 @@ a pre-existing version-2 manifest whose checkpoint covered all of its (necessari
 coverage entries.
 
 ### 21.8 Rebuild and canonical migration
+
+Issue #83 switches new writes to the already supported 3/2 format tuple. This is an additive
+Raw Vault format transition: valid v1 predecessors are imported through verified logical artifact
+access into v2 packs on reuse, while historical manifests/files remain untouched. No in-place
+migration or canonical SQLite migration is needed. Capture accounting (`logical_bytes`, new data
+bytes/blocks, map nodes and pack bytes/count) is an in-memory result only; it is never persisted in
+manifests and cannot establish evidence integrity or advance a checkpoint.
 
 The Raw Vault format introduces no canonical SQLite migration. Rebuild creates a new canonical
 database by applying the normal forward migration sequence to an empty file; it does not copy
