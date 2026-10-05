@@ -116,8 +116,15 @@ internal sealed class RawVaultArtifactProvider : IDisposable
         if (info.Length != artifact.Size)
             throw new InvalidDataException("Raw Vault artifact size does not match its descriptor.");
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
-        cancellationToken.ThrowIfCancellationRequested();
-        var actual = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[128 * 1024];
+        int read;
+        while ((read = stream.Read(buffer)) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            hash.AppendData(buffer, 0, read);
+        }
+        var actual = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
         cancellationToken.ThrowIfCancellationRequested();
         if (!string.Equals(actual, artifact.Sha256, StringComparison.Ordinal))
             throw new InvalidDataException("Raw Vault artifact SHA-256 does not match its descriptor.");

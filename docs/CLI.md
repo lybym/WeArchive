@@ -998,3 +998,44 @@ work layered on the same `ArchiveQueryService` and the same Collection catalog.
 `wearchive collection` has no `--account` option: stable conversation IDs are account-scoped by
 construction, and the capture account is auto-selected exactly as `capture` does. A member that
 belongs to a different account is reported as `unresolved`, never silently remapped.
+
+## `wearchive vault stats` / `wearchive vault verify`
+
+Read-only source-neutral accounting and full integrity verification of all retained Raw Vault
+accounts/generations, including v1, v2 and mixed lineages. No live source/key or canonical archive
+is required. Both commands currently validate full artifact SHA-256 and all sealed packs, including
+orphan packs; large retained histories can take substantial time.
+
+```text
+wearchive vault stats [--vault-root <path>] [--json] [--quiet] [--no-input]
+wearchive vault verify [--vault-root <path>] [--json] [--quiet] [--no-input]
+```
+
+The default is the configured local Raw Vault. `--vault-root` addresses an existing vault directly,
+including the official-RC real-environment acceptance vault. A nonexistent root fails; an empty
+existing vault reports zero observed counts. There is no repair, GC, deletion, migration or recapture.
+Inspection never writes the selected vault, its derived index, materialized files or the canonical
+archive. Stop capture before inspection to get a stable observed view.
+
+JSON is exactly one document: `schema_version: 1`, `succeeded`, `operation` (`stats` or `verify`),
+`error` (null on success), `metrics`, `accounts`, `failures`. Each metric is
+`{ "value": <integer-or-null>, "unit": "bytes"|"count"|"ratio", "basis": "observed"|"unavailable"|"not_applicable" }`.
+No estimated values are currently emitted. Metric definitions are in RAW_VAULT.md's read-only vault
+inspection section. Logical generation bytes/reference counts, distinct v1 artifact files, unique
+uncompressed v2 payload, stored payload bytes, map metadata, reachable/orphan payload, duplicate
+physical records, index bytes, pack logical/allocated bytes and staging bytes remain separate.
+Source page metrics and storage block metrics are separate unavailable observations; missing
+historical denominators never produce a fabricated write-amplification ratio.
+
+`accounts` entries contain `account_id` and `derived_index_status`: `consistent`,
+`missing_rebuildable`, `corrupt_rebuildable`, `inconsistent_rebuildable` or `not_applicable`.
+A rebuildable index issue does not fail authoritative verification and never causes an on-disk
+rebuild here. Authority failures return `succeeded: false`, `metrics: null`, a standard
+`error.code: "failure"`, and a `failures` entry with `account_id`, `generation_id`, `artifact`,
+`message`; context that cannot yet be known is null. Human diagnostics go to stderr.
+
+Exit codes: `0` verified; `1` authoritative or I/O failure; `2` usage error; `130` cancellation.
+Usage/I/O/cancellation paths that occur before an inspection result use the standard JSON error
+envelope. `--no-input` never prompts, `--quiet` suppresses nonessential progress. Cancellation
+withholds aggregate totals and leaves evidence unchanged. Verification always reads packs directly:
+a valid derived index/cache cannot conceal missing authoritative objects or packs.
