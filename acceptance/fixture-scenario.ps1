@@ -287,17 +287,24 @@ Write-Host "  $rewriteObservation"
 Write-Host 'Fixture step 4/4: authoritative verify + growth attribution...'
 $verify = Invoke-WearchiveRc -AcceptanceRoot $root -HomeDirectory $scenarioHome `
     -Arguments @('vault', 'verify', '--vault-root', $fixtureVault, '--json', '--no-input') -TimeoutSeconds 7200
-$verifyOk = $verify.ExitCode -eq 0 -and $verify.Json.succeeded
-Add-FixtureTraceRecord -Step 'verify' -Result $verify -Observation "succeeded=$verifyOk"
+$verifySucceeded = Get-AcceptanceJsonProperty -Object $verify.Json -Name 'succeeded' -Default $false
+$verifyOk = $verify.ExitCode -eq 0 -and $verifySucceeded -eq $true
+Add-FixtureTraceRecord -Step 'verify' -Result $verify -Observation "exit=$($verify.ExitCode) succeeded=$verifySucceeded"
 if (-not $verifyOk) {
-    throw 'Fixture vault failed authoritative verification.'
+    throw "Fixture vault failed authoritative verification (exit $($verify.ExitCode)). Stderr: $($verify.Stderr)"
 }
 
 $stats = Invoke-WearchiveRc -AcceptanceRoot $root -HomeDirectory $scenarioHome `
     -Arguments @('vault', 'stats', '--vault-root', $fixtureVault, '--json', '--no-input') -TimeoutSeconds 7200
-$orphanBytes = $stats.Json.metrics.'v2_orphan_payload_uncompressed_bytes'.value
-$duplicateBytes = $stats.Json.metrics.'duplicate_physical_record_bytes'.value
-$reachableBytes = $stats.Json.metrics.'v2_reachable_payload_uncompressed_bytes'.value
+$metrics = Get-AcceptanceJsonProperty -Object $stats.Json -Name 'metrics'
+if ($stats.ExitCode -ne 0 -or $null -eq $metrics) {
+    Add-FixtureTraceRecord -Step 'stats' -Result $stats `
+        -Observation "unavailable: stats exited $($stats.ExitCode) without a metrics document"
+    throw "Fixture vault stats failed (exit $($stats.ExitCode)). Stderr: $($stats.Stderr)"
+}
+$orphanBytes = (Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $metrics -Name 'v2_orphan_payload_uncompressed_bytes') -Name 'value')
+$duplicateBytes = (Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $metrics -Name 'duplicate_physical_record_bytes') -Name 'value')
+$reachableBytes = (Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $metrics -Name 'v2_reachable_payload_uncompressed_bytes') -Name 'value')
 $statsObservation = 'reachable={0}B orphan={1}B duplicate={2}B (rewrite growth must be attributable; orphans bounded)' -f
     $reachableBytes, $orphanBytes, $duplicateBytes
 Add-FixtureTraceRecord -Step 'stats' -Result $stats -Observation $statsObservation

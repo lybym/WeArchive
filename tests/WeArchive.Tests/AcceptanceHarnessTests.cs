@@ -429,6 +429,282 @@ public sealed class AcceptanceHarnessTests
     }
 
     // ------------------------------------------------------------------
+    // Failure-shape classification (regression: review round 1, P0-1 — the
+    // recorder must classify the CLI's error envelope / empty stdout instead of
+    // crashing on strict-mode property access)
+    // ------------------------------------------------------------------
+
+    [PwshFact]
+    public void VerifyErrorEnvelopeClassifiesFailedVerifyWithoutCrashing()
+    {
+        // vault verify failure paths emit the standard error envelope (no `succeeded`).
+        var outcome = EvalValue(
+            "Get-AcceptancePointOutcome -CaptureExitCode 0 -CaptureJson ([pscustomobject]@{completeness='complete'}) " +
+            "-VerifyExitCode 1 -VerifyJson ([pscustomobject]@{error=[pscustomobject]@{code='failure'; message='boom'}})");
+        Assert.Equal("failed_verify", outcome.GetString());
+    }
+
+    [PwshFact]
+    public void VerifyMissingJsonClassifiesFailedVerifyWithoutCrashing()
+    {
+        var outcome = EvalValue(
+            "Get-AcceptancePointOutcome -CaptureExitCode 0 -CaptureJson ([pscustomobject]@{completeness='complete'}) " +
+            "-VerifyExitCode 1 -VerifyJson $null");
+        Assert.Equal("failed_verify", outcome.GetString());
+    }
+
+    [PwshFact]
+    public void CaptureExitZeroWithMissingCompletenessClassifiesFailedCapture()
+    {
+        var outcome = EvalValue(
+            "Get-AcceptancePointOutcome -CaptureExitCode 0 -CaptureJson $null -VerifyExitCode 0 -VerifyJson $null");
+        Assert.Equal("failed_capture", outcome.GetString());
+    }
+
+    // ------------------------------------------------------------------
+    // Schema strictness + retry history (regression: review round 1)
+    // ------------------------------------------------------------------
+
+    [PwshFact]
+    public void UnknownOutcomeIsRejectedBySchemaValidation()
+    {
+        var result = EvalObject(
+            "$script:Result = try { " +
+            "$record = [pscustomobject]@{schema_version=1; record_type='capture_point'; " +
+            "planned_point=[pscustomobject]@{index=1; outcome='surprised'; explanation=$null}; " +
+            "rc=[pscustomobject]@{version='0.6.0-rc.1'; commit_sha='c'; asset_sha256='" + ShaPlaceholder() + "'}; " +
+            "capture=[pscustomobject]@{exit_code=0}; vault_verify=[pscustomobject]@{}}; " +
+            "Assert-AcceptanceRecordValid -Record $record; @{threw=$false} } catch { @{threw=$true; message=$_.Exception.Message} }");
+        Assert.True(result.GetProperty("threw").GetBoolean());
+        Assert.Contains("surprised", result.GetProperty("message").GetString(), StringComparison.Ordinal);
+    }
+
+    [PwshFact]
+    public void RetryRecordPreservesPriorAttemptHistory()
+    {
+        var result = EvalObject(
+            "$config = [pscustomobject]@{schema_version=1; acceptance_root='" +
+            NewTempDirectory().Replace("'", "''") + "'; " +
+            "run=[pscustomobject]@{planned_hours=168; started_at_local=(Get-Date).AddHours(-3).ToString('o')}; " +
+            "rc=[pscustomobject]@{release_tag='v0.6.0-rc.1'; asset_url='u'; asset_sha256='" + ShaPlaceholder() + "'; " +
+            "expected_version='0.6.0-rc.1'; commit_sha='c'}; " +
+            "capture=[pscustomobject]@{account_selector='a_test000000000000'}}\n" +
+            "$prior = [pscustomobject]@{schema_version=1; record_type='capture_point'; " +
+            "planned_point=[pscustomobject]@{index=5; executed_at=(Get-Date).AddHours(-1).ToString('o'); " +
+            "outcome='failed_capture'; explanation='first attempt failed'; attempt=1; prior_attempts=@()}; " +
+            "rc=[pscustomobject]@{version='0.6.0-rc.1'; commit_sha='c'; asset_sha256='" + ShaPlaceholder() + "'}; " +
+            "capture=[pscustomobject]@{exit_code=1}; vault_verify=[pscustomobject]@{}}\n" +
+            "$retry = New-AcceptanceCaptureRecord -Config $config -AcceptanceRoot $config.acceptance_root " +
+            "-PointIndex 5 -Outcome 'success' -ExecutedAt (Get-Date) " +
+            "-CaptureResult ([pscustomobject]@{ExitCode=0;DurationMs=5;Json=[pscustomobject]@{completeness='complete'};SingleJsonDocument=$true}) " +
+            "-VerifyResult ([pscustomobject]@{ExitCode=0;DurationMs=5;Json=[pscustomobject]@{succeeded=$true}}) " +
+            "-PriorAttempt $prior\n" +
+            "$script:Result = @{ attempt = $retry.planned_point.attempt; " +
+            "history = @($retry.planned_point.prior_attempts).Count; " +
+            "priorOutcome = $retry.planned_point.prior_attempts[0].outcome; " +
+            "outcome = $retry.planned_point.outcome }");
+        Assert.Equal(2, result.GetProperty("attempt").GetInt32());
+        Assert.Equal(1, result.GetProperty("history").GetInt32());
+        Assert.Equal("failed_capture", result.GetProperty("priorOutcome").GetString());
+        Assert.Equal("success", result.GetProperty("outcome").GetString());
+    }
+
+    [PwshFact]
+    public void ConfigWithFewerThanTheIssueFloorOfPlannedHoursIsRejected()
+    {
+        var tempDir = NewTempDirectory();
+        try
+        {
+            var brokenConfig = Path.Combine(tempDir, "config.json");
+            File.WriteAllText(brokenConfig, """
+                {
+                  "schema_version": 1,
+                  "acceptance_root": "C:\\tmp",
+                  "run": { "planned_hours": 167, "started_at_local": "2026-10-06T09:00:00+08:00" },
+                  "rc": {
+                    "release_tag": "v0.6.0-rc.1",
+                    "asset_url": "https://example.invalid/WeArchive-win-x64.zip",
+                    "asset_sha256": "__SHA__",
+                    "expected_version": "0.6.0-rc.1",
+                    "commit_sha": "__COMMIT__"
+                  },
+                  "capture": { "account_selector": "a_test000000000000" }
+                }
+                """.Replace("__SHA__", ShaPlaceholder()).Replace("__COMMIT__", new string('b', 40)));
+            var result = EvalObject(
+                "$script:Result = try { Read-AcceptanceConfig -Path '" + brokenConfig.Replace("'", "''") + "'; @{threw=$false} } " +
+                "catch { @{threw=$true; message=$_.Exception.Message} }");
+            Assert.True(result.GetProperty("threw").GetBoolean());
+            Assert.Contains("168", result.GetProperty("message").GetString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempDir);
+        }
+    }
+
+    [PwshFact]
+    public void HashManifestRootIsPrivacySafeAndResolvable()
+    {
+        // Regression: review round 1, P1-3 — the seed manifest is attached publicly,
+        // so its root must be rendered relative to the acceptance root, and the
+        // re-verification must resolve it back against the caller's acceptance root.
+        var tempRoot = NewTempDirectory();
+        try
+        {
+            var vaultRoot = Path.Combine(tempRoot, "home", "rawvault");
+            Directory.CreateDirectory(vaultRoot);
+            File.WriteAllText(Path.Combine(vaultRoot, "manifest.json"), "seed");
+
+            var result = EvalObject(
+                "$manifest = New-AcceptanceHashManifest -Directory '" + vaultRoot.Replace("'", "''") +
+                "' -AcceptanceRoot '" + tempRoot.Replace("'", "''") + "' -Filter @('manifest.json')\n" +
+                "$ok = Test-AcceptanceHashManifest -Manifest $manifest -AcceptanceRoot '" + tempRoot.Replace("'", "''") + "'\n" +
+                "$script:Result = @{ root = $manifest.root; " +
+                "entries = @(Get-AcceptanceManifestEntries -Entries $manifest.entries).Count; ok = $ok }");
+            Assert.StartsWith("<acceptance-root>/", result.GetProperty("root").GetString(), StringComparison.Ordinal);
+            Assert.DoesNotContain(tempRoot, result.GetProperty("root").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(1, result.GetProperty("entries").GetInt32());
+            Assert.True(result.GetProperty("ok").GetBoolean());
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Script-level paths (regression: review round 1 test gaps)
+    // ------------------------------------------------------------------
+
+    private static string NewAcceptanceRoot()
+    {
+        var root = NewTempDirectory();
+        Directory.CreateDirectory(Path.Combine(root, "evidence"));
+        Directory.CreateDirectory(Path.Combine(root, "logs"));
+        return root;
+    }
+
+    private static string WriteAcceptanceConfig(string acceptanceRoot)
+    {
+        var configPath = Path.Combine(acceptanceRoot, "config.json");
+        File.WriteAllText(configPath, """
+            {
+              "schema_version": 1,
+              "acceptance_root": "__ROOT__",
+              "run": { "planned_hours": 168, "started_at_local": "__START__" },
+              "rc": {
+                "release_tag": "v0.6.0-rc.1",
+                "asset_url": "https://example.invalid/WeArchive-win-x64.zip",
+                "asset_sha256": "__SHA__",
+                "expected_version": "0.6.0-rc.1",
+                "commit_sha": "__COMMIT__"
+              },
+              "capture": { "account_selector": "a_test000000000000" }
+            }
+            """
+            .Replace("__ROOT__", acceptanceRoot.Replace("\\", "\\\\"))
+            .Replace("__START__", DateTime.Now.AddHours(-3).ToString("o"))
+            .Replace("__SHA__", ShaPlaceholder())
+            .Replace("__COMMIT__", new string('b', 40)));
+        return configPath;
+    }
+
+    /// <summary>Runs an acceptance script file with the given raw argument string.</summary>
+    private static (int ExitCode, string Stdout, string Stderr) RunScriptFile(string scriptName, string arguments)
+    {
+        var scriptPath = Path.Combine(Path.GetDirectoryName(HarnessModulePath)!, scriptName);
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = PwshPath!,
+            Arguments = "-NoProfile -NonInteractive -File \"" + scriptPath + "\" " + arguments,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        using var process = Process.Start(startInfo)!;
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync().GetAwaiter().GetResult();
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        process.WaitForExit(120_000);
+        return (process.ExitCode, stdout, stderr);
+    }
+
+    [PwshFact]
+    public void SummarizeAccountsForEveryRecordedPoint()
+    {
+        var acceptanceRoot = NewAcceptanceRoot();
+        try
+        {
+            var configPath = WriteAcceptanceConfig(acceptanceRoot);
+            var tracePath = Path.Combine(acceptanceRoot, "evidence", "hourly-trace.jsonl");
+
+            // Seed the trace with three classified points via the module itself.
+            RunHarness(
+                "$config = Read-AcceptanceConfig -Path '" + configPath.Replace("'", "''") + "'\n" +
+                "$trace = '" + tracePath.Replace("'", "''") + "'\n" +
+                "$success = New-AcceptanceCaptureRecord -Config $config -AcceptanceRoot $config.acceptance_root " +
+                "-PointIndex 0 -Outcome 'success' -ExecutedAt (Get-Date) " +
+                "-CaptureResult ([pscustomobject]@{ExitCode=0;DurationMs=5;Json=[pscustomobject]@{completeness='complete';" +
+                "storage_counters=[pscustomobject]@{new_data_bytes=10;new_map_nodes=1;new_pack_bytes=20;logical_bytes=30}};SingleJsonDocument=$true}) " +
+                "-VerifyResult ([pscustomobject]@{ExitCode=0;DurationMs=5;Json=[pscustomobject]@{succeeded=$true}})\n" +
+                "$null = Write-AcceptanceTraceRecord -TracePath $trace -Record $success\n" +
+                "$partial = New-AcceptanceCaptureRecord -Config $config -AcceptanceRoot $config.acceptance_root " +
+                "-PointIndex 1 -Outcome 'success_partial' -ExecutedAt (Get-Date) " +
+                "-CaptureResult ([pscustomobject]@{ExitCode=0;DurationMs=5;Json=[pscustomobject]@{completeness='partial'};SingleJsonDocument=$true}) " +
+                "-VerifyResult ([pscustomobject]@{ExitCode=0;DurationMs=5;Json=[pscustomobject]@{succeeded=$true}}) " +
+                "-Explanation 'gap explained'\n" +
+                "$null = Write-AcceptanceTraceRecord -TracePath $trace -Record $partial\n" +
+                "$missed = New-AcceptanceMissedRecord -Config $config -AcceptanceRoot $config.acceptance_root " +
+                "-PointIndex 2 -RecordedAt (Get-Date) -Explanation 'gap window'\n" +
+                "$null = Write-AcceptanceTraceRecord -TracePath $trace -Record $missed\n");
+
+            var (exitCode, stdout, stderr) = RunScriptFile(
+                "hourly-capture.ps1", "-Config \"" + configPath + "\" -Summarize");
+            Assert.True(exitCode == 0, "Summarize failed: " + stderr);
+            using var document = JsonDocument.Parse(stdout);
+            var run = document.RootElement.GetProperty("run");
+            Assert.Equal(3, run.GetProperty("points_recorded").GetInt32());
+            // The config started 3 hours ago; the summary derives elapsed from the same
+            // clock, so assert consistency instead of a fixed number.
+            var elapsed = run.GetProperty("elapsed_planned_points").GetInt32();
+            Assert.True(elapsed >= 3, "expected at least the 3 seeded points to have elapsed");
+            Assert.Equal(elapsed - 3, run.GetProperty("points_unaccounted").GetInt32());
+
+            var classification = document.RootElement.GetProperty("classification");
+            Assert.Equal(1, classification.GetProperty("success").GetInt32());
+            Assert.Equal(1, classification.GetProperty("success_partial").GetInt32());
+            Assert.Equal(1, classification.GetProperty("missed_no_execution").GetInt32());
+        }
+        finally
+        {
+            TryDeleteDirectory(acceptanceRoot);
+        }
+    }
+
+    [PwshFact]
+    public void WhatIfDoesNotTouchTheTrace()
+    {
+        var acceptanceRoot = NewAcceptanceRoot();
+        try
+        {
+            var configPath = WriteAcceptanceConfig(acceptanceRoot);
+            var tracePath = Path.Combine(acceptanceRoot, "evidence", "hourly-trace.jsonl");
+
+            var (exitCode, stdout, stderr) = RunScriptFile(
+                "hourly-capture.ps1", "-Config \"" + configPath + "\" -WhatIf");
+            Assert.True(exitCode == 0, "WhatIf run failed: " + stderr);
+            Assert.Contains("WhatIf: would execute point", stdout, StringComparison.Ordinal);
+            Assert.False(File.Exists(tracePath), "the WhatIf run must not create or modify the trace");
+        }
+        finally
+        {
+            TryDeleteDirectory(acceptanceRoot);
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 

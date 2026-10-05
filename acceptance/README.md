@@ -135,7 +135,13 @@ Each cycle, for the **current planned hourly point** (index =
    (acceptance criterion). `-SkipVerify` exists for operator emergencies only and is
    flagged in the record; the point then cannot count as a verified success.
 5. **Evidence record**: exactly one JSON line appended to
-   `evidence/hourly-trace.jsonl`.
+   `evidence/hourly-trace.jsonl` (written under a per-trace mutex so a manual run
+   cannot lose-update a concurrently firing scheduled cycle), plus one status line
+   per cycle in `logs/hourly-cycle.log` — the scheduled task's own console output is
+   not retained anywhere else, so this log is what covers a gap window.
+   `-Retry` keeps the prior attempt(s) inside the new record
+   (`planned_point.attempt` / `planned_point.prior_attempts`), so the posted
+   classification never understates the observed failure history.
 
 ### Per-capture evidence fields (Issue #86 storage-evidence mapping)
 
@@ -151,7 +157,7 @@ asset SHA-256) and carries:
 | new map/metadata bytes | `capture.storage_counters.new_map_nodes`; `vault stats` `v2_map_metadata_stored_bytes` when sampled |
 | allocated pack bytes | `capture.storage_counters.new_pack_bytes` / `new_packs`; `vault stats` `v2_pack_allocated_bytes` / `v2_pack_logical_bytes` when sampled |
 | derived-index bytes | `vault stats` `derived_lookup_index_bytes` when sampled |
-| reused payload bytes | `capture.coverage_summary.reused` (+ predecessor-generation reuse per coverage) |
+| reused payload bytes | **partition count, not bytes** — `capture.coverage_summary.reused` (the RC exposes no reused-byte counter); reused *bytes* are derived from consecutive sampled `vault stats` deltas when the stats sample is taken at least twice |
 | orphan/unreachable bytes | `vault stats` `v2_orphan_payload_uncompressed_bytes` / `v2_orphan_map_metadata_uncompressed_bytes` when sampled |
 | capture duration | measured by the harness (`capture.duration_ms`) |
 | materialization/rebuild timing | `offline-recovery.ps1` steps and scenario traces where sampled |
@@ -277,15 +283,19 @@ authoritative verify of whatever it touched. Pause the schedule first
 ./offline-recovery.ps1 -Config <acceptance-root>\config.json [-ExportConversation <id>]
 ```
 
-Runs the issue's sequence and records each step: pre-state verify + canonical
-baseline; source/key state (a failed capture with key acquisition unavailable is the
-expected offline proof; a successful capture only counts when it reused all evidence
-— zero new payload, no key acquisition attempted); derived v2 object index deletion;
-disposable cache removal; **authoritative verify without derived state** (a valid
-disposable cache must never compensate for missing authoritative CAS data); canonical
-archive deletion and **fresh offline rebuild** with count comparison; generation-
-manifest immutability before/after; v1 seed immutability when seeded; optional
-offline export (#66).
+Runs the issue's sequence and records each step (every step is persisted to the
+recovery trace and the script aborts non-zero on any failed step): pre-state verify +
+canonical baseline; the offline premise itself — doctor source availability and
+version are recorded, and the RC's own capture attempt is the key-acquisition proof:
+a failed capture is the expected offline path, a successful capture only counts when
+it reused all evidence (zero new payload, no key acquisition attempted), and a
+successful capture that materialized new evidence FAILS the phase and aborts (keys
+were acquirable, so the source/key path was not actually unavailable); derived v2
+object index deletion; disposable cache removal; **authoritative verify without
+derived state** (a valid disposable cache must never compensate for missing
+authoritative CAS data); canonical archive deletion and **fresh offline rebuild**
+with count comparison; generation-manifest immutability before/after; v1 seed
+immutability when seeded; optional offline export (#66).
 
 ## 8. Default block-size validation (4096 + Zstd level 1)
 

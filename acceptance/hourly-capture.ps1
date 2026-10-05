@@ -160,12 +160,17 @@ if (-not $PSCmdlet.ShouldProcess("acceptance vault point $current", 'capture + v
 $records = @(Read-AcceptanceTrace -TracePath $tracePath)
 $recordedIndexes = @($records | ForEach-Object { [int]$_.planned_point.index })
 
-# 1. Classify never-executed past points (machine off / task not triggered).
+# 1. Classify never-executed past points (machine off / task not triggered, or the
+#    harness terminated before the point could be recorded — the wording records
+#    exactly what is known: no evidence record exists for the point).
 $missed = Get-AcceptanceMissedPointIndexes -Config $config -RecordedIndexes $recordedIndexes -At $now
 foreach ($index in $missed) {
     $record = New-AcceptanceMissedRecord -Config $config -AcceptanceRoot $root -PointIndex $index `
-        -RecordedAt $now -Explanation ('No harness execution observed for this planned hourly point ' +
-        '(host powered off, suspended or the scheduled task did not trigger). No capture was attempted.')
+        -RecordedAt $now -Explanation ('No evidence record exists for this planned hourly point: ' +
+        'the harness recorded no execution (host powered off or suspended, the scheduled task did ' +
+        'not trigger, or a previous harness run terminated before this point could be recorded). ' +
+        'Whether a capture was actually attempted during the gap is unknown from the trace; the ' +
+        'vault lineage and logs/hourly-cycle.log cover that window.')
     $null = Write-AcceptanceTraceRecord -TracePath $tracePath -Record $record
     Write-Warning ("Planned point {0} ({1}) recorded as missed_no_execution." -f $index, $record.planned_point.planned_at)
 }
@@ -185,7 +190,16 @@ if ($existingRecord) {
 
 # 3. The scheduled capture/verify cycle.
 Write-Host "Point ${current}: capturing..."
-$vaultRoot = Join-Path (Get-AcceptanceHome -AcceptanceRoot $root) 'AppData/Local/WeArchive/rawvault'
+$logPath = Join-Path $root 'logs/hourly-cycle.log'
+$null = New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force
+$thisAttempt = if ($existingRecord) {
+    1 + @(Get-AcceptanceJsonProperty -Object $existingRecord.planned_point -Name 'prior_attempts' -Default @()).Count + 1
+} else {
+    1
+}
+Add-Content -LiteralPath $logPath -Value (
+    '[{0}] point={1} cycle=started attempt={2}' -f (Get-Date).ToString('o'), $current, $thisAttempt)
+$vaultRoot = Get-AcceptanceVaultRoot -AcceptanceRoot $root
 $capture = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
     'capture', '--account', $config.capture.account_selector, '--json', '--no-input')
 
@@ -212,7 +226,11 @@ if ($capture.ExitCode -eq 0) {
             'vault', 'verify', '--vault-root', $vaultRoot, '--json', '--no-input') -TimeoutSeconds 7200
         $verifyExit = $verify.ExitCode
         $verifyJson = $verify.Json
-        Write-Host ("  verify: exit={0} succeeded={1}" -f $verify.ExitCode, $verify.Json.succeeded)
+        # StrictMode-safe: failure shapes use the standard error envelope (no `succeeded`
+        # property) or carry no JSON document at all; those classify as failed_verify
+        # below instead of crashing the recorder before the record is written.
+        $verifySucceeded = Get-AcceptanceJsonProperty -Object $verifyJson -Name 'succeeded'
+        Write-Host ("  verify: exit={0} succeeded={1}" -f $verify.ExitCode, $verifySucceeded)
     }
 }
 
@@ -233,28 +251,42 @@ if ($SkipVerify -and $capture.ExitCode -eq 0 -and $outcome -eq 'failed_verify') 
     $outcome = 'success_partial'
 }
 
-$explanation = $null
 if ($outcome -eq 'failed_capture') {
-    $code = $null
-    if ($capture.Json -and $capture.Json.PSObject.Properties['error']) {
-        $code = $capture.Json.error.code
-    }
-    $explanation = "Capture failed (exit $($capture.ExitCode), error code: $code). Stderr: " +
+    $errorCode = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $capture.Json -Name 'error') -Name 'code'
+    $explanation = "Capture failed (exit $($capture.ExitCode), error code: $errorCode). Stderr: " +
         ($capture.Stderr.Trim() -replace '\s+', ' ')
     if ($explanation.Length -gt 800) { $explanation = $explanation.Substring(0, 800) + ' [...]' }
     Write-Warning "Point $current classified $outcome. $explanation"
 } elseif ($outcome -eq 'failed_verify') {
-    $explanation = 'Capture published a complete generation but the authoritative vault verify did not pass. ' +
-        'This is an acceptance-blocking failure that must be investigated before the run continues.'
-    Write-Warning "Point $current classified $outcome."
+    # Keep the actual verify evidence in the explanation: stderr and the per-artifact
+    # failure messages, so a resolved intermittent failure remains auditable.
+    $failureMessages = @()
+    $failures = @(Get-AcceptanceJsonProperty -Object $verifyJson -Name 'failures' -Default @())
+    foreach ($failure in $failures) {
+        $message = Get-AcceptanceJsonProperty -Object $failure -Name 'message'
+        if ($message) { $failureMessages += $message }
+    }
+    $verifyStderr = if ($verify) { ($verify.Stderr -as [string]) } else { $null }
+    $explanation = 'Capture published a complete generation but the authoritative vault verify did not ' +
+        "pass (exit $verifyExit)."
+    if ($failureMessages.Count -gt 0) {
+        $explanation += ' Failures: ' + (($failureMessages | Select-Object -First 3) -join ' | ')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($verifyStderr)) {
+        $explanation += ' Stderr: ' + ($verifyStderr.Trim() -replace '\s+', ' ')
+    }
+    if ($explanation.Length -gt 1200) { $explanation = $explanation.Substring(0, 1200) + ' [...]' }
+    Write-Warning "Point $current classified $outcome. $explanation"
 } elseif ($outcome -eq 'success_partial') {
     if ($SkipVerify) {
         $explanation = 'Authoritative vault verify was skipped by operator (-SkipVerify); the published ' +
             'generation is recorded as published-but-unverified and cannot count as a fully verified success.'
     } else {
         $diagnostics = @()
-        if ($capture.Json -and $capture.Json.PSObject.Properties['diagnostics']) {
-            $diagnostics = @($capture.Json.diagnostics | ForEach-Object { $_.code })
+        $diagnosticEntries = @(Get-AcceptanceJsonProperty -Object $capture.Json -Name 'diagnostics' -Default @())
+        foreach ($diagnostic in $diagnosticEntries) {
+            $code = Get-AcceptanceJsonProperty -Object $diagnostic -Name 'code'
+            if ($code) { $diagnostics += $code }
         }
         $explanation = 'Published generation is partial; coverage gaps: ' +
             (($diagnostics | Select-Object -Unique) -join ', ') + '.'
@@ -264,10 +296,18 @@ if ($outcome -eq 'failed_capture') {
 
 $record = New-AcceptanceCaptureRecord -Config $config -AcceptanceRoot $root -PointIndex $current `
     -Outcome $outcome -ExecutedAt $now -CaptureResult $capture -VerifyResult $verify `
-    -StatsResult $stats -StatsSampled:$SampleStats -Explanation $explanation
+    -StatsResult $stats -StatsSampled:$SampleStats -Explanation $explanation `
+    -PriorAttempt $(if ($Retry -and $existingRecord) { $existingRecord } else { $null })
 $action = Write-AcceptanceTraceRecord -TracePath $tracePath -Record $record
 Write-Host ("Point {0} recorded ({1}, {2}) to {3}." -f $current, $outcome, $action,
     (ConvertTo-PrivacySafePath -Path $tracePath -AcceptanceRoot $root))
+
+$logPath = Join-Path $root 'logs/hourly-cycle.log'
+$null = New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force
+Add-Content -LiteralPath $logPath -Value (
+    '[{0}] point={1} outcome={2} attempt={3} action={4}' -f
+    (Get-Date).ToString('o'), $current, $outcome,
+    (Get-AcceptanceJsonProperty -Object $record.planned_point -Name 'attempt'), $action)
 
 if ($outcome -in @('failed_verify')) {
     throw "Point $current failed authoritative verification; investigate before the next scheduled point."

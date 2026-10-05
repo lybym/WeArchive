@@ -60,8 +60,8 @@ $root = Get-AcceptanceRoot -Config $config
 if (-not $RecoveryRoot) { $RecoveryRoot = Join-Path $root 'scenario-recovery' }
 $recoveryEvidence = Join-Path $RecoveryRoot 'evidence'
 $null = New-Item -ItemType Directory -Path $recoveryEvidence -Force
-$vaultRoot = Join-Path (Get-AcceptanceHome -AcceptanceRoot $root) 'AppData/Local/WeArchive/rawvault'
-$archiveRoot = Join-Path (Get-AcceptanceHome -AcceptanceRoot $root) 'AppData/Local/WeArchive/archive'
+$vaultRoot = Get-AcceptanceVaultRoot -AcceptanceRoot $root
+$archiveRoot = Get-AcceptanceArchiveRoot -AcceptanceRoot $root
 $tracePath = Join-Path $recoveryEvidence 'offline-recovery-trace.jsonl'
 
 function Add-RecoveryRecord {
@@ -106,21 +106,27 @@ if ($accountDirs.Count -gt 1) {
 }
 $accountId = $accountDirs[0].Name
 
-$manifestBaseline = New-AcceptanceHashManifest -Directory $vaultRoot -Filter @('manifest.json')
+$manifestBaseline = New-AcceptanceHashManifest -Directory $vaultRoot -AcceptanceRoot $root -Filter @('manifest.json')
 
 # --- Step 1: pre-state --------------------------------------------------------
 
 Write-Host 'offline-recovery step 1: pre-state verify + canonical baseline...'
 $verify = Invoke-RecoveryStep -Arguments @('vault', 'verify', '--vault-root', $vaultRoot, '--json', '--no-input')
-if ($verify.ExitCode -ne 0 -or -not $verify.Json.succeeded) {
-    Add-RecoveryRecord -Step 'pre-state-verify' -Passed $false -Observation 'vault verify failed before the offline phase' -Result $verify
+$verifySucceeded = Get-AcceptanceJsonProperty -Object $verify.Json -Name 'succeeded' -Default $false
+if ($verify.ExitCode -ne 0 -or $verifySucceeded -ne $true) {
+    Add-RecoveryRecord -Step 'pre-state-verify' -Passed $false `
+        -Observation ("vault verify failed before the offline phase (exit {0}). Stderr: {1}" -f
+            $verify.ExitCode, $verify.Stderr) -Result $verify
     throw 'Pre-state vault verify failed; the offline phase requires a healthy vault.'
 }
 Add-RecoveryRecord -Step 'pre-state-verify' -Passed $true -Observation 'vault verify succeeded' -Result $verify
 
 $rebuildBaseline = Invoke-RecoveryStep -Arguments @('rebuild', '--json', '--no-input')
-if ($rebuildBaseline.ExitCode -ne 0 -or -not $rebuildBaseline.Json.succeeded) {
-    Add-RecoveryRecord -Step 'pre-state-rebuild' -Passed $false -Observation 'canonical rebuild baseline failed' -Result $rebuildBaseline
+$rebuildSucceeded = Get-AcceptanceJsonProperty -Object $rebuildBaseline.Json -Name 'succeeded' -Default $false
+if ($rebuildBaseline.ExitCode -ne 0 -or $rebuildSucceeded -ne $true) {
+    Add-RecoveryRecord -Step 'pre-state-rebuild' -Passed $false `
+        -Observation ("canonical rebuild baseline failed (exit {0}). Stderr: {1}" -f
+            $rebuildBaseline.ExitCode, $rebuildBaseline.Stderr) -Result $rebuildBaseline
     throw 'Pre-state canonical rebuild failed.'
 }
 $baselineCounts = [ordered]@{
@@ -132,27 +138,48 @@ $baselineCounts = [ordered]@{
 Add-RecoveryRecord -Step 'pre-state-rebuild' -Passed $true -Observation ($baselineCounts | ConvertTo-Json -Compress) -Result $rebuildBaseline
 Write-Host ("  baseline counts: $($baselineCounts | ConvertTo-Json -Compress)")
 
-# --- Step 2: source/key state -------------------------------------------------
+# --- Step 2: source/key state (the offline premise, recorded and fail-closed) --
 
 Write-Host 'offline-recovery step 2: recording the live source/key state...'
 $doctor = Invoke-RecoveryStep -Arguments @('doctor', '--json', '--no-input') -TimeoutSeconds 300
-$sourceAvailable = $doctor.Json.source.available
-Write-Host ("  doctor source.available = {0}" -f $sourceAvailable)
+if ($doctor.ExitCode -ne 0) {
+    Add-RecoveryRecord -Step 'source-key-state' -Passed $false `
+        -Observation ("doctor failed (exit {0}); the offline premise cannot be recorded" -f $doctor.ExitCode) -Result $doctor
+    throw "doctor failed during the offline phase (exit $($doctor.ExitCode))."
+}
+$source = Get-AcceptanceJsonProperty -Object $doctor.Json -Name 'source'
+$sourceAvailable = [bool](Get-AcceptanceJsonProperty -Object $source -Name 'available')
+$sourceVersion = Get-AcceptanceJsonProperty -Object $source -Name 'source_version'
+Write-Host ("  doctor source.available = {0} (source_version = {1})" -f $sourceAvailable, $sourceVersion)
 
+# The RC's own attempt is the key-acquisition proof: when materialization is required
+# (new/changed evidence), the key can only come from a running, signed-in client.
 $capture = Invoke-RecoveryStep -Arguments @('capture', '--json', '--no-input')
+$offlineState = 'doctor source.available={0}, source_version={1}' -f $sourceAvailable, $sourceVersion
 if ($capture.ExitCode -eq 0) {
-    $counters = $capture.Json.storage_counters
-    $newBytes = [int64]$counters.new_data_bytes
-    $newNodes = [int64]$counters.new_map_nodes
-    $offlineProof = ('capture succeeded with zero new payload (new_data_bytes={0}, new_map_nodes={1}): ' +
-        'reused-evidence capture needs no key acquisition, consistent with offline operation.') -f $newBytes, $newNodes
-    Add-RecoveryRecord -Step 'source-key-state' -Passed ($newBytes -eq 0 -and $newNodes -eq 0) `
-        -Observation $offlineProof -Result $capture
+    $counters = Get-AcceptanceJsonProperty -Object $capture.Json -Name 'storage_counters'
+    $newBytes = [int64](Get-AcceptanceJsonProperty -Object $counters -Name 'new_data_bytes' -Default 0)
+    $newNodes = [int64](Get-AcceptanceJsonProperty -Object $counters -Name 'new_map_nodes' -Default 0)
+    if ($newBytes -ne 0 -or $newNodes -ne 0) {
+        # New evidence WAS materialized, so keys WERE acquirable: the offline premise
+        # does not hold. Fail closed and abort — the phase must be re-run with the
+        # source/key path actually unavailable.
+        $observation = ('FAILED premise: capture succeeded and materialized new evidence ' +
+            '(new_data_bytes={0}, new_map_nodes={1}); the source key acquisition succeeded, so ' +
+            'the live source/key path was NOT unavailable ({2}). Re-run this phase with the ' +
+            'WeChat client closed.') -f $newBytes, $newNodes, $offlineState
+        Add-RecoveryRecord -Step 'source-key-state' -Passed $false -Observation $observation -Result $capture
+        throw $observation
+    }
+    $offlineProof = ('OFFLINE (zero-new-payload path): capture succeeded but reused all evidence ' +
+        '(new_data_bytes=0, new_map_nodes=0), so no key acquisition was required; {0}.') -f $offlineState
+    Add-RecoveryRecord -Step 'source-key-state' -Passed $true -Observation $offlineProof -Result $capture
     Write-Host "  $offlineProof"
 } else {
-    $code = if ($capture.Json -and $capture.Json.PSObject.Properties['error']) { $capture.Json.error.code } else { 'n/a' }
-    $offlineProof = 'capture failed offline as expected (exit {0}, error code: {1}): source/key acquisition cannot succeed.' -f
-        $capture.ExitCode, $code
+    $errorCode = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $capture.Json -Name 'error') -Name 'code'
+    $offlineProof = ('OFFLINE (capture-refusal path): capture failed with exit {0}, error code {1}: ' +
+        'the source/key acquisition could not succeed; {2}. Stderr: {3}') -f
+        $capture.ExitCode, $errorCode, $offlineState, ($capture.Stderr.Trim() -replace '\s+', ' ')
     Add-RecoveryRecord -Step 'source-key-state' -Passed $true -Observation $offlineProof -Result $capture
     Write-Host "  $offlineProof"
 }
@@ -168,7 +195,7 @@ Add-RecoveryRecord -Step 'delete-derived-index' -Passed $true `
 Write-Host ("  removed {0} file(s)." -f $indexFiles.Count)
 
 Write-Host 'offline-recovery step 4: removing disposable materialized/scratch caches...'
-$scratchRoot = Join-Path (Get-AcceptanceHome -AcceptanceRoot $root) 'AppData/Local/WeArchive/scratch'
+$scratchRoot = Join-Path (Get-AcceptanceDataRoot -AcceptanceRoot $root) 'scratch'
 if (Test-Path -LiteralPath $scratchRoot) {
     Remove-Item -LiteralPath $scratchRoot -Recurse -Force
 }
@@ -180,14 +207,21 @@ Write-Host '  caches removed.'
 
 Write-Host 'offline-recovery step 5: authoritative vault verify without index/cache...'
 $stats = Invoke-RecoveryStep -Arguments @('vault', 'stats', '--vault-root', $vaultRoot, '--json', '--no-input')
-$indexStatus = $stats.Json.accounts[0].derived_index_status
+$statAccounts = Get-AcceptanceJsonProperty -Object $stats.Json -Name 'accounts'
+if ($stats.ExitCode -ne 0 -or $null -eq $statAccounts -or @($statAccounts).Count -eq 0) {
+    Add-RecoveryRecord -Step 'verify-without-derived-state' -Passed $false `
+        -Observation ("vault stats failed or produced no accounts document (exit {0})" -f $stats.ExitCode) -Result $stats
+    throw "vault stats failed during the offline phase (exit $($stats.ExitCode))."
+}
+$indexStatus = Get-AcceptanceJsonProperty -Object @($statAccounts)[0] -Name 'derived_index_status'
 $verify = Invoke-RecoveryStep -Arguments @('vault', 'verify', '--vault-root', $vaultRoot, '--json', '--no-input')
-$passed = $verify.ExitCode -eq 0 -and $verify.Json.succeeded -and $indexStatus -eq 'missing_rebuildable'
+$verifySucceeded = Get-AcceptanceJsonProperty -Object $verify.Json -Name 'succeeded' -Default $false
+$passed = $verify.ExitCode -eq 0 -and $verifySucceeded -eq $true -and $indexStatus -eq 'missing_rebuildable'
 Add-RecoveryRecord -Step 'verify-without-derived-state' -Passed $passed `
-    -Observation ("derived_index_status={0}, verify={1}: authoritative CAS evidence alone sustains verification" -f
-        $indexStatus, $verify.Json.succeeded) -Result $verify
+    -Observation ("derived_index_status={0}, verify={1} (exit {2}): authoritative CAS evidence alone sustains verification" -f
+        $indexStatus, $verifySucceeded, $verify.ExitCode) -Result $verify
 if (-not $passed) {
-    throw "Verify without derived state failed (index status: $indexStatus)."
+    throw "Verify without derived state failed (index status: $indexStatus, verify succeeded: $verifySucceeded)."
 }
 Write-Host '  PASS.'
 
@@ -223,7 +257,7 @@ Write-Host '  PASS: fresh canonical archive matches the baseline counts.'
 # --- Step 8: immutability ------------------------------------------------------
 
 Write-Host 'offline-recovery step 8: historical evidence immutability...'
-$manifestAfter = New-AcceptanceHashManifest -Directory $vaultRoot -Filter @('manifest.json')
+$manifestAfter = New-AcceptanceHashManifest -Directory $vaultRoot -AcceptanceRoot $root -Filter @('manifest.json')
 $immutable = $true
 $violations = @()
 $baselineEntries = Get-AcceptanceManifestEntries -Entries $manifestBaseline.entries
@@ -246,9 +280,9 @@ if (-not $immutable) {
 $seedPath = Join-Path $root 'evidence/v1-seed-hashes.json'
 if (Test-Path -LiteralPath $seedPath) {
     $seedManifest = Get-Content -LiteralPath $seedPath -Raw | ConvertFrom-Json
-    $seedOk = Test-AcceptanceHashManifest -Manifest $seedManifest
+    $seedOk = Test-AcceptanceHashManifest -Manifest $seedManifest -AcceptanceRoot $root
     Add-RecoveryRecord -Step 'v1-seed-immutability' -Passed $seedOk `
-        -Observation 'pre-existing copied v1 evidence unchanged' 
+        -Observation 'pre-existing copied v1 evidence unchanged'
     if (-not $seedOk) {
         throw 'Pre-existing v1 evidence changed during the acceptance run.'
     }

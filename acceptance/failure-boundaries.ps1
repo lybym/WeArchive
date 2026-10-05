@@ -118,6 +118,46 @@ function Assert-BoundaryVaultVerified {
     return @{ Result = $verify; Succeeded = $succeeded }
 }
 
+function Get-BoundaryMetricValue {
+    <#
+    .SYNOPSIS
+        StrictMode-safe metric extraction from a vault stats result: a stats failure
+        (error envelope, empty stdout) fails the exercise explicitly instead of
+        crashing mid-recording.
+    #>
+    param([AllowNull()] $Result, [Parameter(Mandatory)] [string] $Name)
+
+    $json = Get-AcceptanceJsonProperty -Object $Result -Name 'Json'
+    $metrics = Get-AcceptanceJsonProperty -Object $json -Name 'metrics'
+    if ($null -eq $metrics) {
+        throw "vault stats produced no metrics document (exit $(Get-AcceptanceJsonProperty -Object $Result -Name 'ExitCode'))."
+    }
+    $metric = Get-AcceptanceJsonProperty -Object $metrics -Name $Name
+    if ($null -eq $metric) {
+        throw "vault stats is missing the metric '$Name'."
+    }
+    return (Get-AcceptanceJsonProperty -Object $metric -Name 'value')
+}
+
+function Get-BoundaryIndexStatus {
+    <#
+    .SYNOPSIS
+        StrictMode-safe derived_index_status extraction from a vault stats result.
+    #>
+    param([AllowNull()] $Result)
+
+    $json = Get-AcceptanceJsonProperty -Object $Result -Name 'Json'
+    $accounts = Get-AcceptanceJsonProperty -Object $json -Name 'accounts'
+    if ($null -eq $accounts -or @($accounts).Count -eq 0) {
+        throw 'vault stats produced no accounts document.'
+    }
+    $status = Get-AcceptanceJsonProperty -Object @($accounts)[0] -Name 'derived_index_status'
+    if ($null -eq $status) {
+        throw 'vault stats accounts[0] carries no derived_index_status.'
+    }
+    return $status
+}
+
 Write-Host 'Failure-boundary exercises. The main hourly trace is not touched.'
 
 # ---------------------------------------------------------------------------
@@ -129,7 +169,7 @@ if ($IncludeKillCapture) {
 
     $statsBefore = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
         'vault', 'stats', '--vault-root', $vaultRoot, '--json', '--no-input') -TimeoutSeconds 7200
-    $generationsBefore = [int]$statsBefore.Json.metrics.generation_count.value
+    $generationsBefore = [int](Get-BoundaryMetricValue -Result $statsBefore -Name 'generation_count')
 
     $exe = Get-AcceptanceRcExe -AcceptanceRoot $root
     $home_ = Get-AcceptanceHome -AcceptanceRoot $root
@@ -162,8 +202,8 @@ if ($IncludeKillCapture) {
     Start-Sleep -Seconds 2
     $statsAfter = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
         'vault', 'stats', '--vault-root', $vaultRoot, '--json', '--no-input') -TimeoutSeconds 7200
-    $generationsAfter = [int]$statsAfter.Json.metrics.generation_count.value
-    $stagingBytes = [int64]$statsAfter.Json.metrics.vault_staging_bytes.value
+    $generationsAfter = [int](Get-BoundaryMetricValue -Result $statsAfter -Name 'generation_count')
+    $stagingBytes = [int64](Get-BoundaryMetricValue -Result $statsAfter -Name 'vault_staging_bytes')
 
     $verify = Assert-BoundaryVaultVerified -Vault $vaultRoot
     if (-not $killed) {
@@ -210,7 +250,7 @@ foreach ($file in $indexFiles) { Remove-Item -LiteralPath $file.FullName -Force 
 
 $stats = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
     'vault', 'stats', '--vault-root', $boundaryVault, '--json', '--no-input') -TimeoutSeconds 7200
-$indexStatus = $stats.Json.accounts[0].derived_index_status
+$indexStatus = Get-BoundaryIndexStatus -Result $stats
 $verify = Assert-BoundaryVaultVerified -Vault $boundaryVault
 $passed = ($indexStatus -eq 'missing_rebuildable') -and $verify.Succeeded
 $observation = "after index deletion: derived_index_status=$indexStatus, verify=$($verify.Succeeded)"
@@ -226,7 +266,7 @@ Set-Content -LiteralPath (Join-Path $objectsRoot 'lookup.sqlite') -Value 'CORRUP
 
 $stats = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
     'vault', 'stats', '--vault-root', $boundaryVault, '--json', '--no-input') -TimeoutSeconds 7200
-$indexStatus = $stats.Json.accounts[0].derived_index_status
+$indexStatus = Get-BoundaryIndexStatus -Result $stats
 $verify = Assert-BoundaryVaultVerified -Vault $boundaryVault
 $passed = ($indexStatus -in @('corrupt_rebuildable', 'inconsistent_rebuildable', 'missing_rebuildable')) -and $verify.Succeeded
 $observation = "after index corruption: derived_index_status=$indexStatus, verify=$($verify.Succeeded)"

@@ -75,6 +75,12 @@ function Read-AcceptanceConfig {
         }
     }
 
+    # Issue #86 floor: at least 7 continuous days with >= 168 planned hourly points.
+    if ([int]$config.run.planned_hours -lt 168) {
+        throw ("run.planned_hours is {0}; Issue #86 requires at least 168 planned hourly " +
+               'points over >= 7 continuous days.') -f [int]$config.run.planned_hours
+    }
+
     foreach ($field in @('asset_url', 'asset_sha256', 'expected_version', 'commit_sha', 'release_tag')) {
         if (-not $config.rc.PSObject.Properties[$field] -or [string]::IsNullOrWhiteSpace([string]$config.rc.$field)) {
             throw "Acceptance config is missing rc.$field (the exact official-RC binding)."
@@ -125,6 +131,42 @@ function Get-AcceptanceHome {
         [Parameter(Mandatory)] [string] $AcceptanceRoot
     )
     return (Join-Path $AcceptanceRoot 'home')
+}
+
+function Get-AcceptanceDataRoot {
+    <#
+    .SYNOPSIS
+        Returns the redirected WeArchive data root (%LOCALAPPDATA%\WeArchive inside
+        the acceptance home). The single place the product-internal layout is named:
+        Raw Vault, archive, key cache and scratch roots all live under it, and the
+        isolation gate re-proves the layout with `doctor` before the run starts.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $AcceptanceRoot
+    )
+    return (Join-Path (Get-AcceptanceHome -AcceptanceRoot $AcceptanceRoot) 'AppData/Local/WeArchive')
+}
+
+function Get-AcceptanceVaultRoot {
+    <#
+    .SYNOPSIS
+        Returns the acceptance Raw Vault root inside the redirected data root.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $AcceptanceRoot
+    )
+    return (Join-Path (Get-AcceptanceDataRoot -AcceptanceRoot $AcceptanceRoot) 'rawvault')
+}
+
+function Get-AcceptanceArchiveRoot {
+    <#
+    .SYNOPSIS
+        Returns the acceptance canonical archive root inside the redirected data root.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $AcceptanceRoot
+    )
+    return (Join-Path (Get-AcceptanceDataRoot -AcceptanceRoot $AcceptanceRoot) 'archive')
 }
 
 function Get-AcceptanceRcExe {
@@ -190,7 +232,11 @@ function Invoke-WearchiveRc {
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $exe
-    $startInfo.Arguments = ($Arguments | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+    # Windows argv quoting: escape embedded quotes AND trailing backslashes (a trailing
+    # backslash before the closing quote would escape the quote and corrupt parsing).
+    $startInfo.Arguments = ($Arguments | ForEach-Object {
+        '"' + (($_ -replace '(\\+)$', '$1$1') -replace '"', '\"') + '"'
+    }) -join ' '
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
@@ -259,6 +305,36 @@ $script:AcceptanceOutcomes = @(
     'failed_capture',      # capture exited non-zero (error code recorded)
     'failed_verify'        # capture published but authoritative vault verify failed
 ) + @('missed_no_execution') # planned point passed with no harness execution (machine off, task missed)
+
+function Get-AcceptanceJsonProperty {
+    <#
+    .SYNOPSIS
+        StrictMode-safe access to one property of a parsed RC JSON document.
+    .DESCRIPTION
+        The CLI contract guarantees one JSON document per invocation, but FAILURE
+        shapes differ from success shapes (for example the standard
+        `{"error":{code,message}}` envelope has no `succeeded` property, and an
+        unparseable stream yields $null). Every JSON access outside the well-formed
+        success shape MUST go through this helper; unguarded strict-mode property
+        access on such documents crashes the recorder after the operation ran but
+        before the evidence record is written, which would fabricate a
+        `missed_no_execution` classification on the next cycle.
+    #>
+    param(
+        [AllowNull()] $Object,
+        [Parameter(Mandatory)] [string] $Name,
+        [AllowNull()] $Default = $null
+    )
+
+    if ($null -eq $Object) {
+        return $Default
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $Default
+    }
+    return $property.Value
+}
 
 function Get-AcceptancePointOutcome {
     <#
@@ -443,7 +519,11 @@ function New-AcceptanceCaptureRecord {
         [AllowNull()] $VerifyResult,
         [AllowNull()] $StatsResult,
         [AllowNull()] [string] $Explanation,
-        [switch] $StatsSampled
+        [switch] $StatsSampled,
+        # The record this one supersedes via -Retry: prior attempts are preserved
+        # inside the new record so the posted classification never understates the
+        # observed failure history.
+        [AllowNull()] $PriorAttempt
     )
 
     if ($script:AcceptanceOutcomes -notcontains $Outcome) {
@@ -457,6 +537,19 @@ function New-AcceptanceCaptureRecord {
         executed_at = $ExecutedAt.ToString('o')
         outcome = $Outcome
         explanation = $Explanation
+        attempt = 1
+        prior_attempts = @()
+    }
+    if ($null -ne $PriorAttempt) {
+        # Preserve the superseded attempt (and any history it already carried).
+        $prior = [ordered]@{
+            executed_at = Get-AcceptanceJsonProperty -Object $PriorAttempt.planned_point -Name 'executed_at'
+            outcome = Get-AcceptanceJsonProperty -Object $PriorAttempt.planned_point -Name 'outcome'
+            explanation = Get-AcceptanceJsonProperty -Object $PriorAttempt.planned_point -Name 'explanation'
+        }
+        $carried = @(Get-AcceptanceJsonProperty -Object $PriorAttempt.planned_point -Name 'prior_attempts' -Default @())
+        $plannedPoint['prior_attempts'] = @($carried) + @([pscustomobject]$prior)
+        $plannedPoint['attempt'] = 2 + @($carried).Count
     }
     $rcBlock = [ordered]@{
         release_tag = $rc.release_tag
@@ -483,14 +576,16 @@ function New-AcceptanceCaptureRecord {
         exit_code = $null
         succeeded = $null
         failure_count = $null
+        failures = @()
+        stderr = $null
         duration_ms = $null
     }
 
     if ($null -ne $CaptureResult) {
-        $capture.exit_code = $CaptureResult.ExitCode
-        $capture.duration_ms = $CaptureResult.DurationMs
-        $capture.single_json_document = $CaptureResult.SingleJsonDocument
-        $json = $CaptureResult.Json
+        $capture.exit_code = Get-AcceptanceJsonProperty -Object $CaptureResult -Name 'ExitCode'
+        $capture.duration_ms = Get-AcceptanceJsonProperty -Object $CaptureResult -Name 'DurationMs'
+        $capture.single_json_document = Get-AcceptanceJsonProperty -Object $CaptureResult -Name 'SingleJsonDocument'
+        $json = Get-AcceptanceJsonProperty -Object $CaptureResult -Name 'Json'
         if ($null -ne $json) {
             foreach ($name in @('generation_id', 'account_id', 'mode', 'completeness', 'coverage_summary',
                                 'storage_counters', 'previous_generation_id')) {
@@ -506,15 +601,31 @@ function New-AcceptanceCaptureRecord {
     }
 
     if ($null -ne $VerifyResult) {
-        $verify.exit_code = $VerifyResult.ExitCode
-        $verify.duration_ms = $VerifyResult.DurationMs
-        $json = $VerifyResult.Json
+        $verify.exit_code = Get-AcceptanceJsonProperty -Object $VerifyResult -Name 'ExitCode'
+        $verify.duration_ms = Get-AcceptanceJsonProperty -Object $VerifyResult -Name 'DurationMs'
+        $verifyText = (Get-AcceptanceJsonProperty -Object $VerifyResult -Name 'Stderr') -as [string]
+        if (-not [string]::IsNullOrWhiteSpace($verifyText)) {
+            $verify.stderr = $verifyText.Trim()
+            if ($verify.stderr.Length -gt 800) { $verify.stderr = $verify.stderr.Substring(0, 800) + ' [...]' }
+        }
+        $json = Get-AcceptanceJsonProperty -Object $VerifyResult -Name 'Json'
         if ($null -ne $json) {
             if ($json.PSObject.Properties['succeeded']) {
                 $verify.succeeded = [bool]$json.succeeded
             }
             if ($json.PSObject.Properties['failures']) {
-                $verify.failure_count = @($json.failures).Count
+                $failureEntries = @($json.failures)
+                $verify.failure_count = $failureEntries.Count
+                # Keep the full failure entries (account/generation/artifact/message) so a
+                # resolved intermittent verify failure remains auditable afterwards.
+                $verify.failures = @($failureEntries | ForEach-Object {
+                    [pscustomobject]@{
+                        account_id = Get-AcceptanceJsonProperty -Object $_ -Name 'account_id'
+                        generation_id = Get-AcceptanceJsonProperty -Object $_ -Name 'generation_id'
+                        artifact = Get-AcceptanceJsonProperty -Object $_ -Name 'artifact'
+                        message = Get-AcceptanceJsonProperty -Object $_ -Name 'message'
+                    }
+                })
             }
         }
     }
@@ -532,17 +643,17 @@ function New-AcceptanceCaptureRecord {
                 }
             }
         }
-        $metrics['exit_code'] = $StatsResult.ExitCode
-        $metrics['duration_ms'] = $StatsResult.DurationMs
+        $metrics['exit_code'] = Get-AcceptanceJsonProperty -Object $StatsResult -Name 'ExitCode'
+        $metrics['duration_ms'] = Get-AcceptanceJsonProperty -Object $StatsResult -Name 'DurationMs'
         $statsBlock = [pscustomobject]$metrics
     } else {
         $statsBlock = $null
     }
 
-    $envFacts = Get-AcceptanceEnvironmentFacts
+    $envFacts = Get-AcceptanceEnvironmentFacts -Root $AcceptanceRoot
     $environment = [ordered]@{
         acceptance_root = ConvertTo-PrivacySafePath -Path $AcceptanceRoot -AcceptanceRoot $AcceptanceRoot
-        vault_root = ConvertTo-PrivacySafePath -Path (Join-Path (Get-AcceptanceHome -AcceptanceRoot $AcceptanceRoot) 'AppData/Local/WeArchive/rawvault') -AcceptanceRoot $AcceptanceRoot
+        vault_root = ConvertTo-PrivacySafePath -Path (Get-AcceptanceVaultRoot -AcceptanceRoot $AcceptanceRoot) -AcceptanceRoot $AcceptanceRoot
         os = $envFacts.os_caption
         filesystem = $envFacts.filesystem
         allocation_unit_bytes = $envFacts.allocation_unit_bytes
@@ -713,6 +824,9 @@ function Write-AcceptanceTraceRecord {
         Appends one evidence record to the JSONL trace. If a record with the same
         identity already exists, it is REPLACED (idempotent re-run and explicit
         retry semantics), never duplicated.
+    .DESCRIPTION
+        The whole read-replace-write is serialized by a named mutex so a manual run
+        cannot lose-update a concurrently executing scheduled cycle.
     .OUTPUTS
         'appended' or 'replaced'.
     #>
@@ -729,22 +843,38 @@ function Write-AcceptanceTraceRecord {
         $null = New-Item -ItemType Directory -Path $directory -Force
     }
 
-    $records = @(Read-AcceptanceTrace -TracePath $TracePath)
-    $existing = $false
-    $kept = @()
-    foreach ($candidate in $records) {
-        if ((Get-AcceptanceRecordKey -Record $candidate) -eq $key) {
-            $existing = $true
-            continue
-        }
-        $kept += $candidate
-    }
-    $kept += $Record
+    # Cross-process guard: one writer at a time per trace file.
+    $mutexName = 'Global\WeArchiveAcceptanceTrace_' +
+        ([System.BitConverter]::ToString(
+            [System.Security.Cryptography.SHA256]::HashData(
+                [System.Text.Encoding]::UTF8.GetBytes($TracePath.ToLowerInvariant())
+            )).Replace('-', '').Substring(0, 24))
+    $mutex = [System.Threading.Mutex]::new($false, $mutexName)
+    try {
+        $null = $mutex.WaitOne(30000)
+        try {
+            $records = @(Read-AcceptanceTrace -TracePath $TracePath)
+            $existing = $false
+            $kept = @()
+            foreach ($candidate in $records) {
+                if ((Get-AcceptanceRecordKey -Record $candidate) -eq $key) {
+                    $existing = $true
+                    continue
+                }
+                $kept += $candidate
+            }
+            $kept += $Record
 
-    $lines = $kept | ForEach-Object { $_ | ConvertTo-Json -Depth 16 -Compress }
-    $tempPath = "$TracePath.tmp"
-    Set-Content -LiteralPath $tempPath -Value $lines -Encoding utf8NoBOM
-    Move-Item -LiteralPath $tempPath -Destination $TracePath -Force
+            $lines = $kept | ForEach-Object { $_ | ConvertTo-Json -Depth 16 -Compress }
+            $tempPath = "$TracePath.tmp"
+            Set-Content -LiteralPath $tempPath -Value $lines -Encoding utf8NoBOM
+            Move-Item -LiteralPath $tempPath -Destination $TracePath -Force
+        } finally {
+            $null = $mutex.ReleaseMutex()
+        }
+    } finally {
+        $mutex.Dispose()
+    }
 
     if ($existing) {
         return 'replaced'
@@ -760,8 +890,14 @@ function Get-AcceptanceEnvironmentFacts {
     <#
     .SYNOPSIS
         Collects the machine/OS/storage facts Issue #86 requires to be recorded.
+        Volume/filesystem facts describe the drive that hosts -Root (the acceptance
+        root — the storage under test), never the harness working directory.
         Best-effort per field: an unavailable observation is recorded as $null.
     #>
+    param(
+        [Parameter(Mandatory)] [string] $Root
+    )
+
     $facts = @{
         os_caption = $null
         os_version = $null
@@ -769,8 +905,11 @@ function Get-AcceptanceEnvironmentFacts {
         allocation_unit_bytes = $null
         drive_free_bytes = $null
         drive_total_bytes = $null
-        wechat_client_version = $null
     }
+
+    $fullRoot = [System.IO.Path]::GetFullPath($Root)
+    $driveRoot = [System.IO.Path]::GetPathRoot($fullRoot).TrimEnd('\', '/')
+    $driveLetter = $driveRoot.TrimEnd(':')
 
     try {
         $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
@@ -781,7 +920,7 @@ function Get-AcceptanceEnvironmentFacts {
     }
 
     try {
-        $volume = Get-Volume -DriveLetter ([System.IO.Path]::GetPathRoot((Get-Location).Path).TrimEnd('\', ':')) -ErrorAction Stop
+        $volume = Get-Volume -DriveLetter $driveLetter -ErrorAction Stop
         $facts.filesystem = $volume.FileSystem
         $facts.drive_free_bytes = [int64]$volume.SizeRemaining
         $facts.drive_total_bytes = [int64]$volume.Size
@@ -790,8 +929,7 @@ function Get-AcceptanceEnvironmentFacts {
     }
 
     try {
-        $drive = [System.IO.Path]::GetPathRoot((Get-Location).Path).TrimEnd('\', '/')
-        $ntfsInfo = & fsutil fsinfo ntfsInfo $drive 2>$null
+        $ntfsInfo = & fsutil fsinfo ntfsInfo $driveRoot 2>$null
         if ($LASTEXITCODE -eq 0 -and $ntfsInfo) {
             $line = $ntfsInfo | Where-Object { $_ -match 'Bytes Per Cluster\s*:\s*(\d+)' } | Select-Object -First 1
             if ($line) {
@@ -836,15 +974,21 @@ function New-AcceptanceHashManifest {
     .SYNOPSIS
         Builds a relative-path -> SHA-256 manifest for the pre-existing (seed/reference)
         evidence inside a directory, for the historical-evidence immutability checks.
+    .DESCRIPTION
+        The manifest's root is stored PRIVACY-SAFE (relative to the acceptance root),
+        because manifest files live in the evidence folder the runbook says to attach
+        publicly. Test-AcceptanceHashManifest resolves the prefix back to the real
+        acceptance root when re-verifying.
     #>
     param(
         [Parameter(Mandatory)] [string] $Directory,
-        [Parameter(Mandatory)] [string[]] $Filter = @('manifest.json', '*.zip')
+        [Parameter(Mandatory)] [string] $AcceptanceRoot,
+        [Parameter(Mandatory)] [string[]] $Filter = @('*')
     )
 
     $manifest = [ordered]@{
         generated_at = (Get-Date).ToString('o')
-        root = $Directory
+        root = ConvertTo-PrivacySafePath -Path $Directory -AcceptanceRoot $AcceptanceRoot
         entries = [ordered]@{}
     }
 
@@ -883,14 +1027,28 @@ function Test-AcceptanceHashManifest {
     .SYNOPSIS
         Re-verifies a hash manifest. Returns $true when every entry is unchanged.
         Emits the list of violated paths on failure (never silently passes).
+    .DESCRIPTION
+        The manifest root is stored privacy-safe; -AcceptanceRoot resolves it back to
+        the real directory (the caller knows its own acceptance root from its config).
     #>
     param(
-        [Parameter(Mandatory)] $Manifest
+        [Parameter(Mandatory)] $Manifest,
+        [Parameter(Mandatory)] [string] $AcceptanceRoot
     )
+
+    $manifestRoot = [string](Get-AcceptanceJsonProperty -Object $Manifest -Name 'root' -Default ([string]$Manifest.root))
+    if ($manifestRoot -eq '<acceptance-root>') {
+        $resolvedRoot = $AcceptanceRoot
+    } elseif ($manifestRoot.StartsWith('<acceptance-root>/', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $resolvedRoot = Join-Path $AcceptanceRoot $manifestRoot.Substring('<acceptance-root>/'.Length)
+    } else {
+        # Legacy/absolute manifests (never produced by this module version).
+        $resolvedRoot = $manifestRoot
+    }
 
     $violations = @()
     foreach ($entry in Get-AcceptanceManifestEntries -Entries $Manifest.entries) {
-        $path = Join-Path $Manifest.root $entry.Name
+        $path = Join-Path $resolvedRoot $entry.Name
         if (-not (Test-Path -LiteralPath $path)) {
             $violations += "$($entry.Name): missing"
             continue
@@ -916,8 +1074,12 @@ Export-ModuleMember -Function @(
     'Read-AcceptanceConfig',
     'Get-AcceptanceRoot',
     'Get-AcceptanceHome',
+    'Get-AcceptanceDataRoot',
+    'Get-AcceptanceVaultRoot',
+    'Get-AcceptanceArchiveRoot',
     'Get-AcceptanceRcExe',
     'Invoke-WearchiveRc',
+    'Get-AcceptanceJsonProperty',
     'Get-AcceptancePointOutcome',
     'Get-AcceptanceCurrentPointIndex',
     'Get-AcceptancePlannedPointTime',

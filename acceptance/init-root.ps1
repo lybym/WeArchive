@@ -71,14 +71,10 @@ if (-not $doctor.Json) {
 }
 
 $doctorJson = $doctor.Json
-$sourceAvailable = $false
-$archiveAvailable = $false
-if ($doctorJson.PSObject.Properties['source'] -and $doctorJson.source.PSObject.Properties['available']) {
-    $sourceAvailable = [bool]$doctorJson.source.available
-}
-if ($doctorJson.PSObject.Properties['archive'] -and $doctorJson.archive.PSObject.Properties['available']) {
-    $archiveAvailable = [bool]$doctorJson.archive.available
-}
+$sourceAvailable = [bool](Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $doctorJson -Name 'source') -Name 'available')
+$archiveAvailable = [bool](Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $doctorJson -Name 'archive') -Name 'available')
+$sourceVersion = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $doctorJson -Name 'source') -Name 'source_version'
+$sourceProduct = Get-AcceptanceJsonProperty -Object (Get-AcceptanceJsonProperty -Object $doctorJson -Name 'source') -Name 'source_product'
 
 if (-not $archiveAvailable) {
     throw 'Isolation gate failed: the RC does not see the acceptance-home archive root.'
@@ -104,12 +100,14 @@ if (-not (Test-Path -LiteralPath $weArchiveData)) {
     throw 'Isolation gate failed: the RC did not create its data directory inside the acceptance home.'
 }
 
-$env_ = Get-AcceptanceEnvironmentFacts
+$env_ = Get-AcceptanceEnvironmentFacts -Root $root
 $facts = [ordered]@{
     schema_version = 1
     generated_at = (Get-Date).ToString('o')
-    acceptance_root = $root
-    home = $home_
+    # Privacy-safe by construction: this file is attached publicly (runbook §11), so
+    # machine paths are rendered relative to the acceptance root, never absolute.
+    acceptance_root = ConvertTo-PrivacySafePath -Path $root -AcceptanceRoot $root
+    home = ConvertTo-PrivacySafePath -Path $home_ -AcceptanceRoot $root
     rc = [ordered]@{
         release_tag = $config.rc.release_tag
         version = $config.rc.expected_version
@@ -121,8 +119,8 @@ $facts = [ordered]@{
         doctor_exit_code = $doctor.ExitCode
         doctor_source_available = $sourceAvailable
         doctor_archive_available = $archiveAvailable
-        vault_root = (Join-Path $weArchiveData 'rawvault')
-        archive_root = (Join-Path $weArchiveData 'archive')
+        vault_root = ConvertTo-PrivacySafePath -Path (Join-Path $weArchiveData 'rawvault') -AcceptanceRoot $root
+        archive_root = ConvertTo-PrivacySafePath -Path (Join-Path $weArchiveData 'archive') -AcceptanceRoot $root
     }
     environment = [ordered]@{
         os_caption = $env_.os_caption
@@ -131,7 +129,8 @@ $facts = [ordered]@{
         allocation_unit_bytes = $env_.allocation_unit_bytes
         drive_free_bytes = $env_.drive_free_bytes
         drive_total_bytes = $env_.drive_total_bytes
-        wechat_client_version = $env_.wechat_client_version
+        wechat_source_product = $sourceProduct
+        wechat_client_version = $sourceVersion
     }
 }
 
@@ -141,14 +140,21 @@ if ($SeedVaultRoot) {
         throw "Seed vault root does not look like a vault (missing accounts/): $SeedVaultRoot"
     }
     $vaultRoot = Join-Path $weArchiveData 'rawvault'
+    if (Test-Path -LiteralPath (Join-Path $vaultRoot 'accounts')) {
+        throw ('Re-seeding refused: the acceptance vault already contains an accounts directory. ' +
+               'Re-seeding would nest directories and rewrite the immutability manifest; use a ' +
+               "fresh acceptance root instead: $vaultRoot")
+    }
     $null = New-Item -ItemType Directory -Path $vaultRoot -Force
     Write-Host "Copying seed vault accounts from $SeedVaultRoot (read-only copy)..."
     Copy-Item -Path (Join-Path $SeedVaultRoot 'accounts') -Destination (Join-Path $vaultRoot 'accounts') -Recurse -Force
 
-    $seedHashes = New-AcceptanceHashManifest -Directory $vaultRoot -Filter @('manifest.json')
+    # Pin ALL seed files (manifests AND the preserved artifact bytes), not only the
+    # manifests: the immutability check must not rest on vault verify alone.
+    $seedHashes = New-AcceptanceHashManifest -Directory $vaultRoot -AcceptanceRoot $root -Filter @('*')
     $seedPath = Join-Path $root 'evidence/v1-seed-hashes.json'
     Set-Content -LiteralPath $seedPath -Value ($seedHashes | ConvertTo-Json -Depth 16) -Encoding utf8NoBOM
-    Write-Host ("Seed immutability manifest written: {0} ({1} manifests hashed)" -f
+    Write-Host ("Seed immutability manifest written: {0} ({1} files hashed)" -f
         (ConvertTo-PrivacySafePath -Path $seedPath -AcceptanceRoot $root),
         @(Get-AcceptanceManifestEntries -Entries $seedHashes.entries).Count)
 
@@ -156,12 +162,14 @@ if ($SeedVaultRoot) {
     Write-Host 'Verifying the seeded v1-only vault (v1-only read/rebuild gate)...'
     $verify = Invoke-WearchiveRc -AcceptanceRoot $root -Arguments @(
         'vault', 'verify', '--vault-root', $vaultRoot, '--json', '--no-input') -TimeoutSeconds 3600
-    if ($verify.ExitCode -ne 0 -or -not $verify.Json.succeeded) {
+    $verifySucceeded = Get-AcceptanceJsonProperty -Object $verify.Json -Name 'succeeded' -Default $false
+    if ($verify.ExitCode -ne 0 -or $verifySucceeded -ne $true) {
         throw "Seeded v1 vault failed authoritative verification. Stderr: $($verify.Stderr)"
     }
     Write-Host 'Seeded v1 evidence verifies.'
     $facts.isolation['seeded_v1_vault'] = $true
-    $facts.isolation['seed_source'] = $SeedVaultRoot
+    # Privacy-safe: this file is attached publicly (runbook §11).
+    $facts.isolation['seed_source'] = ConvertTo-PrivacySafePath -Path $SeedVaultRoot -AcceptanceRoot $root
 }
 
 Set-Content -LiteralPath (Join-Path $root 'evidence/environment.json') `
@@ -169,8 +177,8 @@ Set-Content -LiteralPath (Join-Path $root 'evidence/environment.json') `
 
 Write-Host ''
 Write-Host 'Acceptance root initialized.'
-Write-Host ("  vault root:   {0}" -f $facts.isolation.vault_root)
-Write-Host ("  archive root: {0}" -f $facts.isolation.archive_root)
+Write-Host ("  vault root:   {0}" -f (Join-Path $weArchiveData 'rawvault'))
+Write-Host ("  archive root: {0}" -f (Join-Path $weArchiveData 'archive'))
 Write-Host ("  evidence:     {0}" -f (Join-Path $root 'evidence'))
 if (-not $sourceAvailable) {
     Write-Warning 'The source gate reported the WeChat source as unavailable; resolve before starting the run.'
