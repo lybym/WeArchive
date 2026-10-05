@@ -277,6 +277,11 @@ public sealed class ConversationSyncTests
         // ...while the successfully published Raw Vault generation is retained, not rolled back.
         var generations = await harness.GenerationsAsync();
         Assert.Equal(2, generations.Count);
+        var retained = await harness.Vault.OpenGenerationAsync(
+            generations[^1].AccountId, generations[^1].GenerationId, default);
+        Assert.NotNull(retained);
+        Assert.Equal(3, retained.Manifest.ManifestVersion);
+        Assert.Equal(2, retained.Manifest.VaultFormatVersion);
     }
 
     [Fact]

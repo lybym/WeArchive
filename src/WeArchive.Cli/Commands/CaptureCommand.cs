@@ -124,6 +124,7 @@ public sealed class CaptureCommand : ICliCommand
             CaptureAdapterFamily = _capture.CaptureAdapterFamily,
             CaptureAdapterVersion = _capture.CaptureAdapterVersion,
             ArtifactCount = outcome.ArtifactCount,
+            StorageCounters = CaptureStorageCountersDto.From(outcome.StorageCounters),
             PreviousGenerationId = outcome.PreviousGenerationId,
             Diagnostics = [.. outcome.Diagnostics.Select(CaptureResultDto.From)],
             Coverage = [.. outcome.Coverage.Select(c => new CaptureCoverageDto

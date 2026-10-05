@@ -523,6 +523,14 @@ JSON shape (exit 0):
   "capture_adapter_family": "wechat-windows",
   "capture_adapter_version": "0.1.0",
   "artifact_count": 5,
+  "storage_counters": {
+    "logical_bytes": 1048576,
+    "new_data_bytes": 4096,
+    "new_data_blocks": 1,
+    "new_map_nodes": 2,
+    "new_pack_bytes": 2048,
+    "new_packs": 1
+  },
   "previous_generation_id": null,
   "diagnostics": [],
   "coverage": [
@@ -549,6 +557,16 @@ and `incremental` when unchanged partitions reused already-published evidence. `
 number of partitions this run accounted for; `captured + reused + unavailable + unsupported`
 equals `expected`. `previous_generation_id` links to the immediately preceding published
 generation for the same account, forming an append-only chain.
+
+New captures write manifest 3 / vault format 2. `storage_counters` reports this successful run's
+logical artifact bytes and newly published physical growth: unique uncompressed data bytes/blocks,
+map nodes and sealed pack bytes/count (including compression and record/footer overhead).
+Unchanged v2 artifacts preserve their prior block size/root and write zero new data or map nodes.
+These counters are observational result fields, never persisted evidence or checkpoint authority.
+Existing v1 generations remain readable; a valid reused v1 artifact is verified and imported into
+v2 without rewriting historical generations. R1 failures may leave unreachable packs but cannot
+publish a new generation or advance its checkpoint. Canonical ingest failure after capture retains
+the successful generation.
 
 `completeness = complete` means the adapter's required supported evidence was captured/reused and
 verified; it does **not** mean every physical `*.db` in the source tree was decryptable. A complete

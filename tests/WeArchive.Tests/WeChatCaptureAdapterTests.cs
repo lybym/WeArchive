@@ -405,7 +405,7 @@ public sealed class WeChatCaptureAdapterTests
         Assert.Equal(RawGenerationCompleteness.Complete, baseline.Completeness);
         var baselineGeneration = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
         var baselineArtifact = baselineGeneration!.Manifest.Artifacts.Single(a => a.Name == "message_0.db");
-        var priorBytes = File.ReadAllBytes(Path.Combine(baselineGeneration.GenerationDirectory, baselineArtifact.ContentRef));
+        var priorBytes = ReadArtifact(baselineGeneration, baselineArtifact);
 
         clock.UtcNow = clock.UtcNow.AddMinutes(1);
         File.WriteAllBytes(message + "-wal", fixture.Wal);
@@ -419,13 +419,13 @@ public sealed class WeChatCaptureAdapterTests
         Assert.Equal(completeGrowth, generation.Manifest.CaptureCheckpoint is not null);
         var artifact = generation.Manifest.Artifacts.Single(a => a.Name == "message_0.db");
         Assert.Equal(completeGrowth ? "4" : "2", artifact.Metadata!["page_count"]);
-        Assert.Equal(fixture.ExpectedImage, File.ReadAllBytes(Path.Combine(generation.GenerationDirectory, artifact.ContentRef)));
+        Assert.Equal(fixture.ExpectedImage, ReadArtifact(generation, artifact));
         Assert.Equal(fixture.Main, File.ReadAllBytes(message));
         Assert.Equal(fixture.Wal, File.ReadAllBytes(message + "-wal"));
         var reopenedBaseline = await vault.OpenGenerationAsync(baseline.AccountId, baseline.GenerationId, CancellationToken.None);
         Assert.NotNull(reopenedBaseline!.Manifest.CaptureCheckpoint);
         var priorArtifact = reopenedBaseline.Manifest.Artifacts.Single(a => a.Name == "message_0.db");
-        Assert.Equal(priorBytes, File.ReadAllBytes(Path.Combine(reopenedBaseline.GenerationDirectory, priorArtifact.ContentRef)));
+        Assert.Equal(priorBytes, ReadArtifact(reopenedBaseline, priorArtifact));
     }
 
     [Fact]
@@ -979,10 +979,17 @@ public sealed class WeChatCaptureAdapterTests
         return pair;
     }
 
+    private static byte[] ReadArtifact(RawGeneration generation, RawArtifactDescriptor artifact)
+    {
+        using var provider = RawVaultArtifactProvider.Create(generation);
+        return File.ReadAllBytes(provider.GetVerifiedPath(artifact));
+    }
+
     private static long CountRowsInCapturedArtifact(RawGeneration generation, string artifactName)
     {
         var artifact = generation.Manifest.Artifacts.Single(a => a.Name == artifactName);
-        var path = Path.Combine(generation.GenerationDirectory, artifact.ContentRef.Replace('/', Path.DirectorySeparatorChar));
+        using var provider = RawVaultArtifactProvider.Create(generation);
+        var path = provider.GetVerifiedPath(artifact);
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = path,

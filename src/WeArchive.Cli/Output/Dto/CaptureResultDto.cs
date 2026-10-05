@@ -37,6 +37,9 @@ public sealed record CaptureResultDto
     [JsonPropertyName("artifact_count")]
     public int ArtifactCount { get; init; }
 
+    [JsonPropertyName("storage_counters")]
+    public CaptureStorageCountersDto StorageCounters { get; init; } = new();
+
     [JsonPropertyName("previous_generation_id")]
     public string? PreviousGenerationId { get; init; }
 
@@ -57,6 +60,29 @@ public sealed record CaptureResultDto
         Count = diagnostic.Count,
         SourceType = diagnostic.SourceType,
         SourceSubtype = diagnostic.SourceSubtype,
+    };
+}
+
+public sealed record CaptureStorageCountersDto
+{
+    [JsonPropertyName("logical_bytes")]
+    public long LogicalBytes { get; init; }
+    [JsonPropertyName("new_data_bytes")]
+    public long NewDataBytes { get; init; }
+    [JsonPropertyName("new_data_blocks")]
+    public long NewDataBlocks { get; init; }
+    [JsonPropertyName("new_map_nodes")]
+    public long NewMapNodes { get; init; }
+    [JsonPropertyName("new_pack_bytes")]
+    public long NewPackBytes { get; init; }
+    [JsonPropertyName("new_packs")]
+    public long NewPacks { get; init; }
+
+    public static CaptureStorageCountersDto From(RawCaptureStorageCounters counters) => new()
+    {
+        LogicalBytes = counters.LogicalBytes, NewDataBytes = counters.NewDataBytes,
+        NewDataBlocks = counters.NewDataBlocks, NewMapNodes = counters.NewMapNodes,
+        NewPackBytes = counters.NewPackBytes, NewPacks = counters.NewPacks,
     };
 }
 

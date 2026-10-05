@@ -60,7 +60,7 @@ normalization. It exists alongside the canonical SQLite archive but is independe
 and has its own manifest, reliability contract and storage root. The shipped v1 snapshot/storage
 contract is described by [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The dual-format
 reader supports the fixed-block content-addressed v2 model in [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md);
-the capture writer still emits v1 pending Issue #83. See [RAW_VAULT.md](RAW_VAULT.md) for the
+the capture writer emits manifest 3 / vault format 2 (Issue #83). See [RAW_VAULT.md](RAW_VAULT.md) for the
 supported reader and writer versions.
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
@@ -355,7 +355,7 @@ Responsibilities:
   ingest, query or export;
 - never inspect source-specific artifact internals.
 
-Shipped vault format 1 implements that boundary with generation-local artifact files. Target vault
+Historical vault format 1 implements that boundary with generation-local artifact files. Current vault
 format 2 keeps the same logical boundary but changes the physical representation to:
 
 ```text
@@ -383,8 +383,8 @@ Version-2 manifests carry generic partition coverage and the capture checkpoint.
 checks the previous published generation and its checkpoint before invoking an adapter's optional
 `IIncrementalSourceCaptureAdapter` path, and only accepts a `complete` generation whose coverage
 and checkpoint agree. The WeChat adapter alone computes source-specific database/WAL fingerprints
-and decides which partitions may reuse verified artifacts; the store copies reused evidence into
-the new immutable generation so every generation stays self-contained. A missing, mismatched or
+and decides which partitions may reuse verified artifacts; the v2 store retains immutable roots
+or imports verified v1 files so every generation remains logically self-contained. A missing, mismatched or
 unsafe cursor (including a version-1 generation, a changed adapter version or a `partial`
 predecessor) widens the run to a full consistent snapshot and reports it diagnostically rather
 than claiming incremental coverage. The checkpoint is published inside the manifest, so it

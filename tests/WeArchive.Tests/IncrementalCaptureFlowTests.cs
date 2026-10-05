@@ -85,9 +85,14 @@ public sealed class IncrementalCaptureFlowTests
         Assert.Equal(RawCaptureMode.Incremental, second.Mode);
         Assert.Equal(RawGenerationCompleteness.Complete, second.Completeness);
         Assert.All(second.Coverage, c => Assert.Equal(RawPartitionStatus.Reused, c.Status));
+        Assert.Equal(0, second.StorageCounters.NewDataBytes);
+        Assert.Equal(0, second.StorageCounters.NewMapNodes);
+        Assert.Equal(0, second.StorageCounters.NewPacks);
 
         var generation2 = await vault.OpenGenerationAsync(first.AccountId, second.GenerationId, CancellationToken.None);
         Assert.NotNull(generation2);
+        Assert.Equal(3, generation2!.Manifest.ManifestVersion);
+        Assert.Equal(2, generation2.Manifest.VaultFormatVersion);
         // The checkpoint advances to the newly published generation and keeps the same
         // fingerprint evidence, because the source partitions were verified as unchanged.
         Assert.Equal(second.GenerationId, generation2!.Manifest.CaptureCheckpoint!.GenerationId);
@@ -154,11 +159,11 @@ public sealed class IncrementalCaptureFlowTests
         var generation1 = await vault.OpenGenerationAsync(first.AccountId, first.GenerationId, CancellationToken.None);
         Assert.NotNull(generation1);
 
-        // Republish the generation as the pre-#25 version-1 shape: readable, but it carries no
+        // Remove the checkpoint proof from a readable v2 generation: it carries no
         // coverage and no capture checkpoint, so it cannot prove incremental safety.
         var legacyManifest = RawManifestSerializer.Serialize(generation1!.Manifest with
         {
-            ManifestVersion = 1,
+            ManifestVersion = 3,
             Coverage = [],
             CaptureCheckpoint = null,
         });

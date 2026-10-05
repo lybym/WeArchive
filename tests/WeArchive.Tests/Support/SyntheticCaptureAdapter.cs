@@ -26,6 +26,7 @@ internal sealed class SyntheticCaptureAdapter : IIncrementalSourceCaptureAdapter
 
     /// <summary>Live source partitions: opaque partition id -> current source fingerprint.</summary>
     public Dictionary<string, string> Partitions { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, byte[]> ContentOverrides { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Known-unsupported partitions: recorded as <c>unsupported</c> coverage without downgrading
@@ -148,7 +149,8 @@ internal sealed class SyntheticCaptureAdapter : IIncrementalSourceCaptureAdapter
                 continue;
             }
 
-            using var content = new MemoryStream(Encoding.UTF8.GetBytes($"{partitionId}:{fingerprint}"));
+            using var content = new MemoryStream(ContentOverrides.TryGetValue(partitionId, out var bytes)
+                ? bytes : Encoding.UTF8.GetBytes($"{partitionId}:{fingerprint}"));
             var descriptor = await session
                 .WriteArtifactAsync(
                     SourceDatabaseRole,

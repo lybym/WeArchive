@@ -22,7 +22,7 @@ public sealed class RebuildServiceTests
     public async Task RebuildUsesOnlyVerifiedCapturedDatabasesAndReplacesAfterValidation()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var generation = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "captured text", "0.1.0", CapturedAt);
@@ -76,7 +76,7 @@ public sealed class RebuildServiceTests
     public async Task ReaderVersionAndParserSemanticsDoNotChangeStableMessageIdentity()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var first = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "original", "reader-1", CapturedAt);
@@ -106,7 +106,7 @@ public sealed class RebuildServiceTests
         // message_ prefix filter skipped, so the whole rebuild aborted with an unreadable
         // conversation. A captured generation that preserves that shard must be fully readable.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(
@@ -134,7 +134,7 @@ public sealed class RebuildServiceTests
         // with no table is legitimately empty -- but only when the evidence set proves every
         // Required message partition was captured (Issue #37 authorized scope).
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(
@@ -168,7 +168,7 @@ public sealed class RebuildServiceTests
     public async Task ProvablyEmptyConversationCompletesWithTheNoNewRecordsDiagnostic()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var generation = await PublishGenerationAsync(
@@ -203,7 +203,7 @@ public sealed class RebuildServiceTests
     public async Task ConversationWithoutAMessageTableStaysFatalWhenRequiredEvidenceIsNotProven()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
 
@@ -244,7 +244,7 @@ public sealed class RebuildServiceTests
         // against artifacts, so it is not accepted as evidence and the table-less conversation
         // stays Fatal instead of being published as legitimately empty.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var generation = await PublishGenerationAsync(
@@ -273,7 +273,7 @@ public sealed class RebuildServiceTests
         // source state proves nothing about this generation's coverage, so the captured reader
         // keeps the Fatal source-coverage semantics for a table-less conversation.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var generation = await PublishGenerationAsync(
@@ -305,7 +305,7 @@ public sealed class RebuildServiceTests
         // RawVaultGenerationSession.ReuseArtifactAsync materializes the reused bytes inside the new
         // generation, so only the coverage status differs from a captured shard.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(
@@ -333,7 +333,7 @@ public sealed class RebuildServiceTests
         // generation, and the table-less conversation keeps the Fatal semantics rather than being
         // published as legitimately empty.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
 
@@ -350,7 +350,7 @@ public sealed class RebuildServiceTests
         // version 1. A future or hand-built version is not "close enough" — its field meanings are
         // not defined for this reader, so it proves nothing (docs/RAW_VAULT.md section 7).
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
 
@@ -364,7 +364,7 @@ public sealed class RebuildServiceTests
         // cursor. A checkpoint naming a different generation could only prove evidence for that
         // other generation, so coverage cross-checked against it is rejected.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
 
@@ -379,7 +379,7 @@ public sealed class RebuildServiceTests
         // checkpoint written by a different capture adapter family is not evidence for this
         // generation's partitions, even though its coverage names the Required message shards.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
 
@@ -394,7 +394,7 @@ public sealed class RebuildServiceTests
         // checkpoint identity; a disagreement means the fingerprint semantics counted by coverage
         // are not the ones the checkpoint recorded, so the generation fails closed.
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
 
@@ -406,7 +406,7 @@ public sealed class RebuildServiceTests
     public async Task AccountDirectoryWithoutAPublishedGenerationIsReportedAndSkipped()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "captured text", "0.1.0", CapturedAt);
@@ -433,7 +433,7 @@ public sealed class RebuildServiceTests
     public async Task RebuildFailsWhenNoAccountHasAPublishedGeneration()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var emptyAccountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, "wxid_unpublished");
         Directory.CreateDirectory(Path.Combine(vault.VaultRoot, "accounts", emptyAccountId, "generations"));
         var archivePath = temp.Combine("archive", "wearchive.db");
@@ -450,7 +450,7 @@ public sealed class RebuildServiceTests
     public async Task RebuildJsonReportsSkippedAccountDirectories()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "captured text", "0.1.0", CapturedAt);
@@ -478,7 +478,7 @@ public sealed class RebuildServiceTests
     public async Task ReadingPreservedEvidenceLeavesTheGenerationDirectoryUntouched()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         // The message shard is a WAL-mode image, which is what a real captured artifact is. Opening
@@ -515,7 +515,7 @@ public sealed class RebuildServiceTests
     public async Task FailedRebuildLeavesSelectedArchiveUntouched()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "active data", "reader-1", CapturedAt);
@@ -535,7 +535,7 @@ public sealed class RebuildServiceTests
     public async Task UnsupportedCapturedRecordsRemainCanonicalUnknownMessages()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "opaque body", "reader-1", CapturedAt, sourceType: 9999);
@@ -553,7 +553,7 @@ public sealed class RebuildServiceTests
     public async Task PartialCaptureIsRejectedWithoutReplacingTheSelectedArchive()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "known data", "reader-1", CapturedAt);
@@ -574,7 +574,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestTracksConversationGenerationAndSkipsAnUnchangedSecondRun()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         var profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var first = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "first evidence", "reader-1", CapturedAt);
@@ -598,7 +598,7 @@ public sealed class RebuildServiceTests
     public async Task V2GenerationIngestsAndRebuildsThroughCapturedAdapterWithoutLiveOrKeyAccess()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var v1 = await PublishGenerationAsync(vault, temp.Path, profile, accountId,
@@ -638,7 +638,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestKeepsOlderConversationAndDiscoversANewConversationInLaterGeneration()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var older = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "older only evidence", "reader-1", CapturedAt, conversationId: "wxid_bob");
@@ -664,7 +664,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestDoesNotRegressCoveredConversationsOrAdvanceUnchangedConversationCheckpoints()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A old", "reader-1", CapturedAt,
@@ -702,7 +702,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultAccountIngestDiscoversUnimportedConversationAfterScopedIngest()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A scoped", "reader-1", CapturedAt,
@@ -724,7 +724,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestFollowsPublicationLineageWhenCaptureTimeMovesBackward()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "first capture", "reader-1", CapturedAt);
@@ -742,7 +742,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestRetriesNormallyAfterReplayIsCancelledBetweenGenerations()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "older evidence", "reader-1", CapturedAt);
@@ -768,7 +768,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultScopedIngestSkipsCommittedHistoryBeforeOpeningArtifacts()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var older = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "older scoped data", "reader-1", CapturedAt);
@@ -791,7 +791,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultScopedIngestAdvancesUnchangedConversationCoverageAndSkipsOnRepeat()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A first", "reader-1", CapturedAt,
@@ -846,7 +846,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultScopedReplayCancellationInvalidatesNewerCoverageBeforeRetry()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var first = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A", "reader-1", CapturedAt,
@@ -897,7 +897,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestRefreshesParticipantMetadataFromContactOnlyGeneration()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "same messages", "reader-1", CapturedAt,
@@ -921,7 +921,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestKeepsConversationAWhenBPublicationFailsAndRetriesB()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "A committed", "reader-1", CapturedAt,
@@ -967,7 +967,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestCancellationDuringConversationRollsBackRowsAndCheckpoint()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "many messages", "reader-1", CapturedAt,
@@ -994,7 +994,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestFailsOnNewPublishedGenerationWithInvalidManifestWithoutAdvancingCheckpoints()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         var first = await PublishGenerationAsync(vault, temp.Path, profile, accountId, "covered", "reader-1", CapturedAt);
@@ -1029,7 +1029,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestPublishesEmptyConversationCheckpoint()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "unused", "reader-1", CapturedAt,
@@ -1049,7 +1049,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestRechecksCoverageWhenStoredReaderVersionIsOlder()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "reader one", "reader-1", CapturedAt,
@@ -1089,7 +1089,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultIngestReportsGenerationAndConversationWhenLaterCoverageFails()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "prior complete data", "reader-1", CapturedAt);
@@ -1140,7 +1140,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultScopedIngestAcceptsTheStableConversationIdOrTheSourceConversationId()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "stable id evidence", "reader-1", CapturedAt,
@@ -1170,7 +1170,7 @@ public sealed class RebuildServiceTests
     public async Task RawVaultScopedIngestReportsAnUnresolvedConversationWithATypedFailure()
     {
         using var temp = new TempDirectory();
-        var vault = new RawVaultStore(temp.Combine("vault"));
+        var vault = new RawVaultStore(temp.Combine("vault"), writeLegacy: true);
         const string profile = "wxid_alice";
         var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
         await PublishGenerationAsync(vault, temp.Path, profile, accountId, "present", "reader-1", CapturedAt,
