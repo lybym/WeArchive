@@ -9,6 +9,7 @@ using WeArchive.Core.Services;
 using WeArchive.Infrastructure;
 using WeArchive.Infrastructure.RawVault;
 using WeArchive.Infrastructure.WeChat;
+using WeArchive.Infrastructure.WeChat.KeyAcquisition;
 using WeArchive.Tests.Support;
 
 namespace WeArchive.Tests;
@@ -591,6 +592,46 @@ public sealed class RebuildServiceTests
         Assert.NotNull(checkpoint);
         Assert.Contains(repaired.GenerationId, checkpoint!.CheckpointJson, StringComparison.Ordinal);
         Assert.NotEqual(first.GenerationId, second.GenerationId);
+    }
+
+    [Fact]
+    public async Task V2GenerationIngestsAndRebuildsThroughCapturedAdapterWithoutLiveOrKeyAccess()
+    {
+        using var temp = new TempDirectory();
+        var vault = new RawVaultStore(temp.Combine("vault"));
+        const string profile = "wxid_alice";
+        var accountId = StableIds.Account(WeChatWindowsSourceAdapter.Name, profile);
+        var v1 = await PublishGenerationAsync(vault, temp.Path, profile, accountId,
+            "v2 service integration", "reader-1", CapturedAt);
+        var generation = await ConvertGenerationToV2Async(v1);
+        var reopened = await vault.OpenGenerationAsync(accountId, generation.GenerationId, CancellationToken.None);
+        Assert.NotNull(reopened);
+
+        // The captured reader must never need the live-source key-acquisition boundary.
+        using (var adapter = CapturedWeChatSourceAdapter.Create(reopened!, new ThrowingKeyAcquirer()))
+        {
+            Assert.True((await adapter.DescribeSourceAsync(CancellationToken.None)).IsAvailable);
+            Assert.Single(await adapter.ListAccountsAsync(CancellationToken.None));
+            Assert.Single(await adapter.ListConversationsAsync(profile, CancellationToken.None));
+            Assert.NotEmpty(await adapter.ListParticipantsAsync(profile, CancellationToken.None));
+            Assert.Single(await adapter.ReadMessagesAsync(profile, "wxid_bob", CancellationToken.None).ToListAsync());
+        }
+
+        var archivePath = temp.Combine("archive", "wearchive.db");
+        var archive = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(archivePath, new FixedClock());
+        var ingester = new RawVaultIngestService(vault, archive, new FixedClock());
+        Assert.Equal(1, await ingester.IngestAsync(accountId, null, null, CancellationToken.None));
+        var ingestedConversation = Assert.Single(await archive.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("v2 service integration",
+            Assert.Single(await archive.ReadMessagesAsync(ingestedConversation.Id, CancellationToken.None)).Text);
+
+        var rebuiltPath = temp.Combine("rebuilt", "wearchive.db");
+        var result = await new RebuildService(vault, rebuiltPath, new FixedClock()).RebuildAsync(null, CancellationToken.None);
+        Assert.Equal(1, result.Stats.MessageCount);
+        var rebuilt = new WeArchive.Infrastructure.Archive.SqliteArchiveStore(rebuiltPath, new FixedClock());
+        var rebuiltConversation = Assert.Single(await rebuilt.ListConversationsAsync(accountId, CancellationToken.None));
+        Assert.Equal("v2 service integration",
+            Assert.Single(await rebuilt.ReadMessagesAsync(rebuiltConversation.Id, CancellationToken.None)).Text);
     }
 
     [Fact]
@@ -1332,6 +1373,42 @@ public sealed class RebuildServiceTests
         return result;
     }
 
+    private static async Task<RawGeneration> ConvertGenerationToV2Async(RawGeneration generation)
+    {
+        var accountDirectory = Path.GetFullPath(Path.Combine(generation.GenerationDirectory, "..", ".."));
+        var packStore = new RawVaultV2PackStore(accountDirectory);
+        var artifacts = new List<RawArtifactDescriptor>(generation.Manifest.Artifacts.Count);
+        foreach (var legacyArtifact in generation.Manifest.Artifacts)
+        {
+            var bytes = await File.ReadAllBytesAsync(Path.Combine(generation.GenerationDirectory, legacyArtifact.ContentRef!));
+            var stored = packStore.PutArtifact(bytes, 4096, CancellationToken.None);
+            artifacts.Add(legacyArtifact with
+            {
+                Sha256 = stored.Sha256,
+                Size = stored.Size,
+                ContentRef = null!,
+                Storage = new RawArtifactStorage
+                {
+                    Kind = "fixed-block-map-v1",
+                    BlockSize = stored.BlockSize,
+                    BlockCount = stored.BlockCount,
+                    Root = Convert.ToHexString(stored.Root).ToLowerInvariant(),
+                },
+            });
+        }
+
+        var v2Manifest = generation.Manifest with
+        {
+            ManifestVersion = 3,
+            VaultFormatVersion = 2,
+            Artifacts = artifacts,
+        };
+        await File.WriteAllTextAsync(Path.Combine(generation.GenerationDirectory, "manifest.json"),
+            RawManifestSerializer.Serialize(v2Manifest));
+        Directory.Delete(Path.Combine(generation.GenerationDirectory, "artifacts"), recursive: true);
+        return generation with { Manifest = v2Manifest };
+    }
+
     private static void BuildDb(string path, string sql)
     {
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString());
@@ -1361,5 +1438,13 @@ public sealed class RebuildServiceTests
     private sealed class CallbackProgress<T>(Action<T> callback) : IProgress<T>
     {
         public void Report(T value) => callback(value);
+    }
+
+    private sealed class ThrowingKeyAcquirer : IWeChatDatabaseKeyAcquirer
+    {
+        public string Name => "throwing-test-key-acquirer";
+
+        public WeChatDatabaseKeyAcquisitionResult Acquire(IReadOnlyList<string> databasePaths) =>
+            throw new InvalidOperationException("Captured Raw Vault reads must not acquire a live WeChat key.");
     }
 }
