@@ -1,6 +1,10 @@
 # ADR 0011 — Raw Vault v2 fixed-block content-addressed artifact storage
 
-Status: proposed
+Status: accepted (Issue #77; implemented and shipped in v0.6.0 Stable, 2026-10-14)
+
+Operational follow-on: [ADR 0012](0012-v2-only-forward-operations.md) retires
+future V1-only/mixed-V1/V2 real-environment acceptance without deleting legacy
+preserved evidence or changing this persisted-format specification.
 
 Date: 2026-10-03
 

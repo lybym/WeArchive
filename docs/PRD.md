@@ -17,6 +17,14 @@ This architecture decision is recorded in [ADR 0008](adr/0008-raw-vault-canonica
 
 ## 2. Current versus target status
 
+**Stable baseline: `v0.6.0` (2026-10-14).** Raw Vault V2 storage and
+source-snapshot correctness, M1 source/sync, canonical-only offline export,
+M3a structured retrieval and the M4 Collection sync foundation are shipped.
+M2 semantic completeness is next, then M3b FTS/search and remaining M4
+Harness workflows. See [ROADMAP](ROADMAP.md) and the
+[V2-only forward policy](adr/0012-v2-only-forward-operations.md).
+
+
 The 0.2.x implementation already provides:
 
 - live WeChat 4.x discovery/read-only access;
@@ -274,11 +282,18 @@ unknown/unclassified discovered partition cannot be silently ignored or reported
 A `Complete` generation means the adapter's required supported evidence is captured/reused and
 verified under that policy, not that every physical database file in the source tree was decryptable.
 
-The Raw Vault storage representation is independently versioned. Existing vault-format-v1
-generations remain valid evidence. The target vault-format-v2 representation uses account-local,
-fixed-block content-addressed artifact storage so a complete logical generation does not require a
-second physical copy of every unchanged artifact byte. The storage layer remains source-neutral;
-SQLite/SQLCipher/WAL semantics remain inside the source adapter.
+The Raw Vault representation is independently versioned. Stable v0.6.0 ships
+account-local fixed-block content-addressed artifact storage (manifest v3 /
+vault format 2). Storage remains source-neutral; SQLite, SQLCipher and WAL
+semantics remain inside the source adapter.
+
+**V2-only forward requirement (ADR 0012):** new capture/sync and future
+acceptance target V2 only. Historical v1-only/mixed-lineage *live* acceptance
+is explicitly retired, not misrepresented as having passed Issue #86.
+Preserved v1 evidence is not deleted or implicitly converted, and the
+already-shipped legacy reader is not removed by this policy-only decision.
+Any destructive migration or breaking legacy reader removal requires a
+separate approved requirement, deprecation policy and Issue.
 
 ### FR-05 Immutable preservation
 
@@ -593,9 +608,9 @@ CLI-only product surface, JSON contract, stdout/stderr/exit behavior and portabl
 
 ### M1 — Live WeChat source adapter (met)
 
-Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. Both Roadmap M1 acceptance criteria are now met: the canonical incremental conversation second-sync path is delivered by Issue #49 (PR #53), the source-neutral canonical coverage rollup with fail-closed `incomplete_coverage` is delivered by Issue #51 (PR #54), and Issue #49's real-environment acceptance of the combined #49 + #51 chain passed on a supported Windows/WeChat 4.x installation ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). M1 is complete on `main`; the delivered code is post-`v0.3.1` and shipped in Stable `v0.4.0`. M1.5 is unaffected and remains incomplete.
+Core local-source discovery/parsing exists. Conversation-scoped Raw Vault ingest checkpoints are delivered by Issue #24, and incremental live-source capture with explicit partition-coverage reporting is delivered by Issue #25. Both Roadmap M1 acceptance criteria are now met: the canonical incremental conversation second-sync path is delivered by Issue #49 (PR #53), the source-neutral canonical coverage rollup with fail-closed `incomplete_coverage` is delivered by Issue #51 (PR #54), and Issue #49's real-environment acceptance of the combined #49 + #51 chain passed on a supported Windows/WeChat 4.x installation ([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)). M1 is complete on `main`; the delivered code is post-`v0.3.1` and shipped in Stable `v0.4.0`. M1.5's V2 storage/correctness slice has since shipped in Stable v0.6.0; encryption-at-rest remains separately deferred.
 
-### M1.5 — Preservation/rebuild foundation (partial delivery)
+### M1.5 — Preservation/rebuild foundation (V2 storage slice shipped)
 
 Delivered by Issues #22 and #23: Raw Vault baseline capture, immutable generations/manifests,
 source-independent evidence retention, and a validated Raw-Vault-only canonical rebuild with
@@ -614,22 +629,30 @@ generation through `skipped_accounts`. Real-environment verification on a suppor
 installation was performed under Issue #37 and passed (complete baseline with one Known-unsupported
 partition, incremental reuse without a full fallback, and a successful isolated Raw-Vault-only rebuild).
 
-Active M1.5 work now includes the Raw Vault v2 physical-storage slice authorized by Issue #77:
-fixed-block content-addressed artifact storage, v1/v2 reader compatibility, a v2 capture writer,
-storage accounting/integrity verification and an official-RC hourly real-environment gate.
+The V2 storage/correctness slice is **shipped in Stable v0.6.0**
+(Issues #77–#86, acceptance-harness PRs #92/#93). Deliverables are fixed-block
+CAS, V2 capture/writer and verification, source-snapshot hardening, and
+official-RC hourly real-environment acceptance. [Evidence](https://github.com/lybym/WeArchive/issues/86#issuecomment-6159259365)
+records 170 executed hourly points, 81 successful verified captures, no-change
+zero-payload captures, 4KiB/Zstd1 validation and independent offline rebuild.
 
-This storage slice is now P0 because the accepted operating target is at least hourly capture with
-long-lived logical history; the shipped v1 whole-artifact-per-generation representation does not
-scale to that cadence.
+Issue #86 used a fresh V2 acceptance root; v1-only/mixed lineage real-world
+scenarios were not directly exercised, and #63 historical Partial did not
+naturally occur. **ADR 0012 retires new V1-only/mixed real-environment
+acceptance**, without deleting history or dropping the existing reader.
+A bounded isolated V2 regression can recheck historical Partial behavior.
 
-Raw Vault encryption-at-rest remains separate deferred work and is not pulled into the v2 storage
-release.
-
-M1.5 remains incomplete until the v2 storage slice and its required acceptance gate are delivered.
+Raw Vault encryption-at-rest remains deferred independent protection work,
+not an incomplete v0.6.0 release gate. M2 follows the delivered V2 slice;
+M3b full-text search and M4 Harness workflows follow M2.
 
 ### M2 — Semantic completeness
 
-Improve parser depth/unknown handling and use rebuildability to reprocess preserved historical evidence.
+Use privacy-safe classification measurements to prioritize unknown and special
+message gaps, then improve reply/quote/forward target resolution and contact
+metadata merge fidelity. Preserve unsupported raw evidence, distinguish
+unavailable values from known semantics, and validate deterministic offline
+rebuild/export on schema-backed positive/negative fixtures (see Roadmap M2a–d).
 
 ### M3 — Query/Harness foundation
 

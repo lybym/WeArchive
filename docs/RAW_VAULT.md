@@ -6,6 +6,16 @@ WeChat account *before* normalization. It is separate from the canonical SQLite 
 
 Normative decisions for the shipped v1 snapshot/storage design are in [ADR 0010](adr/0010-raw-vault-storage-and-snapshot.md). The v2 physical-storage evolution is specified by [ADR 0011](adr/0011-raw-vault-v2-content-addressed-storage.md) and Issue #77. The dual-format reader supports manifest/vault versions 1/1, 2/1 and 3/2. Capture writes vault format 2 / manifest version 3 (Issue #83), without migrating historical v1 generations.
 
+**V2-only forward decision (2026-10-15):** [ADR 0012](adr/0012-v2-only-forward-operations.md)
+sets V2 as the only planned capture/sync and future real-environment acceptance
+path. The official [v0.6.0 #86 acceptance](https://github.com/lybym/WeArchive/issues/86#issuecomment-6159259365)
+validated hourly V2 capture and offline rebuild but did not directly exercise
+v1-only or mixed-lineage real-environment cases; those dedicated follow-ups
+are expressly waived, not reported as tested. Historical V1 generations and
+the existing read path remain untouched; deletion, migration or dropping the
+legacy reader requires separate explicit authorization. V2 capture is still
+R1 and canonical ingest still R2.
+
 ## 1. Purpose
 
 - preserve source-faithful database/schema evidence (every table, column and row) before

@@ -142,111 +142,58 @@ The two Issues' acceptance criteria are non-overlapping. **M1 is complete on `ma
 M1 code landed after Stable `v0.3.1`, so it is not part of that release; it has since shipped in
 Stable `v0.4.0`.
 
-## M1.5 — Raw Vault preservation (incremental capture delivered; milestone incomplete)
+## M1.5 — Raw Vault preservation (V2 storage/correctness slice complete)
 
-**Goal:** capture a supported local WeChat account into a durable, versioned, immutable Raw Vault
-generation that remains readable without the original WeChat database key, and keep that capture
-current without reacquiring unchanged evidence.
+**Goal:** retain immutable, key-independent Raw Vault logical history, with efficient
+incremental physical storage under an hourly capture operating target.
 
-Delivered:
+**Delivered**: source-neutral capture/ingest and offline rebuild (Issues #22–#25,
+#37); Raw Vault V2 specification and real-data block benchmark (#77); SQLCipher
+and plaintext WAL snapshot proof (#78); 4096-byte fixed-block account-local CAS
+(#79); historical dual-format reader (#82); manifest v3/vault format 2 writer
+(#83); authoritative `vault stats` and `vault verify` (#84); official RC and
+release gate (#85/#86); acceptance harness and repairs (#92/#93).
 
-- source-independent Core contracts for Raw Vault capture and generation metadata;
-- Raw Vault persistence under Infrastructure (immutable generations, publish-last, SHA-256 checksums);
-- WeChat-specific capture adapter (consistent snapshot via `SqlCipherDatabaseCache`, transient key, decrypted artifacts);
-- `wearchive capture` CLI command as a thin adapter over `CaptureService`;
-- generation discovery/validation (list, latest, open-with-checksum-verification);
-- key non-persistence (no upstream key in vault, canonical SQLite, logs or CLI output);
-- unknown/source-specific fields preserved in captured evidence;
-- versioned capture checkpoints published inside the generation manifest (Issue #25);
-- per-partition change detection over source database + committed WAL content (Issue #25);
-- explicit expected/captured/reused/unavailable/unsupported partition coverage (Issue #25);
-- automatic widening to a full consistent snapshot whenever incremental safety cannot be proven (Issue #25).
+**Shipped in Stable v0.6.0** on 2026-10-14. [Issue #86 evidence](https://github.com/lybym/WeArchive/issues/86#issuecomment-6159259365)
+accounts for 204 planned points with 170 actually executed (81 successful
+captures, each authoritative verification green); 18 points had zero new data
+payload and zero map nodes. Offline rebuild passed without source/key and
+the provisional 4KiB + Zstd1 default was validated. R1 capture/R2 ingest
+boundaries remain unchanged; this does not claim R3+ recovery.
 
-Still missing from M1.5:
+**Coverage/decision:** The acceptance used a fresh vault; v1-only and mixed
+v1/v2 *real-environment* paths were not exercised. Per
+[ADR 0012](adr/0012-v2-only-forward-operations.md), the owner retires
+dedicated new acceptance of those legacy scenarios and operates future
+capture/sync on V2 only. Preserve old v1 evidence and existing shipped
+reader; no deletion, implicit migration or reader removal is authorized.
+Historical Partial (#63) was not directly triggered; a bounded isolated V2
+fixture can supply the remaining regression evidence.
 
-- the **active P0 Raw Vault v2 storage slice**: scalable cross-generation physical storage for the
-  accepted hourly-capture operating target, while retaining all logical generations;
-- Raw Vault encryption-at-rest, which remains separate deferred protection work.
+**Outside the completed V2 slice:** encryption-at-rest remains separately
+deferred, as do GC/compaction, scheduled capture, cross-account dedup,
+media and R3+ recovery. They are not v0.6.0 release blockers.
 
-The v2 storage slice is governed by Issue #77 / ADR 0011. Its implementation path starts only
-after the docs/format gate is merged: source-neutral fixed-block content-addressed artifact storage,
-dual-format v1/v2 reading/materialization, v2 capture publication, storage accounting/verification,
-then an official-RC hourly real-environment gate. Issue #78 separately hardens the source snapshot
-integrity proof and blocks formal v2 capture acceptance. Issue #79 is the storage-engine backlog
-Issue and MUST NOT begin implementation before #77 closes.
+## M2 — Message semantics and completeness (next active milestone)
 
-Real-environment verification on a supported Windows/WeChat 4.x installation was performed under
-Issue #37 and passed. On the real account the baseline capture reached `complete` with expected 25 /
-captured 24 / unsupported 1 (`migrate/unspportmsg.db` recorded as `unsupported` with a
-`partition_unsupported` info diagnostic and excluded from the 24-fingerprint checkpoint), two
-incremental captures reused 18-24 unchanged partitions with no full fallback, and the isolated
-Raw-Vault-only rebuild succeeded with 1 account, 1382 conversations and 216662 messages while
-reporting the account directory with no published generation through `skipped_accounts`. All 9
-generations x 24 artifacts re-hashed with 0 missing and 0 changed, and the pre-existing canonical
-archive was restored byte-identical. The first `v0.3.0-rc.1` real-account run exposed Issue #37
-(recursive `*.db` discovery treated `migrate/unspportmsg.db` as required even though the canonical
-rebuild reader does not consume it); the source-partition support policy is now documented and
-implemented, so `v0.3.0` Stable is no longer blocked by it.
+**Goal:** improve canonical semantic fidelity without weakening provenance,
+source completeness, stable IDs or deterministic export.
 
-Issue #23 delivers the bounded Raw-Vault-only canonical rebuild foundation and `wearchive rebuild`.
-Issue #24 adds conversation-scoped Raw Vault ingestion/checkpoints. Issue #25 adds incremental
-live-source capture with partition coverage; it does not authorize collection orchestration.
+Ordered proposed slices (each owns a separate Issue):
+1. **M2a quality baseline:** privacy-safe classification of unknown messages,
+   representative fixtures, measured semantics/coverage and reproducible
+   regression acceptance criteria.
+2. **M2b special/unknown messages:** improve high-impact supported
+   classifications, retain unsupported evidence and explicit diagnostics.
+3. **M2c reply/quote/forward relations:** resolve supported targets and
+   nested text, preserving null/unknown for unavailable source truth.
+4. **M2d metadata refresh/merge:** maintain stable identity and export paths
+   through contact/remark changes; regression through offline rebuild/export.
 
-Acceptance criteria — met for the capture slice:
-
-- a supported WeChat account can be captured into a versioned Raw Vault generation;
-- a successful capture produces a complete, parseable, versioned manifest;
-- every captured artifact referenced by the manifest has a verifiable SHA-256 checksum;
-- manifest records source product/version, source profile, capture adapter family/version, capture time and completeness;
-- published generations are logically immutable; later capture never edits an earlier generation;
-- captured evidence remains readable after live WeChat access/original DB key are unavailable;
-- no WeChat DB key is written to Raw Vault, canonical SQLite, logs or CLI output;
-- no persistent recovery journal, rollback ledger or complex R3+ state machine is added;
-- after a complete baseline a later capture distinguishes unchanged from new/changed partitions and reacquires only the latter (Issue #25);
-- the capture checkpoint advances only with a successfully published complete generation, and a Fatal publication leaves it unchanged (Issue #25);
-- a disappeared source partition is reported and never deletes an earlier generation or its evidence (Issue #25).
-
-Additional acceptance criteria for the active v2 storage slice:
-
-Issue #83 delivers the v2 capture publication path: manifest 3 / vault format 2, verified v1 import,
-unchanged v2 root/block-size preservation, unique-block growth and non-authoritative capture
-accounting. Publication/cancellation/checksum faults are tested before generation publication;
-capture remains R1. Issue #78's snapshot-integrity prerequisite and Issue #82's reader prerequisite
-are complete. Storage verification and the official-RC hourly real-environment gate remain separate
-work; this does not mark M1.5 complete or permit Stable release.
-
-- hourly logical generations must not require a new full physical copy of every unchanged artifact;
-- no-change v2 capture writes zero new artifact payload and reuses the existing immutable map root;
-- a changed large artifact grows authoritative physical payload with newly unique fixed blocks plus
-  bounded metadata rather than with the artifact's complete logical size;
-- existing readable vault-format-v1 generations remain readable without live WeChat/key access;
-- the v2 representation preserves full logical artifact size and SHA-256 and remains source-neutral;
-- losing the derived object-location index does not lose authoritative preserved evidence;
-- v2 capture remains R1 and canonical ingest remains R2; no R3+ recovery protocol is introduced;
-- Stable requires an official-RC real-environment hourly trace, not only synthetic/fixture evidence.
-
-Do not mark M1.5 complete until the v2 storage slice and its Stable acceptance gate are delivered.
-Raw Vault encryption-at-rest remains independent and may keep the overall milestone open after the
-storage slice, depending on the later milestone decision.
-
-## M2 — Message semantics and completeness
-
-**Goal:** improve semantic depth without changing the canonical export contract.
-
-Remaining emphasis:
-
-- more reliable special-message semantics;
-- better unknown-type diagnostics;
-- reply-target resolution improvements;
-- metadata refresh/merge correctness.
-
-Acceptance criteria:
-
-- important source events remain visible;
-- forwarded bundles retain available nested text;
-- unknown records are never silently discarded;
-- metadata refresh does not change stable IDs/paths;
-- re-export remains deterministic.
+Acceptance: positive and negative MESSAGE_SCHEMA fixtures, before/after
+quality measures, unchanged source/Raw Vault, no invented fields, R1/R2
+safety gates, and deterministic re-export. No claim that all unknowns can
+be resolved.
 
 ## M3 — Search and retrieval
 
@@ -293,10 +240,13 @@ Delivered:
 
 Not delivered by M3a (still open in M3):
 
-- SQLite FTS5 index and `wearchive search` keyword retrieval;
 - archive statistics and activity timeline beyond basic freshness;
 - a CLI status command and MCP transport over the query service;
 - Collection-scoped query filtering.
+
+### M3b — Canonical full-text retrieval (planned)
+
+- SQLite FTS5 index and `wearchive search` keyword retrieval.
 
 ## M4 — Harness-oriented workflows
 
@@ -384,61 +334,40 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-The Stable baseline is **`v0.5.1`** (Release Issue #73, Release PR #74). It carries the delivered
-chain through Stable `v0.4.0` (M1 Windows local-source adapter) and `v0.5.0` (canonical archive-only
-offline export) plus the WeChat multi-shard rotation ingest fix (Issue #71, PR #72). The post-`v0.3.0` cleanup batch is delivered
-and closed — the CI credibility work (Issue #40) and the deferred hardening that included the
-`capture --account` stable-id defect (Issue #39) — so it is historical context, not an active
-priority. `AGENTS.md` "Current priority" states the same order.
+**Stable baseline: `v0.6.0`** (2026-10-14, #86 hourly V2 acceptance,
+#93 merged, Release/CI passed). M1.5 V2 storage/correctness is **complete**,
+not a pending P0. Encryption-at-rest remains an independent deferred
+protection item.
 
-**M1 — Windows local-source adapter is complete on `main` and has moved into delivered/completed
-history.** Its release slice was delivered by **Issue #49 (M1a)**, which converged the canonical
-incremental second-sync path over the live workflow — `sync --conversation` on the shared
-`CaptureService` → Raw Vault → conversation-scoped ingest orchestration already shipped for
-Collection sync — and by **Issue #51 (M1b)**, which added the canonical source-neutral
-partition/evidence coverage reporting on the stable sync-result boundary Issue #49 handed over:
-`canonical_coverage` on `sync --conversation`, the shared coverage model for direct Raw Vault ingest,
-and the structured `incomplete_coverage` failure. Issue #49's real-environment acceptance of the
-combined #49 + #51 chain passed
-([evidence](https://github.com/lybym/WeArchive/issues/49#issuecomment-5887650417)), so both M1
-acceptance criteria are met. The delivered M1 code landed on `main` **after** Stable `v0.3.1` and is
-therefore not part of that release; it has since shipped in Stable `v0.4.0`.
+**V2-only forward policy:** only V2 (manifest v3/vault format 2) for new
+capture/sync and future real-environment acceptance. No v1-only/mixed
+acceptance work; #86 did not test those historical paths. Existing v1
+files/readers remain untouched pending any separate breaking-change
+authorization (ADR 0012).
 
-1. **The active product P0 is now the M1.5 Raw Vault v2 storage slice** authorized by Issue #77.
-   The new accepted operating target is at least hourly capture with long-lived logical history.
-   Real v0.5.1 data shows the shipped v1 whole-artifact-per-generation layout has unacceptable
-   physical write amplification at that cadence. Complete the docs/format gate first, then the
-   storage engine, dual-format reader/materializer, v2 writer and storage verification, followed by
-   an official-RC hourly real-environment gate.
-2. **Issue #78 capture-integrity hardening runs in parallel** and must complete before v2 capture is
-   formally accepted for RC/Stable. It does not block storage-engine or read-path development.
-3. **M2 message semantics remains the next semantic product milestone** after this bounded storage
-   capacity/correctness slice. Its requirements are not cancelled or absorbed into M1.5.
-4. Raw Vault encryption-at-rest remains deferred and independent of the v2 storage release.
-5. Build M3 retrieval and the remaining M4 Harness workflows on the CLI contract after the active
-   priorities above.
+**Next implementation priorities in dependency order:**
+1. M2a semantic evidence/quality baseline → M2b special/unknown semantics
+   → M2c reply/forward targets → M2d metadata refresh/merge correctness
+   (PRD FR-07/19/24/25, MESSAGE_SCHEMA).
+2. M3b FTS5 over canonical SQLite (PRD FR-15/16/17): evaluate Chinese/
+   mixed-language tokenization and performance; implement reproducible
+   rebuildable index and `wearchive search` with bounded JSON results,
+   stable IDs, provenance and context. M3a `ArchiveQueryService`,
+   `message list` and `context` are already shipped (#27).
+3. Remaining M4 Harness workflows (FR-18/23, HARNESS.md): reuse the
+   authoritative Collection (#26) for scoped query/search and export;
+   add read-only CLI freshness/status, scoped time-range selection and
+   evidence references for bounded analysis. MCP is optional, separately
+   scoped, and not a prerequisite.
 
-FTS/search, Collection export/query, MCP and a scheduler remain outside this M1.5 storage slice.
-M1 completion still does not cover them.
+**Independent, bounded V2-only follow-up:** Reproduce the historical
+Partial (#63) path in an isolated synthetic V2 regression, and quantify
+#86 capture failures caused by source-write races before proposing any
+bounded retry; preserve snapshot integrity. No new seven-day run or
+v1-only/mixed test gate is required.
 
-**Issue #47** (profile-id selector case-sensitivity across `capture`/`conversation`, plus the PR #44
-fail-closed test-gap hardening) is completed/closed post-`v0.3.1` **P2 hardening history**, delivered by PR #52.
-It is not active product work and does not change the current Issue #77 Raw Vault v2 P0 priority.
-
-Issue #24 delivered conversation-scoped Raw Vault ingest checkpoints and Issue #25 delivered
-incremental live-source capture with explicit capture-side partition coverage; both are shipped and
-are the foundation Issue #49 built on rather than work to repeat. The capture-side coverage of
-Issue #25 and the source-partition support policy of Issue #37 are likewise the evidence source
-Issue #51 mapped into canonical coverage semantics — without redefining either of them.
-
-Issue #26 delivered the M4 Collection sync foundation (Collection catalog, `collection list`/`show`,
-`sync --collection`); Collection-scoped query/search and export selection remain follow-up work.
-
-Issue #27 delivered the M3a minimum retrieval slice (`ArchiveQueryService`, `message list`,
-`context`); the FTS index, keyword search, statistics/activity timelines, a CLI status command and
-MCP transport remain open.
-
-Issue #37 delivered the WeChat source-partition support policy and the real-environment verification
-of the capture and Raw-Vault-only rebuild chain.
-
-The migration must preserve the foundation already delivered: generic adapter contract, canonical message schema, normalized models, SQLite system of record, stable identity/export rules, provenance, diagnostics, fixture-driven import and deterministic export.
+M0/M0.5/M1, #66 canonical-only offline export, #71 multi-shard support,
+#26 Collection sync and #27 minimum structured retrieval are delivered
+history, not new development. Create Issue-first work with documented
+reliability levels; do not silently start R3+, background scheduler or
+an embedded AI provider.

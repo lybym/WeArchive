@@ -1,6 +1,6 @@
 # Raw Vault v2 persisted-format specification
 
-Status: format frozen by Issue #77 / ADR 0011; dual-format reader implemented by Issue #82; capture writer implemented by Issue #83
+Status: **shipped** in v0.6.0 Stable (2026-10-14). Format frozen by Issue #77 / ADR 0011; reader implemented by #82, capture writer by #83; official V2 RC acceptance passed #86. New capture/sync is V2-only forward (ADR 0012).
 
 This document freezes the **persisted representation contract** needed by the Raw Vault v2 storage
 engine. It is intentionally source-neutral. SQLite, SQLCipher, WAL and WeChat partition semantics do
@@ -329,8 +329,13 @@ Zstd level 1 and raw fallback. The complete candidate table and workload fingerp
 [RAW_VAULT_V2_BENCHMARK.md](RAW_VAULT_V2_BENCHMARK.md). The actual engine kept 4 KiB as the T365
 leader, so the prototype decision was not materially reversed.
 
-The official RC real-environment gate then validates the selected default against a continuous
-hourly trace.
+The [official RC real-environment gate](https://github.com/lybym/WeArchive/issues/86#issuecomment-6159259365)
+**validated** the selected default: 170 executed hourly points, 81 successful
+captures with authoritative verification, including 18 zero-new-data/map
+points, and key-independent offline rebuild. The fresh acceptance root did
+not exercise historical v1-only/mixed live lineage; dedicated future tests
+of those retired operational paths are waived by ADR 0012, with no implied
+historical data deletion or removal of current legacy readers.
 
 ## 10. Golden vectors
 
