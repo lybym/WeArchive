@@ -163,10 +163,13 @@ real-world evidence. Do not fabricate missing semantics.
   machine-readable Harness workflows. Any future MCP is an optional transport,
   not a replacement query stack, and requires its own scope decision.
 
-**Small post-v0.6.0 reliability follow-up (independent of M2):** confirm the
-historical Partial scenario (#63) via a non-destructive synthetic/isolated v2
-fixture; quantify source-partition write-race capture failures shown by #86
-before proposing retries. Never weaken WAL/snapshot integrity or introduce R3+
+**Post-v0.6.0 reliability follow-up (complete, Issue #96):** the historical
+Partial scenario (#63) is confirmed and guarded by isolated V2-only synthetic
+fixtures, and the #86 source-partition write-race failures are quantified in
+`docs/CAPTURE_WRITE_RACE_EVIDENCE.md`: fail-closed capture never published a
+partial generation, the impact is availability-only, and no product retry/backoff
+was added — any bounded retry stays a documented proposal for a future Issue.
+Never weaken WAL/snapshot integrity or introduce R3+
 recovery machinery without explicit requirements. No 7-day re-acceptance and
 no v1-only/mixed-history scenario are required.
 
