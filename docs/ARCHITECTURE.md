@@ -63,6 +63,14 @@ reader supports the fixed-block content-addressed v2 model in [ADR 0011](adr/001
 the capture writer emits manifest 3 / vault format 2 (Issue #83). See [RAW_VAULT.md](RAW_VAULT.md) for the
 supported reader and writer versions.
 
+**Stable v0.6.0 forward policy:** all new Raw Vault capture/sync targets V2
+(manifest 3 / vault format 2); the shipped historical dual-format reader
+is not a new V1 operational target. Dedicated v1-only/mixed-v1-v2 real-world
+acceptance is retired under [ADR 0012](adr/0012-v2-only-forward-operations.md).
+Existing V1 evidence/readers are left intact; their breaking removal or a
+destructive migration would require a separately approved Issue. Normal
+Agent/search/export reads remain canonical SQLite, not Raw Vault physical packs.
+
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
 `Search / Query` is partially shipped: the M3a minimum retrieval slice — `ArchiveQueryService`,
