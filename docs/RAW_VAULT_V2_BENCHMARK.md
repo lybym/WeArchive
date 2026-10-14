@@ -192,8 +192,11 @@ A material divergence is a hard stop. Do not silently select or change the write
 
 ## 9. Stable gate
 
-The official RC real-environment acceptance must replace this scenario model with a continuous
-hourly trace before Stable.
+**Gate completed:** the official-RC [#86 real-environment acceptance](https://github.com/lybym/WeArchive/issues/86#issuecomment-6159259365)
+provided an hourly V2 trace (170 executed points; 81 successful captures,
+all authoritative verifications passed), validated 4096-byte/Zstd1, and
+allowed Stable v0.6.0 publication on 2026-10-14. The scenario model below
+remains *historical projection*, not the actual observed hourly series.
 
 That acceptance must report at least:
 
@@ -250,5 +253,6 @@ does not reverse the ranking or require a format/default review. Readers continu
 block sizes, and reused artifacts preserve their descriptor block size and root.
 
 These are single-run warm-cache measurements, and the yearly figure remains a scenario derived from
-seven observed transitions rather than a continuous hourly trace. The final RC must still replace
-this projection with the real hourly acceptance trace described in section 9.
+seven observed transitions rather than a continuous hourly trace. The actual RC subsequently supplied the independent hourly acceptance
+in section 9. This T365 estimate remains a scenario, not an observed year
+of storage or a replacement for that trace.
