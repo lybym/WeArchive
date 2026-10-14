@@ -66,6 +66,13 @@ The discovery commands (`doctor`, `account list`, `conversation list`, `conversa
 
 ## Current implementation status
 
+**Current Stable: `v0.6.0` (2026-10-14).** Raw Vault V2 passed
+[official-RC hourly acceptance](https://github.com/lybym/WeArchive/issues/86#issuecomment-6159259365)
+and shipped with the acceptance harness fixes (#93). New capture/sync uses
+V2 only by [ADR 0012](docs/adr/0012-v2-only-forward-operations.md).
+Historical V1 files/readers are retained without implicit migration; dedicated
+v1-only/mixed-v1-v2 real-environment acceptance is discontinued.
+
 The difficult archive/source/export engine is already implemented:
 
 - WeChat 4.x source discovery and read-only SQLCipher database access;
@@ -74,7 +81,9 @@ The difficult archive/source/export engine is already implemented:
 - reply/quote, forwarded bundle, link/app-share and provenance handling;
 - SQLite archive with migrations and idempotent import behavior;
 - Raw Vault capture — source-faithful, immutable generations with SHA-256 checksums, readable without the WeChat key, with safe incremental capture and explicit partition coverage ([RAW_VAULT.md](docs/RAW_VAULT.md));
+- Raw Vault V2 account-local 4KiB fixed-block CAS with Zstd1/raw fallback, sealed packs and immutable manifest-v3 roots; `vault stats` / `vault verify` and key-independent offline recovery;
 - Raw-Vault-only canonical rebuild with a WeChat 4.x captured-source reader and validated archive replacement;
+- canonical conversation second-sync and explicit source-neutral `canonical_coverage` (Issues #49/#51);
 - conversation-scoped incremental ingest (`wearchive ingest`) and Collection-scoped sync
   (`wearchive collection list|show`, `wearchive sync --collection <name>`) over one authoritative
   application-level Collection configuration ([ADR 0009](docs/adr/0009-collection-configuration-ownership.md));
@@ -158,9 +167,8 @@ In scope:
 
 Not yet complete:
 
-- incremental canonical (second-sync) synchronization;
-- canonical partition-coverage reporting;
-- full-text archive search (no FTS index exists);
+- M2 semantic fidelity/unknown-message quality improvements;
+- M3b full-text archive search (no FTS index exists), including Chinese/mixed text evaluation;
 - Collection-scoped query/search and export selection (Collection resolution and
   `sync --collection` are shipped);
 - a CLI archive-status command and MCP transport (capture/ingest/canonical freshness is available
