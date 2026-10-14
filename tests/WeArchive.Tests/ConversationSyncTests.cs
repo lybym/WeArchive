@@ -199,6 +199,11 @@ public sealed class ConversationSyncTests
         var openedHistoricalPartial = await harness.Vault.OpenGenerationAsync(
             harness.AccountId, historicalPartial.GenerationId, CancellationToken.None);
         Assert.NotNull(openedHistoricalPartial);
+        // The #63 Partial→Complete regression is a V2-only fixture (ADR 0012): the historical
+        // partial evidence and the later complete generation both live in manifest-3 /
+        // vault-format-2 storage (Issue #96).
+        Assert.Equal(3, openedHistoricalPartial!.Manifest.ManifestVersion);
+        Assert.Equal(2, openedHistoricalPartial.Manifest.VaultFormatVersion);
         var historicalPath = Path.Combine(openedHistoricalPartial!.GenerationDirectory, "manifest.json");
         var historicalManifestHash = SHA256.HashData(await File.ReadAllBytesAsync(historicalPath));
 

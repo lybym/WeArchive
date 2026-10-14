@@ -1,5 +1,10 @@
+using System.Security.Cryptography;
+using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
+using WeArchive.Core.RawVault;
+using WeArchive.Core.Services;
+using WeArchive.Infrastructure;
 using WeArchive.Tests.Support;
 
 namespace WeArchive.Tests;
@@ -429,8 +434,140 @@ public sealed class CollectionSyncTests
         Assert.Empty(await harness.ConversationsAsync());
     }
 
+    // ---- Issue #96: the #63 historical-Partial regression, V2-only, Collection-scoped --------
+
+    // docs/ROADMAP.md "Independent, bounded V2-only follow-up", Issue #96 scope 1: a live
+    // Collection sync must follow the current complete evidence of an isolated V2 fixture vault in
+    // which a historical Partial generation precedes the current complete generation, while direct
+    // historical ingest keeps failing closed and the partial evidence stays byte-identical. This
+    // is the Collection-scoped counterpart of the conversation-sync regression in
+    // ConversationSyncTests, and adds no product change: the shipped generation-pinned ingest is
+    // what makes ordinary sync follow current evidence.
+    [Fact]
+    public async Task CollectionSyncFollowsTheCurrentCompleteGenerationAndLeavesHistoricalPartialEvidenceUntouched()
+    {
+        using var temp = new TempDirectory();
+        var conversationA = new SyntheticCaptureConversation
+        {
+            SourceConversationId = WeChatSyncHarness.DirectId("a"),
+            Text = "A historical",
+            MessageCount = 2,
+        };
+        using var harness = WeChatSyncHarness.Create(temp,
+            conversationA,
+            new SyntheticCaptureConversation { SourceConversationId = WeChatSyncHarness.DirectId("b"), Text = "B" });
+
+        var idA = harness.StableId(WeChatSyncHarness.DirectId("a"));
+        var idB = harness.StableId(WeChatSyncHarness.DirectId("b"));
+        harness.WriteCollection("project-x", idA, idB);
+
+        // A historical Partial generation in the #63 shape — an expected partition that could not
+        // be read (a migration partition) downgraded the baseline capture — is published into the
+        // same isolated V2 vault before the current complete evidence exists.
+        const string partialReason = "Source partition 'migrate/unspportmsg.db' could not be read " +
+            "during the historical baseline capture.";
+        harness.Capture.ExtraCoverage.Add(new RawPartitionCoverage
+        {
+            PartitionId = "migrate/unspportmsg.db",
+            Status = RawPartitionStatus.Unavailable,
+            Diagnostic = partialReason,
+        });
+        harness.Capture.ExtraDiagnostics.Add(
+            RawManifestDiagnostic.Partial(DiagnosticCodes.PartitionUnreadable, partialReason));
+        harness.Capture.CompletenessOverride = RawGenerationCompleteness.Partial;
+        var captureService = harness.Provider.GetRequiredService<CaptureService>();
+        var historicalPartial = await captureService.CaptureAccountAsync(
+            new CaptureRequest { SourceProfileId = WeChatSyncHarness.ProfileId }, null, CancellationToken.None);
+        Assert.True(historicalPartial.Succeeded);
+
+        // The fixture is V2-only (ADR 0012): the historical partial generation is manifest 3 over
+        // vault format 2, and the vault retains it untouched from here on.
+        var openedPartial = await harness.Vault.OpenGenerationAsync(
+            harness.AccountId, historicalPartial.GenerationId, CancellationToken.None);
+        Assert.NotNull(openedPartial);
+        Assert.Equal(3, openedPartial!.Manifest.ManifestVersion);
+        Assert.Equal(2, openedPartial.Manifest.VaultFormatVersion);
+        Assert.Equal(RawGenerationCompleteness.Partial, openedPartial.Manifest.Capture.Completeness);
+        var partialManifestPath = Path.Combine(openedPartial.GenerationDirectory, "manifest.json");
+        var partialManifestHash = SHA256.HashData(await File.ReadAllBytesAsync(partialManifestPath));
+
+        // Direct historical ingest of the partial evidence fails closed before any canonical
+        // write: an explicit generation-pinned ingest opens the partial generation and refuses it
+        // with the source-neutral coverage rollup (docs/PRD.md FR-20).
+        var ingester = harness.Provider.GetRequiredService<RawVaultIngestService>();
+        var pinnedError = await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(() =>
+            ingester.IngestConversationFromGenerationAsync(
+                harness.AccountId, idA, historicalPartial.GenerationId, null, CancellationToken.None));
+        Assert.Equal(CanonicalCoverageVerdict.Incomplete, pinnedError.Coverage.Verdict);
+        Assert.Equal(1, pinnedError.Coverage.Unavailable);
+        Assert.Equal(0, pinnedError.Coverage.Unclassified);
+        Assert.Empty(await harness.ConversationsAsync());
+        Assert.Null(await harness.ConversationCheckpointAsync(idA));
+
+        // The source moves on and the historical capture inputs are reset; the live sync then
+        // publishes its own complete generation on top of the partial one.
+        harness.Capture.ExtraCoverage.Clear();
+        harness.Capture.ExtraDiagnostics.Clear();
+        harness.Capture.CompletenessOverride = null;
+        conversationA.Text = "A current";
+        harness.AdvanceClock();
+
+        var result = await harness.Sync.SyncAsync(
+            new CollectionSyncRequest { CollectionName = "project-x" }, null, CancellationToken.None);
+
+        // The live sync succeeds from its own complete generation; the historical partial
+        // generation neither blocks the scope nor contributes to it.
+        Assert.True(result.Succeeded);
+        Assert.Equal(2, result.Items.Count);
+        Assert.All(result.Items, item => Assert.Equal(CollectionSyncItemStatus.Succeeded, item.Status));
+        Assert.NotEqual(historicalPartial.GenerationId, result.GenerationId);
+        // A successful live sync always names the generation it published.
+        Assert.False(string.IsNullOrEmpty(result.GenerationId));
+
+        var published = await harness.Vault.OpenGenerationAsync(
+            harness.AccountId, result.GenerationId!, CancellationToken.None);
+        Assert.NotNull(published);
+        Assert.Equal(RawGenerationCompleteness.Complete, published!.Manifest.Capture.Completeness);
+        Assert.Equal(historicalPartial.GenerationId, published.Manifest.PreviousGenerationId);
+        Assert.Equal(3, published.Manifest.ManifestVersion);
+        Assert.Equal(2, published.Manifest.VaultFormatVersion);
+
+        // Both members follow the current complete evidence: the content the ingest published is
+        // the current source content, and each member's content checkpoint names the generation
+        // the sync published — not the older partial one.
+        Assert.Equal(new[] { "A current 1", "A current 2" }, (await harness.MessagesAsync(idA)).Select(m => m.Text));
+        Assert.Equal(new[] { "B 1" }, (await harness.MessagesAsync(idB)).Select(m => m.Text));
+        Assert.Equal(result.GenerationId, GenerationOf(await harness.ConversationCheckpointAsync(idA)));
+        Assert.Equal(result.GenerationId, GenerationOf(await harness.ConversationCheckpointAsync(idB)));
+
+        // Explicit historical traversal still fails closed after the live sync: the account-wide
+        // ingest has no coverage of the partial chain root yet, opens it and refuses it before
+        // publishing anything.
+        var traversalError = await Assert.ThrowsAsync<IncompleteCanonicalCoverageException>(() =>
+            ingester.IngestAsync(harness.AccountId, null, null, CancellationToken.None));
+        Assert.Equal(CanonicalCoverageVerdict.Incomplete, traversalError.Coverage.Verdict);
+        Assert.Equal(1, traversalError.Coverage.Unavailable);
+
+        // The historical partial evidence is byte-identical after all of it: the sync neither
+        // rewrote, reclassified nor deleted the partial generation to make the scope pass.
+        Assert.Equal(partialManifestHash, SHA256.HashData(await File.ReadAllBytesAsync(partialManifestPath)));
+    }
+
     private sealed class SyncProgress(Action<string> callback) : IProgress<string>
     {
         public void Report(string value) => callback(value);
+    }
+
+    /// <summary>Reads the generation cursor a checkpoint records, or null when the row is absent.</summary>
+    private static string? GenerationOf(IngestCheckpoint? checkpoint)
+    {
+        if (checkpoint is null)
+        {
+            return null;
+        }
+
+        using var document = System.Text.Json.JsonDocument.Parse(checkpoint.CheckpointJson);
+        var generationId = document.RootElement.GetProperty("generation_id").GetString();
+        return string.IsNullOrWhiteSpace(generationId) ? null : generationId;
     }
 }

@@ -360,11 +360,15 @@ authorization (ADR 0012).
    evidence references for bounded analysis. MCP is optional, separately
    scoped, and not a prerequisite.
 
-**Independent, bounded V2-only follow-up:** Reproduce the historical
-Partial (#63) path in an isolated synthetic V2 regression, and quantify
-#86 capture failures caused by source-write races before proposing any
-bounded retry; preserve snapshot integrity. No new seven-day run or
-v1-only/mixed test gate is required.
+**Independent, bounded V2-only follow-up (delivered, Issue #96):** the
+historical Partial (#63) path is guarded by isolated synthetic V2 fixture
+regressions — conversation- and Collection-scoped live sync follows the current
+complete generation while direct historical ingest stays fail-closed — and the
+#86 capture failures caused by source-write races are quantified in
+`docs/CAPTURE_WRITE_RACE_EVIDENCE.md`: fail-closed at every point, no partial
+generation published, availability-only impact, and no product retry added; any
+bounded retry/backoff remains a proposal for a future Issue. Preserve snapshot
+integrity. No new seven-day run or v1-only/mixed test gate is required.
 
 M0/M0.5/M1, #66 canonical-only offline export, #71 multi-shard support,
 #26 Collection sync and #27 minimum structured retrieval are delivered
