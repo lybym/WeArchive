@@ -240,10 +240,13 @@ Delivered:
 
 Not delivered by M3a (still open in M3):
 
-- SQLite FTS5 index and `wearchive search` keyword retrieval;
 - archive statistics and activity timeline beyond basic freshness;
 - a CLI status command and MCP transport over the query service;
 - Collection-scoped query filtering.
+
+### M3b — Canonical full-text retrieval (planned)
+
+- SQLite FTS5 index and `wearchive search` keyword retrieval.
 
 ## M4 — Harness-oriented workflows
 
