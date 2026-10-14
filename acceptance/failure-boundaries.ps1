@@ -236,7 +236,7 @@ if ($IncludeKillCapture) {
 
 Write-Host 'Copying the acceptance account into the boundary sandbox (read-only copy)...'
 $accountsRoot = Join-Path $vaultRoot 'accounts'
-$accountDirs = Get-ChildItem -LiteralPath $accountsRoot -Directory
+$accountDirs = @(Get-ChildItem -LiteralPath $accountsRoot -Directory)
 if ($accountDirs.Count -eq 0) {
     throw 'The acceptance vault has no accounts yet; run at least one hourly capture first.'
 }
@@ -319,8 +319,12 @@ $scratchRoot = Join-Path $weArchiveData 'scratch'
 $removedBytes = 0
 foreach ($cacheDir in @($scratchRoot)) {
     if (Test-Path -LiteralPath $cacheDir) {
-        $removedBytes += (Get-ChildItem -LiteralPath $cacheDir -Recurse -File -ErrorAction SilentlyContinue |
-            Measure-Object -Property Length -Sum).Sum
+        # @(wrap) + foreach instead of `.Sum` on a possibly-$null Measure-Object:
+        # an empty cache directory yields zero pipeline objects, Measure-Object
+        # returns $null, and `.Sum` on $null throws under Set-StrictMode Latest.
+        foreach ($fixtureFile in @(Get-ChildItem -LiteralPath $cacheDir -Recurse -File -ErrorAction SilentlyContinue)) {
+            $removedBytes += $fixtureFile.Length
+        }
         Remove-Item -LiteralPath $cacheDir -Recurse -Force
     }
 }
