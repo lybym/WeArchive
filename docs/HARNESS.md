@@ -30,6 +30,15 @@ This contract is now partially shipped. `ArchiveQueryService`, `wearchive messag
 `wearchive context` are implemented (Issue #27 / M3a) and are read-only over the canonical archive.
 Keyword/full-text search, a CLI archive-status command and MCP transport are not implemented yet.
 
+**Post-v0.6.0 implementation order:** M2 message-semantic correctness and
+provenance first, then M3b rebuildable SQLite FTS5/`wearchive search`
+(including measured Chinese/mixed-language recall), then remaining M4
+Collection-scope search/export, freshness-status CLI and bounded evidence
+references. These are targets, **not shipped**. Existing M3a query/context
+and Collection sync already ship; do not reimplement them. The V2-only
+forward decision affects preservation/capture, not this canonical query
+boundary (ADR 0012).
+
 ## 2. Layer responsibilities
 
 ### Raw Vault
