@@ -139,7 +139,10 @@ Install the SQLite command-line tools (https://www.sqlite.org/download.html) and
     }
     $tempSql = "$Path.sql"
     Set-Content -LiteralPath $tempSql -Value $Sql -Encoding utf8NoBOM
-    $null = & $sqlite3.Source $tempSql 2>&1
+    # Execute the SQL script against the target database. Passing the script file as
+    # sqlite3's first argument would open it AS a database (creating an empty
+    # "<db>.sql" file that the cleanup below then deletes) and build nothing.
+    $null = & $sqlite3.Source $Path ".read $tempSql" 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "sqlite3 failed building $Path"
     }
