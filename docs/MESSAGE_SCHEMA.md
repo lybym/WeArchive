@@ -392,7 +392,11 @@ Rules:
 - nested unsupported item types must not cause the whole bundle to be dropped;
 - `items[].time` may legitimately be null: WeChat 4.x does not always persist a per-item
   timestamp, and a missing time must stay null rather than being replaced by the bundle's own
-  time or by an inferred value.
+  time or by an inferred value;
+- when the structured item list is unavailable and nested items are recovered from the
+  summary description instead, the record stays explicitly partial and carries the
+  parser-level diagnostic `forward_bundle_description_fallback`; the ingest-level partial
+  diagnostic remains `partial_app_message`.
 
 ---
 
@@ -454,6 +458,23 @@ Retain revoked content only when it is legitimately available in the local archi
 }
 ```
 
+When the local record carries a reliably readable fee description, the red packet exposes the
+same financial field set as a transfer:
+
+```json
+{
+  "type": "red_packet",
+  "text": "[红包]",
+  "payload": {
+    "amount": "66.00",
+    "currency": null,
+    "status": null
+  }
+}
+```
+
+When no financial field is reliably readable, the payload stays `null`.
+
 ### Transfer
 
 ```json
@@ -469,6 +490,16 @@ Retain revoked content only when it is legitimately available in the local archi
 ```
 
 Financial attributes are optional. Preserve them only when their semantics are reliably understood from the local source record.
+
+Field rules (baseline defects D1/D2, measured in `docs/SEMANTIC_QUALITY_BASELINE.md`):
+
+- `amount` is recorded only when the locally recorded fee description is a plain unsigned
+  decimal such as `200.00`. Decorated forms — currency symbols, thousands separators — are
+  not sampled yet and stay `null` rather than being parsed or estimated.
+- `currency` and `status` are reserved for locally recorded evidence; they stay `null` until
+  a sampled source field reliably carries them.
+- A transfer whose amount cannot be read stays an explicitly partial record; a red packet
+  without a readable amount keeps its shipped null-payload shape and is not flagged partial.
 
 ---
 

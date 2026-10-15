@@ -148,6 +148,130 @@ public sealed class WeChatContentParserTests
         Assert.Equal("XX商城", parsed.Content.SourceApp);
     }
 
+    // ---- pay cards: transfer / red packet (Issue #98, baseline defects D1/D2) -----------
+
+    [Fact]
+    public void TransferWithReadableFeeDescriptionIsClassifiedWithItsAmount()
+    {
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppTransfer,
+            """
+            <msg><appmsg><title>转账给李四</title><type>2001</type>
+            <wcpayinfo><paysubtype>3</paysubtype><feedesc>200.00</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.Transfer, parsed.Content.Kind);
+        Assert.Equal("200.00", parsed.Content.Amount);
+        // No sampled currency/status evidence exists: they stay null instead of being guessed.
+        Assert.Null(parsed.Content.Currency);
+        Assert.Null(parsed.Content.TransferStatus);
+        Assert.False(parsed.Content.IsPartial);
+        Assert.Null(parsed.DiagnosticCode);
+    }
+
+    [Fact]
+    public void TransferWithoutReadableFeeDescriptionStaysExplicitlyPartial()
+    {
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppTransfer,
+            """
+            <msg><appmsg><title>转账给李四</title><type>2001</type>
+            <wcpayinfo><paysubtype>3</paysubtype></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.Transfer, parsed.Content.Kind);
+        Assert.Null(parsed.Content.Amount);
+        Assert.True(parsed.Content.IsPartial);
+    }
+
+    [Fact]
+    public void TransferAmountIgnoresDecoratedFeeDescriptions()
+    {
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppTransfer,
+            """
+            <msg><appmsg><title>转账给李四</title><type>2001</type>
+            <wcpayinfo><paysubtype>3</paysubtype><feedesc>￥200.00</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        // Symbol-prefixed fee descriptions are not sampled yet: the amount stays null and
+        // the record stays partial instead of being guessed. docs/MESSAGE_SCHEMA.md section 15.
+        Assert.Equal(SourceContentKind.Transfer, parsed.Content.Kind);
+        Assert.Null(parsed.Content.Amount);
+        Assert.True(parsed.Content.IsPartial);
+    }
+
+    [Fact]
+    public void RedPacketExposesTheReadableAmount()
+    {
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppRedPacket,
+            """
+            <msg><appmsg><title>收到一个红包</title><type>2000</type>
+            <wcpayinfo><paysubtype>1</paysubtype><feedesc>66.00</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.RedPacket, parsed.Content.Kind);
+        Assert.Equal("66.00", parsed.Content.Amount);
+        Assert.False(parsed.Content.IsPartial);
+    }
+
+    [Fact]
+    public void RedPacketWithoutReadableFeeDescriptionKeepsItsShippedShape()
+    {
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppRedPacket,
+            """
+            <msg><appmsg><title>收到一个红包</title><type>2000</type>
+            <wcpayinfo><paysubtype>1</paysubtype></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.RedPacket, parsed.Content.Kind);
+        Assert.Null(parsed.Content.Amount);
+        Assert.False(parsed.Content.IsPartial);
+    }
+
+    [Fact]
+    public void DescriptionFallbackBundlesCarryADedicatedDiagnosticCode()
+    {
+        // Baseline defect D4: the description fallback keeps its partial flag and now also
+        // carries the dedicated parser-level code; the ingest-level diagnostic is unchanged.
+        var fallback = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppForwardBundle,
+            "<msg><appmsg><title>仅摘要转发的聊天记录</title><des>张三: 第一版价格是不是太高了\n李四: 收到</des><type>19</type><recorditem><![CDATA[recordlist-not-xml]]></recorditem></appmsg></msg>");
+
+        Assert.Equal(SourceContentKind.ForwardBundle, fallback.Content.Kind);
+        Assert.True(fallback.Content.IsPartial);
+        Assert.Equal(2, fallback.Content.ForwardItems!.Count);
+        Assert.Equal(DiagnosticCodes.ForwardBundleDescriptionFallback, fallback.DiagnosticCode);
+
+        var structured = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppForwardBundle,
+            """
+            <msg><appmsg><title>项目讨论聊天记录</title><type>19</type>
+            <recorditem><![CDATA[<recordinfo><title>项目讨论聊天记录</title>
+            <datalist count="1">
+            <dataitem datatype="1" dataid="1"><datadesc>第一版价格是不是太高了？</datadesc><sourcename>张三</sourcename></dataitem>
+            </datalist></recordinfo>]]></recorditem>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.ForwardBundle, structured.Content.Kind);
+        Assert.Null(structured.DiagnosticCode);
+    }
+
     [Fact]
     public void QuoteBecomesATextMessageWithAStructuredReply()
     {

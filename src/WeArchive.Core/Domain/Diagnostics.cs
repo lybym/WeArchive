@@ -28,6 +28,13 @@ public static class DiagnosticCodes
     public const string WalFramesRejected = "wal_frames_rejected";
     public const string UnknownMessageType = "unknown_message_type";
     public const string PartialAppMessage = "partial_app_message";
+    /// <summary>
+    /// Parser-level marker for a forward bundle whose structured item list was unavailable
+    /// and whose nested items were recovered from the summary description instead
+    /// (docs/MESSAGE_SCHEMA.md section 12, baseline defect D4). The ingest-level partial
+    /// diagnostic remains <see cref="PartialAppMessage"/>.
+    /// </summary>
+    public const string ForwardBundleDescriptionFallback = "forward_bundle_description_fallback";
     public const string UnresolvedReplyTarget = "unresolved_reply_target";
     public const string ReplySnapshotOnly = "reply_snapshot_only";
     public const string LinkWrapperUrlOnly = "link_wrapper_url_only";

@@ -115,7 +115,9 @@ public sealed class SemanticBaselineTests
     {
         var measured = Measure();
 
-        Assert.Equal(33, TotalRecords);
+        // 33 M2a records + 2 additive M2b records (transfer_without_amount,
+        // redpacket_without_amount, Issue #98).
+        Assert.Equal(35, TotalRecords);
         Assert.Equal(TotalRecords, measured.Count);
 
         var byType = measured
@@ -131,15 +133,15 @@ public sealed class SemanticBaselineTests
             ["emoji"] = 1,
             ["file"] = 2,
             ["link"] = 3,
-            ["app_share"] = 2,
+            ["app_share"] = 1,
             ["mini_program"] = 1,
             ["forward_bundle"] = 2,
             ["location"] = 1,
             ["contact_card"] = 1,
             ["system"] = 3,
             ["revoke"] = 1,
-            ["red_packet"] = 1,
-            ["transfer"] = 0,
+            ["red_packet"] = 2,
+            ["transfer"] = 2,
             ["unknown"] = 4,
         };
 
@@ -167,7 +169,7 @@ public sealed class SemanticBaselineTests
         var byConversation = measured
             .GroupBy(m => m.Source.SourceConversationId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
-        Assert.Equal(21, byConversation[SemanticBaselineCorpus.DirectConversation]);
+        Assert.Equal(23, byConversation[SemanticBaselineCorpus.DirectConversation]);
         Assert.Equal(7, byConversation[SemanticBaselineCorpus.GroupConversation]);
         Assert.Equal(2, byConversation[SemanticBaselineCorpus.OfficialConversation]);
         Assert.Equal(3, byConversation[SemanticBaselineCorpus.SystemConversation]);
@@ -341,18 +343,39 @@ public sealed class SemanticBaselineTests
         Assert.Equal("项目季度汇报模板.docx", named.Message.Payload!["filename"]!.GetValue<string>());
         Assert.False(named.Message.IsPartial);
 
-        // The transfer subtype is currently not classified: it lands in app_share, partially
-        // parsed, with no invented amount. docs/SEMANTIC_QUALITY_BASELINE.md defect matrix D1.
+        // Baseline defect D1 (Issue #98): the transfer subtype is classified from its local
+        // pay-card semantics, and the readable fee description becomes the amount. Nothing
+        // is guessed: currency/status stay null until a sampled field carries them.
         var transfer = Single(measured, "transfer_unclassified");
-        Assert.Equal(CanonicalMessageType.AppShare, transfer.Message.Type);
-        Assert.True(transfer.Message.IsPartial);
-        Assert.Equal("转账给李四", transfer.Message.Payload!["title"]!.GetValue<string>());
-        Assert.True(transfer.Message.Payload!["original_url"] is null);
-        Assert.Equal(DiagnosticCodes.PartialAppMessage, IngestDiagnosticCode(transfer.Message));
+        Assert.Equal(CanonicalMessageType.Transfer, transfer.Message.Type);
+        Assert.False(transfer.Message.IsPartial);
+        Assert.Equal("[转账] 200.00 元", transfer.Message.Text);
+        Assert.Equal("200.00", transfer.Message.Payload!["amount"]!.GetValue<string>());
+        Assert.True(transfer.Message.Payload!["currency"] is null);
+        Assert.True(transfer.Message.Payload!["status"] is null);
+        Assert.Null(IngestDiagnosticCode(transfer.Message));
 
+        // A pay card without a readable fee description stays an explicitly partial transfer.
+        var transferWithoutAmount = Single(measured, "transfer_without_amount");
+        Assert.Equal(CanonicalMessageType.Transfer, transferWithoutAmount.Message.Type);
+        Assert.True(transferWithoutAmount.Message.IsPartial);
+        Assert.Equal("[转账]", transferWithoutAmount.Message.Text);
+        Assert.True(transferWithoutAmount.Message.Payload!["amount"] is null);
+        Assert.Equal(DiagnosticCodes.PartialAppMessage, IngestDiagnosticCode(transferWithoutAmount.Message));
+
+        // Baseline defect D2 (Issue #98): red packets expose the readable amount; the
+        // shipped null-payload shape is preserved when nothing is readable.
         var redPacket = Single(measured, "redpacket_direct");
         Assert.Equal(CanonicalMessageType.RedPacket, redPacket.Message.Type);
-        Assert.Null(redPacket.Message.Payload);
+        Assert.False(redPacket.Message.IsPartial);
+        Assert.Equal("66.00", redPacket.Message.Payload!["amount"]!.GetValue<string>());
+        Assert.True(redPacket.Message.Payload!["currency"] is null);
+        Assert.True(redPacket.Message.Payload!["status"] is null);
+
+        var redPacketWithoutAmount = Single(measured, "redpacket_without_amount");
+        Assert.Equal(CanonicalMessageType.RedPacket, redPacketWithoutAmount.Message.Type);
+        Assert.Null(redPacketWithoutAmount.Message.Payload);
+        Assert.False(redPacketWithoutAmount.Message.IsPartial);
 
         var original = Single(measured, "link_direct_original");
         Assert.Equal("https://example.com/article/123", original.Message.Payload!["original_url"]!.GetValue<string>());
@@ -381,13 +404,13 @@ public sealed class SemanticBaselineTests
         // A fresh canonical archive rebuilt offline from the same corpus exports the exact
         // same dataset: deterministic rebuild/export at the canonical layer. Raw-Vault-only
         // rebuild determinism remains covered by RebuildServiceTests.
-        Assert.Equal(33, first.Lines.Count);
+        Assert.Equal(35, first.Lines.Count);
         Assert.Equal(first.Lines, second.Lines);
 
         Assert.Equal(4, first.Counters.Unknown);
         Assert.Equal(10, first.Counters.Partial);
         Assert.Equal(4, first.Counters.Unsupported);
-        Assert.Equal(33, first.Counters.Records);
+        Assert.Equal(35, first.Counters.Records);
         Assert.Equal(first.Counters, second.Counters);
 
         var unknownLines = first.Lines

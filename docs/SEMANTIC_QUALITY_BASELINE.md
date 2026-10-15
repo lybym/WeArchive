@@ -15,7 +15,8 @@ Measured at: `main` commit `4c933a4d6512f8e2eec9ea52fd5f3ee29dc47bbb`
 
 - **Corpus.** `tests/WeArchive.Tests/Support/SemanticBaselineCorpus.cs` is a deterministic,
   synthetic WeChat 4.x **wire-level** corpus: 33 records written as numeric `local_type`
-  codes plus message XML exactly as the message shards store them. Because the corpus
+  codes plus message XML exactly as the message shards store them (extended additively to
+  35 records by the M2b slice, Issue #98 — see section 10). Because the corpus
   lives at the wire level, the measurement exercises the shipped parser
   (`WeChatContentParser`) and normalizer (`MessageNormalizer`) rather than mirroring them.
 - **Privacy.** Every id, name, text, file name and URL is a synthetic placeholder
@@ -44,7 +45,7 @@ the denominator.
 
 | Metric | Definition |
 | --- | --- |
-| Denominator | Total corpus records measured through the shipped parser → normalizer boundary (33). |
+| Denominator | Total corpus records measured through the shipped parser → normalizer boundary (33 at M2a; 35 after the additive M2b extension, section 10). |
 | Classification numerator | Number of records whose normalized canonical type equals type T. |
 | Unknown numerator | Records normalized to `unknown` (all of them keep verbatim upstream type codes in `payload.source_type`/`source_subtype`). |
 | Partial numerator | Records whose canonical envelope carries `IsPartial = true` (only part of the upstream record could be interpreted). |
@@ -72,21 +73,23 @@ producers the shipped parser recognizes, with the corpus as evidence.
 | `video` | type 43 | `video_direct` | payload null |
 | `file` | app subtype 6 | `file_direct_named`, `file_direct_unnamed` | name/extension/size only when locally present |
 | `link` | app subtypes 3/4/5/24 | `link_direct_original`, `link_direct_wrapper_only`, `link_official_article` | wrapper URLs land in `fallback_url` (MESSAGE_SCHEMA section 9 rule 2) |
-| `app_share` | type 49 with recognized-but-unmodeled app payloads | `appshare_unmodeled_subtype` (subtype 87), `transfer_unclassified` (subtype 2001 — defect D1) | explicitly partial; every obtainable field kept |
+| `app_share` | type 49 with recognized-but-unmodeled app payloads | `appshare_unmodeled_subtype` (subtype 87; D1's transfer record left this outcome in #98) | explicitly partial; every obtainable field kept |
 | `mini_program` | app subtypes 33/36 or weappinfo present | `miniprogram_direct` | appid/pagepath without URL guessing |
 | `forward_bundle` | app subtype 19, or `recorditem` present | `bundle_group_structured`, `bundle_group_description_fallback` | nested items preserved incl. unknown item types |
 | `location` | type 48; app subtype 17 | `location_direct` | poinname/label/address/lat-long only when present |
 | `contact_card` | type 42 | `contactcard_direct` | display name + source user id only |
 | `system` | types 10000/10002 (non-revoke), type 50 VoIP | `system_group_template`, `system_plain_event`, `voip_direct` | template links resolved; unresolved templates stay partial |
 | `revoke` | type 10000 with `revokemsg` | `revoke_group` | operator/newmsgid only when locally present |
-| `red_packet` | type 49 + `wcpayinfo` + title containing 红包 | `redpacket_direct` | payload null; financial fields not extracted yet (D2) |
-| `transfer` | — none — | (absent; denominator still counts the corpus transfer record under `app_share`) | defect D1 |
+| `red_packet` | type 49 + `wcpayinfo` + title containing 红包 | `redpacket_direct`, `redpacket_without_amount` | amount recorded only when the local fee description is a plain decimal (D2); otherwise the shipped null payload |
+| `transfer` | type 49 + `wcpayinfo` without a red-packet title (D1, adopted in #98) | `transfer_unclassified`, `transfer_without_amount` | amount/currency/status only when reliably readable; unreadable amount stays partial |
 | `emoji` | type 47; app subtype 8 | `emoji_direct` | payload null |
 | `unknown` | every other classic type; type 49 without a usable app payload; unparseable XML | `unknown_classic_type`, `app_without_appmsg`, `app_malformed_xml`, `unknown_classic_system` | never dropped; codes preserved |
 
 ## 4. Measured baseline (pinned by `SemanticBaselineTests`)
 
 ### 4.1 Classification by canonical type
+
+Updated by the M2b slice (Issue #98); before/after deltas are recorded in section 10.
 
 | Canonical type | Count |
 | --- | --- |
@@ -97,28 +100,28 @@ producers the shipped parser recognizes, with the corpus as evidence.
 | emoji | 1 |
 | file | 2 |
 | link | 3 |
-| app_share | 2 |
+| app_share | 1 |
 | mini_program | 1 |
 | forward_bundle | 2 |
 | location | 1 |
 | contact_card | 1 |
 | system | 3 |
 | revoke | 1 |
-| red_packet | 1 |
-| transfer | 0 (not produced — see D1) |
+| red_packet | 2 |
+| transfer | 2 |
 | unknown | 4 |
-| **Total (denominator)** | **33** |
+| **Total (denominator)** | **35** |
 
 ### 4.2 By conversation category and source version
 
 | Conversation category (WeChat4Schema.ClassifyConversation) | Records |
 | --- | --- |
-| Direct (`wxid_bob`) | 21 |
+| Direct (`wxid_bob`) | 23 |
 | Group (`100200300@chatroom`) | 7 |
 | Official (`gh_example_news`) | 2 |
 | System (`filehelper`) | 3 |
 
-All 33 records carry `source_version = synthetic-wechat4x-m2a-1` in provenance; the
+All 35 records carry `source_version = synthetic-wechat4x-m2a-1` in provenance; the
 sample is single-version by design (section 1).
 
 ### 4.3 By upstream source type (type/subtype)
@@ -140,8 +143,8 @@ are pinned by `EveryCorpusRecordReachesTheCanonicalBoundaryWithItsCodesPreserved
 | (49, 57) app/quote | 1 | text + reply snapshot |
 | (49, 87) app/unmodeled | 1 | app_share partial (D3) |
 | (49, 101) app envelope w/o appmsg | 1 | unknown partial (U2) |
-| (49, 2000) app/red packet | 1 | red_packet |
-| (49, 2001) app/transfer | 1 | app_share partial (D1) |
+| (49, 2000) app/red packet | 2 | red_packet ×2 (amount only when readable, D2) |
+| (49, 2001) app/transfer | 2 | transfer ×2 (1 partial: amount unavailable, D1) |
 | (42, 0) contact card | 1 | contact_card |
 | (48, 0) location | 1 | location |
 | (50, 0) VoIP | 1 | system (event voip) |
@@ -156,17 +159,22 @@ Four wire outcomes land in `unknown` (U1 ×2, U2, U3); none is dropped.
 
 | Metric | Count |
 | --- | --- |
-| Partial records | 10 (`voice_direct_untimed`, `file_direct_unnamed`, `appshare_unmodeled_subtype`, `transfer_unclassified`, `unknown_classic_type`, `app_without_appmsg`, `app_malformed_xml`, `bundle_group_description_fallback`, `voice_group_untimed`, `unknown_classic_system`) |
-| Complete records | 23 |
+| Partial records | 10 (`voice_direct_untimed`, `file_direct_unnamed`, `appshare_unmodeled_subtype`, `transfer_without_amount`, `unknown_classic_type`, `app_without_appmsg`, `app_malformed_xml`, `bundle_group_description_fallback`, `voice_group_untimed`, `unknown_classic_system`) |
+| Complete records | 25 |
 | `unknown_message_type` diagnostics | 4 (upstream codes preserved per record: 1000007/0, 49/101, 49/5, 1050001/0) |
 | `partial_app_message` diagnostics | 6 (34/0 ×2, 49/6, 49/87, 49/2001, 49/19) |
 | `unresolved_reply_target` diagnostics | 0 (the corpus quote carries a locally available snapshot) |
+
+After M2b the partial set and the `partial_app_message` rollup keep the same counts as the
+M2a baseline: `transfer_unclassified` left the partial set (now a complete `transfer`, D1)
+and the additive `transfer_without_amount` entered it (amount unavailable). The partial
+49/2001 record is `transfer_without_amount`.
 
 ### 4.5 Export-manifest counters (real pipeline run)
 
 The corpus is imported through `ImportService` and exported through
 `JsonlDatasetExporter` into a fresh SQLite archive; the manifests aggregate to:
-`record_count` 33, `unknown_count` 4, `partial_count` 10, `unsupported_count` 4
+`record_count` 35, `unknown_count` 4, `partial_count` 10, `unsupported_count` 4
 (`unsupported_count` mirrors `unknown_count` by exporter contract). Two independent
 archive-and-export runs produce byte-identical JSONL datasets and identical counters.
 
@@ -228,6 +236,11 @@ polish. "Bounded requirement" states what the slice may change; anything beyond 
 new approved Issue. Unless stated otherwise: no canonical schema change, no fabricated
 values, unknown stays explicit (Issue #97 governance; AGENTS.md mandatory rules).
 
+Status after M2b (Issue #98): **D1, D2 and D4 are adopted** (section 10 records the
+before/after evidence); **D3 stays the documented `app_share` fallback** — no concrete
+subtype was modeled with MESSAGE_SCHEMA backing; **D5 stays unadopted** — no real
+VoIP/system variants were sampled, so no code change is authorized.
+
 ### M2b — special/unknown classification
 
 | ID | P | Finding | Evidence | Bounded requirement |
@@ -241,7 +254,8 @@ values, unknown stays explicit (Issue #97 governance; AGENTS.md mandatory rules)
 Working-as-documented unavailability outcomes (not defects; listed so they are not
 "fixed" into guesses): voice without duration (`voice_duration_unavailable`), file
 without name, wrapper-only URLs, nested forward items without timestamps, revoke without
-revoked text.
+revoked text, transfer without a plain-decimal fee description (explicitly partial
+transfer, #98 — decorated forms stay unparsed rather than guessed).
 
 ### M2c — reply/quote/forward relations
 
@@ -284,5 +298,78 @@ revoked text.
   (`WeChatContentParser`, `MessageNormalizer`, `ImportService`, `JsonlDatasetExporter`);
   the corpus adapter is test-only and adds no product surface.
 - **No user-visible behavior change**: product code is untouched by this baseline.
+  (Superseded by the M2b update in section 10, which does change classification and
+  payload behavior for adopted defect cases.)
 - Reliability levels unchanged (R1 capture / R2 ingest / R0 read-only query); this PR
   adds tests and documentation only.
+
+## 10. M2b update: adopted defect cases (Issue #98)
+
+The M2b slice ([Issue #98](https://github.com/lybym/WeArchive/issues/98), Roadmap M2b,
+PRD G3/G5, FR-07/20/24) adopts D1, D2 and D4 from the section 7 matrix and leaves D3/D5
+untouched. All changes keep the section 2 preservation invariants green: no record is
+dropped, unknown stays explicit with preserved codes, unavailable fields stay null, and
+the offline import → archive → export run stays byte-deterministic.
+
+### 10.1 D1 (P1) — transfers are classified (adopted)
+
+- Before: the 49/2001 `wcpayinfo` record `transfer_unclassified` normalized to
+  `app_share` (partial); the canonical `transfer` count was 0.
+- After: a type 49 record whose local pay-card payload is present and whose title does
+  not carry red-packet semantics normalizes to `transfer`. `transfer_unclassified`
+  → `transfer`, complete, with `payload.amount = "200.00"` read from the locally recorded
+  fee description; `currency`/`status` stay null (no sampled evidence carries them).
+- Delta: `transfer` 0 → 2 (`transfer_unclassified` complete, additive
+  `transfer_without_amount` partial); `app_share` 2 → 1; total records 33 → 35;
+  partial records stay 10 (`transfer_unclassified` left the partial set, the additive
+  `transfer_without_amount` entered it); `partial_app_message` diagnostics stay 6.
+- Boundary: the amount is recorded only when the local fee description is a plain unsigned
+  decimal. Decorated forms (currency symbols, thousands separators) are not sampled and
+  stay null with the record explicitly partial — no blanket claim for unsampled variants
+  (MESSAGE_SCHEMA section 15; acceptance criterion 5). `paysubtype` is upstream wire
+  detail and is deliberately not interpreted for classification.
+
+### 10.2 D2 (P2) — red-packet amount (adopted, bounded)
+
+- Before: `redpacket_direct` carried `payload: null`.
+- After: `redpacket_direct` exposes `payload = { "amount": "66.00", "currency": null,
+  "status": null }` under the same plain-decimal rule as D1. The shipped red-packet shape
+  is otherwise unchanged: the additive `redpacket_without_amount` record keeps
+  `payload: null`, is not flagged partial, and red-packet classification (text `[红包]`)
+  is unchanged.
+- Delta: `red_packet` 1 → 2 (additive record); classification precision unchanged; no
+  partial/diagnostic delta.
+
+### 10.3 D4 (P3) — description-fallback diagnostic (adopted, parser-level)
+
+- Before: description-fallback forward bundles carried only the partial flag.
+- After: the parser marks the fallback with the dedicated code
+  `forward_bundle_description_fallback` (Core `DiagnosticCodes`, MESSAGE_SCHEMA section
+  12). The ingest-level diagnostic remains `partial_app_message` by the documented
+  `ImportService` rule; classification, partial flags and export counters are unchanged.
+- Delta: none in sections 4.1–4.5 (the code is parser-level and test-asserted; the
+  ingest contract is unchanged).
+
+### 10.4 Not adopted
+
+- **D3** — unmodeled app subtypes stay `app_share` partial as documented; no concrete
+  subtype was modeled with MESSAGE_SCHEMA backing, and types are not guessed from titles.
+- **D5** — VoIP/system variants beyond the sampled shapes remain unmeasured; modeling
+  them without real samples is explicitly out of scope for M2b.
+
+### 10.5 Verification
+
+- The pinned values live in
+  `SemanticBaselineTests.CorpusClassificationMatchesThePinnedBaselineReport` and
+  `OfflineImportArchiveExportIsByteDeterministicAndCountsUnknowns`; they match
+  sections 4.1–4.5 above after the additive corpus extension (35 records; the two new
+  records are appended, no existing record id was mutated or repurposed).
+- New/updated unit coverage: `WeChatContentParserTests` (transfer with/without readable
+  amount, decorated fee description, red packet with/without amount, description-fallback
+  diagnostic) and `SemanticBaselineTests.UnavailableFieldsStayNullAndAreFlaggedPartial`
+  (transfer/red-packet payload semantics at the canonical boundary).
+- No persisted-schema change: the archive stores payloads as JSON text
+  (`docs/DATA_MODEL.md` section 8.6); no migration or DATA_MODEL update is required.
+- No architecture change: decoding stays in `src/WeArchive.Infrastructure/WeChat/Parsers`,
+  domain semantics in `WeArchive.Core/Normalization`; reliability levels unchanged
+  (R1 capture / R2 conversation ingest / R0 read-only query).
