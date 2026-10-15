@@ -140,8 +140,9 @@ already-shipped legacy reader. Any breaking legacy-reader removal requires a new
 approved Issue/compatibility decision. Raw Vault encryption-at-rest is deferred.
 
 **Next product milestone: M2 — message semantics and completeness.**
-Sequence: (1) establish a privacy-safe semantic/coverage measurement baseline;
-(2) address unknown/special-message classification and explicit diagnostics;
+Sequence: (1) the privacy-safe semantic/coverage measurement baseline is established
+(Issue #97, `docs/SEMANTIC_QUALITY_BASELINE.md`); (2) address unknown/special-message
+classification and explicit diagnostics;
 (3) resolve reply/quote target linkages within supported evidence;
 (4) validate contact/remark metadata refresh, stable IDs and deterministic
 rebuild/export. Scope must be backed by MESSAGE_SCHEMA, test fixtures and bounded
