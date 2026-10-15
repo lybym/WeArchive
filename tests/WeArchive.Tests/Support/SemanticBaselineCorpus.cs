@@ -102,32 +102,19 @@ public static class SemanticBaselineCorpus
             """<msg><appmsg><title>broken"""),
 
         // ---- group conversation (100200300@chatroom) ----------------------------------
-        new("text_group_known_sender", GroupConversation, "wxid_dave", 1, 0,
-            """
-            wxid_alice:
-            下午三点开会。
-            """),
-        new("text_group_unmatched_prefix", GroupConversation, "wxid_dave", 1, 0,
-            """
-            注意:
-            下午三点开会。
-            """),
+        // Group prefixes use explicit \n escapes (not multi-line literals) so the corpus is
+        // byte-identical under any checkout line-ending normalization.
+        new("text_group_known_sender", GroupConversation, "wxid_dave", 1, 0, "wxid_alice:\n下午三点开会。"),
+        new("text_group_unmatched_prefix", GroupConversation, "wxid_dave", 1, 0, "注意:\n下午三点开会。"),
         new("bundle_group_structured", GroupConversation, "wxid_alice", 49, 19,
             """<msg><appmsg><title>项目讨论聊天记录</title><des>张三: 第一版价格是不是太高了</des><type>19</type><recorditem><![CDATA[<recordinfo><title>项目讨论聊天记录</title><datalist count="3"><dataitem datatype="1" dataid="1"><datadesc>第一版价格是不是太高了？</datadesc><sourcename>张三</sourcename></dataitem><dataitem datatype="2" dataid="2"><datadesc>[图片]</datadesc><sourcename>李四</sourcename></dataitem><dataitem datatype="9" dataid="3"><datadesc>不支持类型的嵌套条目</datadesc><sourcename>王五</sourcename></dataitem></datalist></recordinfo>]]></recorditem></appmsg></msg>"""),
         new("bundle_group_description_fallback", GroupConversation, "wxid_alice", 49, 19,
-            """
-            <msg><appmsg><title>仅摘要转发的聊天记录</title><des>张三: 第一版价格是不是太高了
-            李四: 收到</des><type>19</type><recorditem><![CDATA[recordlist-not-xml]]></recorditem></appmsg></msg>
-            """),
+            "<msg><appmsg><title>仅摘要转发的聊天记录</title><des>张三: 第一版价格是不是太高了\n李四: 收到</des><type>19</type><recorditem><![CDATA[recordlist-not-xml]]></recorditem></appmsg></msg>"),
         new("system_group_template", GroupConversation, null, 10000, 0,
             """<sysmsg type="sysmsgtemplate"><sysmsgtemplate><content_template><![CDATA["$username$"邀请"$invitee$"加入了群聊]]></content_template><link_list><link name="username"><title>张三</title></link><link name="invitee"><title>李四</title></link></link_list></sysmsgtemplate></sysmsg>"""),
         new("revoke_group", GroupConversation, null, 10000, 0,
             """<sysmsg type="revokemsg"><revokemsg session="wxid_alice"><newmsgid>954009715970562000</newmsgid><content>你撤回了一条消息</content><revoketime>1776678109</revoketime></revokemsg></sysmsg>"""),
-        new("voice_group_untimed", GroupConversation, "wxid_carol", 34, 0,
-            """
-            wxid_carol:
-            <msg><voicemsg voiceformat="4" /></msg>
-            """),
+        new("voice_group_untimed", GroupConversation, "wxid_carol", 34, 0, "wxid_carol:\n<msg><voicemsg voiceformat=\"4\" /></msg>"),
 
         // ---- official-account conversation (gh_example_news) --------------------------
         new("text_official_push", OfficialConversation, null, 1, 0, "Example 新闻推送占位文本"),
