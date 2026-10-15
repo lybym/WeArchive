@@ -16,7 +16,8 @@ Measured at: `main` commit `4c933a4d6512f8e2eec9ea52fd5f3ee29dc47bbb`
 - **Corpus.** `tests/WeArchive.Tests/Support/SemanticBaselineCorpus.cs` is a deterministic,
   synthetic WeChat 4.x **wire-level** corpus: 33 records written as numeric `local_type`
   codes plus message XML exactly as the message shards store them (extended additively to
-  37 records by the M2b slice, Issue #98 — see section 10). Because the corpus
+  37 records by the M2b slice, Issue #98 — see section 10 — and to 44 records by the M2c
+  slice, Issue #99 — see section 11). Because the corpus
   lives at the wire level, the measurement exercises the shipped parser
   (`WeChatContentParser`) and normalizer (`MessageNormalizer`) rather than mirroring them.
 - **Privacy.** Every id, name, text, file name and URL is a synthetic placeholder
@@ -45,7 +46,7 @@ the denominator.
 
 | Metric | Definition |
 | --- | --- |
-| Denominator | Total corpus records measured through the shipped parser → normalizer boundary (33 at M2a; 37 after the additive M2b extension, section 10). |
+| Denominator | Total corpus records measured through the shipped parser → normalizer boundary (33 at M2a; 37 after the additive M2b extension, section 10; 44 after the additive M2c extension, section 11). |
 | Classification numerator | Number of records whose normalized canonical type equals type T. |
 | Unknown numerator | Records normalized to `unknown` (all of them keep verbatim upstream type codes in `payload.source_type`/`source_subtype`). |
 | Partial numerator | Records whose canonical envelope carries `IsPartial = true` (only part of the upstream record could be interpreted). |
@@ -89,11 +90,12 @@ producers the shipped parser recognizes, with the corpus as evidence.
 
 ### 4.1 Classification by canonical type
 
-Updated by the M2b slice (Issue #98); before/after deltas are recorded in section 10.
+Updated by the M2b slice (Issue #98) and the M2c slice (Issue #99); the deltas are recorded in
+sections 10 and 11.
 
 | Canonical type | Count |
 | --- | --- |
-| text | 6 |
+| text | 12 |
 | image | 1 |
 | voice | 3 |
 | video | 1 |
@@ -106,22 +108,22 @@ Updated by the M2b slice (Issue #98); before/after deltas are recorded in sectio
 | location | 1 |
 | contact_card | 1 |
 | system | 3 |
-| revoke | 1 |
+| revoke | 2 |
 | red_packet | 2 |
 | transfer | 2 |
 | unknown | 5 |
-| **Total (denominator)** | **37** |
+| **Total (denominator)** | **44** |
 
 ### 4.2 By conversation category and source version
 
 | Conversation category (WeChat4Schema.ClassifyConversation) | Records |
 | --- | --- |
-| Direct (`wxid_bob`) | 25 |
-| Group (`100200300@chatroom`) | 7 |
+| Direct (`wxid_bob`) | 31 |
+| Group (`100200300@chatroom`) | 8 |
 | Official (`gh_example_news`) | 2 |
 | System (`filehelper`) | 3 |
 
-All 37 records carry `source_version = synthetic-wechat4x-m2a-1` in provenance; the
+All 44 records carry `source_version = synthetic-wechat4x-m2a-1` in provenance; the
 sample is single-version by design (section 1).
 
 ### 4.3 By upstream source type (type/subtype)
@@ -131,7 +133,7 @@ are pinned by `EveryCorpusRecordReachesTheCanonicalBoundaryWithItsCodesPreserved
 
 | Upstream (type, subtype) | Records | Canonical outcome(s) |
 | --- | --- | --- |
-| (1, 0) text | 5 | text ×5 |
+| (1, 0) text | 7 | text ×7 |
 | (34, 0) voice | 3 | voice ×3 (2 partial: duration unavailable) |
 | (3, 0) image | 1 | image |
 | (43, 0) video | 1 | video |
@@ -140,7 +142,7 @@ are pinned by `EveryCorpusRecordReachesTheCanonicalBoundaryWithItsCodesPreserved
 | (49, 6) app/file | 2 | file ×2 (1 partial: name unavailable) |
 | (49, 19) app/forward bundle | 2 | forward_bundle ×2 (1 partial: description fallback) |
 | (49, 33) app/mini program | 1 | mini_program |
-| (49, 57) app/quote | 1 | text + reply snapshot |
+| (49, 57) app/quote | 5 | text + reply snapshot ×5 (1 resolved by the archive after the M2c slice, section 11) |
 | (49, 87) app/unmodeled | 1 | app_share partial (D3) |
 | (49, 101) app envelope w/o appmsg | 1 | unknown partial (U2) |
 | (49, 2000) app/red packet | 2 | red_packet ×2 (amount only when readable, D2) |
@@ -150,7 +152,7 @@ are pinned by `EveryCorpusRecordReachesTheCanonicalBoundaryWithItsCodesPreserved
 | (42, 0) contact card | 1 | contact_card |
 | (48, 0) location | 1 | location |
 | (50, 0) VoIP | 1 | system (event voip) |
-| (10000, 0) system | 2 | system (template), revoke |
+| (10000, 0) system | 3 | system (template), revoke ×2 (1 without a locally recorded newmsgid) |
 | (10002, 0) system extended | 1 | system |
 | (1000007, 0) unmodeled classic | 1 | unknown (U1) |
 | (1050001, 0) unmodeled classic | 1 | unknown (U1) |
@@ -162,22 +164,24 @@ Five wire outcomes land in `unknown` (U1 ×2, U2, U3, U4); none is dropped.
 | Metric | Count |
 | --- | --- |
 | Partial records | 12 (`voice_direct_untimed`, `file_direct_unnamed`, `appshare_unmodeled_subtype`, `transfer_without_amount`, `groupcollect_unsampled_shape`, `unknown_classic_type`, `app_without_appmsg`, `app_malformed_xml`, `bundle_group_description_fallback`, `voice_group_untimed`, `unknown_classic_system`, `paycard_titleless_unknown`) |
-| Complete records | 25 |
+| Complete records | 32 |
 | `unknown_message_type` diagnostics | 5 (upstream codes preserved per record: 1000007/0, 49/101, 49/5, 1050001/0, 49/2005) |
 | `partial_app_message` diagnostics | 7 (34/0 ×2, 49/6, 49/87, 49/2001, 49/19, 49/2003) |
-| `unresolved_reply_target` diagnostics | 0 (the corpus quote carries a locally available snapshot) |
+| `unresolved_reply_target` diagnostics | 0 (every corpus quote carries a locally available snapshot) |
+| `reply_snapshot_only` diagnostics (Info) | 1 (the M2c corpus quote whose target is archived under a server id resolves; section 11) |
 
 After M2b the partial set differs from the M2a baseline only by additive records and the
 D1 reclassification: `transfer_unclassified` left the partial set (now a complete
 `transfer`, D1); the additive `transfer_without_amount`, `groupcollect_unsampled_shape`
 (D1 boundary: non-2001 pay card) and `paycard_titleless_unknown` (U4) entered it. The
-partial 49/2001 record is `transfer_without_amount`.
+partial 49/2001 record is `transfer_without_amount`. The M2c additive records introduce no
+new partial or unknown outcomes.
 
 ### 4.5 Export-manifest counters (real pipeline run)
 
 The corpus is imported through `ImportService` and exported through
 `JsonlDatasetExporter` into a fresh SQLite archive; the manifests aggregate to:
-`record_count` 37, `unknown_count` 5, `partial_count` 12, `unsupported_count` 5
+`record_count` 44, `unknown_count` 5, `partial_count` 12, `unsupported_count` 5
 (`unsupported_count` mirrors `unknown_count` by exporter contract). Two independent
 archive-and-export runs produce byte-identical JSONL datasets and identical counters.
 
@@ -186,7 +190,9 @@ archive-and-export runs produce byte-identical JSONL datasets and identical coun
 - Quote/reply: `reply_to.sender_name` (张三), `reply_to.text` (下午三点开会。), resolved
   canonical `sender_id` and the quoted record's `createtime` are preserved;
   `reply_to.message_id` stays null at normalization and is filled only by the archive
-  backfill pass when the target is present (docs/MESSAGE_SCHEMA.md section 6).
+  backfill pass when the target is present (docs/MESSAGE_SCHEMA.md section 6). Since the
+  M2c slice (Issue #99) the adapter composes the upstream `svrid` into the documented
+  `s:<server_id>` identity space so the backfill pass can actually match an archived target.
 - Forward bundles: structured `recorditem` items are preserved with sender display names;
   a nested item of an unsupported datatype stays `unknown` inside the preserved bundle;
   the description-only fallback is explicitly partial; per-item `time` stays null because
@@ -245,6 +251,9 @@ Status after M2b (Issue #98, review round 1 applied): **D1, D2 and D4 are adopte
 as this matrix requires); **D3 stays the documented `app_share` fallback** — no concrete
 subtype was modeled with MESSAGE_SCHEMA backing; **D5 stays unadopted** — no real
 VoIP/system variants were sampled, so no code change is authorized.
+
+Status after M2c (Issue #99): **E1 is adopted** and **E2/E3 are documented and pinned**
+without behavior change — section 11 records the before/after evidence.
 
 ### M2b — special/unknown classification
 
@@ -380,9 +389,10 @@ the offline import → archive → export run stays byte-deterministic.
 
 - The pinned values live in
   `SemanticBaselineTests.CorpusClassificationMatchesThePinnedBaselineReport` and
-  `OfflineImportArchiveExportIsByteDeterministicAndCountsUnknowns`; they match
-  sections 4.1–4.5 above after the additive corpus extension (37 records; the four new
-  records are appended, no existing record id was mutated or repurposed).
+  `OfflineImportArchiveExportIsByteDeterministicAndCountsUnknowns`; after the additive M2b
+  corpus extension they matched this document's tables (37 records at the time of that
+  slice; 44 after the M2c extension in section 11). The four new M2b
+  records are appended, no existing record id was mutated or repurposed.
 - New/updated unit coverage: `WeChatContentParserTests` (transfer with/without readable
   amount; fragmentary and decorated fee descriptions rejected; transfer classification
   bounded to the sampled subtype incl. the app_share/unknown fallbacks for other pay-card
@@ -395,3 +405,98 @@ the offline import → archive → export run stays byte-deterministic.
 - No architecture change: decoding stays in `src/WeArchive.Infrastructure/WeChat/Parsers`,
   domain semantics in `WeArchive.Core/Normalization`; reliability levels unchanged
   (R1 capture / R2 conversation ingest / R0 read-only query).
+
+## 11. M2c update: reply/quote/forward reference resolution (Issue #99)
+
+The M2c slice ([Issue #99](https://github.com/lybym/WeArchive/issues/99), Roadmap M2c,
+PRD FR-24/25) adopts E1 and documents E2/E3 from the section 7 matrix. All changes keep
+the section 2 preservation invariants green: no record is dropped, unknown stays explicit
+with preserved codes, unavailable fields stay null, and the offline import → archive →
+export run stays byte-deterministic.
+
+### 11.1 E1 (P1) — reply references resolve against the archive (adopted)
+
+- Before: `ParseReply` returned the raw upstream `<refermsg><svrid>` and every adapter kept
+  it verbatim in `reply_source_message_id`, while target rows are archived under the
+  documented composite identities (`s:<server_id>` / `l:<partition>:<local_id>`,
+  DATA_MODEL section 16.2). The two identity spaces can never intersect, so the archive's
+  resolution pass (`ResolveReplyTargetsAsync`) could not match anything for WeChat data:
+  the measured baseline was `reply_to.message_id` = null for every quote, and the
+  `WeChatWindowsSourceAdapter.BuildReplySourceMessageId` helper that documents the intended
+  composition was dead code.
+- After: `WeChatWindowsSourceAdapter.ComposeReplyReference` composes the parser's raw svrid
+  verbatim into the `s:<server_id>` form at the adapter boundary (both the live and the
+  captured-reader path flow through `ReadMessagesAsync`). The reference is now in the same
+  identity space as the archived target, so the existing conversation-scoped resolution
+  pass resolves it. No numeric interpretation, lookup or content matching is added; a
+  reference that exists is wrapped, a missing one stays null.
+- Corpus evidence (additive; no existing record id was mutated or repurposed): seven new
+  records form the positive/negative reference matrix —
+  `m2c_quote_target_text` + `m2c_quote_resolved` (resolved pair; the target carries a
+  server id, the quote's svrid matches it), `m2c_quote_target_absent` (svrid names no
+  archived record), `m2c_quote_target_unaddressable` + `m2c_quote_unaddressable_target`
+  (a record with the exact quoted text exists but carries no server id, proving the
+  resolver does not fall back to content matching), `m2c_quote_without_svrid` (malformed
+  reference; snapshot retained), and `m2c_revoke_without_newmsgid` (E2). The corpus adapter
+  now archives server-id-carrying records under `s:<server_id>` exactly like the shipped
+  adapter; all other records keep their pre-existing `sb:<record_id>` test identity.
+- Quantified delta: total records 37 → 44 (text 6 → 12 — the two addressable-target text
+  records plus four more 49/57 quotes that normalize to text, all additive; revoke 1 → 2;
+  all other type counts unchanged); partial records 12 → 12; `unknown` 5 → 5; every
+  `unresolved_reply_target` diagnostic count 0 → 0 (all sampled quotes keep snapshots);
+  resolved reply targets in the offline pipeline run 0 → 1 (`reply_snapshot_only` Info
+  diagnostic 0 → 1). The M2a-pinned canonical outcomes of every pre-existing record are
+  unchanged; only the pinned upstream reference *form* changed from raw svrid to the
+  composed `s:` form (asserted by `QuoteSnapshotsArePreservedWithoutFabricatingATargetId`).
+- Rollout: `WeChatWindowsSourceAdapter.Version` 0.2.0 → 0.3.0 (the documented load-bearing
+  bump). The next ingest re-scans conversations and re-imports them idempotently: the
+  upsert stores the composed reference, the NULL-safe CASE clears any stale resolved
+  target when the reference changes (DATA_MODEL section 8.7), and the backfill pass
+  re-resolves. Outcomes are deterministic under incremental ingest and offline rebuild.
+
+### 11.2 E2 (P2) — revoke target linkage (documented, pinned; no behavior change)
+
+The sampled evidence does not establish that a revokemsg `<newmsgid>` equals the server id
+(or any archived identity) of the revoked record, and the bounded requirement forbids
+guessing. The shipped behavior therefore stays exactly as measured and is now documented
+in MESSAGE_SCHEMA section 14: `revoked_message_id` is the deterministic derivation over
+the locally recorded `newmsgid` (`StableIds.Message(conversation, newmsgid)`), it stays
+`null` when the record carries no `<newmsgid>`, and the archive deliberately runs no
+resolution pass over revoke payloads. Consumers must treat a derived value that matches no
+archived message as unresolved rather than following it as a canonical link. Pinned by
+`RevokeTargetFollowsTheDocumentedNullFallback`, `RevokeMessagesBecomeRevokeEvents`,
+`RevokeWithANewmsgidDerivesTheDeterministicTargetValue` and
+`RevokeKeepsOperatorAndNoInventedContent`. Aligning the linkage to real evidence remains
+future work that needs real captured samples.
+
+### 11.3 E3 (P3) — forwarded-bundle nested timestamps stay null
+
+No change, exactly as the matrix requires: WeChat 4.x does not persist per-item
+timestamps, the parser keeps `items[].time` null (MESSAGE_SCHEMA section 12), and the
+round-trip/export test asserts the nulls survive export (`ForwardBundlesPreserveNestedTextIncludingUnknownItems`,
+the bundle assertions in `ReplyTargetsResolveInTheFullPipelineWithoutCrossIdentityGuessing`).
+A future source that persists item times is a new corpus scenario, not a data change.
+
+### 11.4 Verification and governance
+
+- Pinned values live in `SemanticBaselineTests.CorpusClassificationMatchesThePinnedBaselineReport`
+  and `OfflineImportArchiveExportIsByteDeterministicAndCountsUnknowns`; they match
+  sections 4.1–4.5 after the additive corpus extension (44 records).
+- New/updated coverage beyond the corpus pins: `WeChatContentParserTests` (refermsg
+  without svrid; verbatim non-numeric svrid; revoke with/without newmsgid),
+  `WeChatMessageShardTests.ReplyReferencesAreComposedIntoTheServerIdIdentitySpace`
+  (adapter-level composition across a rotation-window boundary, live and captured path),
+  `SqliteArchiveStoreTests.ReplyTargetResolvesAcrossShardPartitionsWithinOneConversation`
+  and `ReplyResolutionNeverLinksAcrossConversations` (no cross-conversation wrong-target
+  linking), and the full-pipeline matrix in `SemanticBaselineTests`.
+- No persisted-schema change: `reply_source_message_id` already exists; only the values
+  stored for newly imported WeChat records change form, covered by the version-bump
+  re-import path. No migration or migration test is required.
+- No canonical message-schema change: the exported envelope is unchanged (`message_id`
+  semantics were already "null while unresolved"); MESSAGE_SCHEMA sections 6 and 14
+  document the resolution identity and the revoke fallback in the same PR.
+- No architecture change: the composition lives in the WeChat adapter boundary
+  (`src/WeArchive.Infrastructure/WeChat`); the archive, normalizer and exporter are
+  source-neutral and unchanged. Reliability levels unchanged (R1 capture / R2 conversation
+  ingest / R0 read-only query); the version bump reuses the existing documented
+  checkpoint-invalidation mechanism, adding no journal, marker or recovery state.

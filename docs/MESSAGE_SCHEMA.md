@@ -190,6 +190,18 @@ referenced record is present, on insert and through a backfill pass for records 
 The upstream identifier used for that resolution is retained inside the archive and is never
 exported, so an unresolved reply exports as `message_id: null` plus whatever snapshot exists.
 
+Resolution identity (baseline defect E1, [Issue #99](https://github.com/lybym/WeArchive/issues/99)):
+the source adapter addresses the reference with the same documented composite upstream message
+identity it archives records under (`s:<server_id>` when the wire record carries a server id,
+otherwise the partition-local composite — DATA_MODEL section 16.2). A WeChat 4.x quote's
+`<refermsg><svrid>` is therefore composed into the server-id form instead of being stored raw;
+an unwrapped svrid can never equal an archived identity, which made resolution unreachable.
+Resolution matches archived records of the same conversation only (no cross-conversation
+linking) by that upstream identity and never by content similarity. A reference stays
+unresolved — `message_id: null` with the snapshot retained — when the referenced record was
+never archived, when its row carries no server id (addressable only by its partition-local
+composite), or when the wire record itself carries no reference. The target is never invented.
+
 This supports both conversation graph analysis and semantic fallback when historical source data is incomplete.
 
 ---
@@ -448,6 +460,15 @@ Possible normalized system events may include:
 ```
 
 Retain revoked content only when it is legitimately available in the local archived/source state. Do not infer or reconstruct unavailable content.
+
+Revoke-target semantics (baseline defect E2, [Issue #99](https://github.com/lybym/WeArchive/issues/99)):
+`revoked_message_id` is a deterministic derivation over the upstream `<newmsgid>` the revoke
+record carries; it stays `null` when the record carries no `<newmsgid>`. The sampled evidence
+does not establish that a revokemsg `newmsgid` equals the server-id (or any) archived identity
+of the revoked record, so the archive deliberately runs no resolution pass over revoke
+payloads and the derived value must not be followed as a canonical link when it matches no
+archived message. No target identity is ever invented, and the linkage is neither aligned nor
+claimed until real evidence samples it.
 
 ---
 

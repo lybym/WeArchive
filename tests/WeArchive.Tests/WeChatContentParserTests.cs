@@ -399,6 +399,50 @@ public sealed class WeChatContentParserTests
     }
 
     [Fact]
+    public void QuoteWithoutSvridKeepsTheSnapshotWithoutAReference()
+    {
+        // A refermsg with no svrid carries no addressable upstream reference. The parser must
+        // keep the locally available snapshot and leave the reference null rather than
+        // inventing one; composing the archive-side `s:` identity is the adapter's decision
+        // and only applies to a reference that exists (Issue #99).
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppQuote,
+            """
+            <msg><appmsg><title>继续讨论</title><refermsg>
+            <fromusr>wxid_bob</fromusr><displayname>Kevin</displayname>
+            <content>没有服务端引用号的引用</content><createtime>1776678109</createtime>
+            <type>1</type></refermsg><type>57</type></appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.Text, parsed.Content.Kind);
+        Assert.NotNull(parsed.Reply);
+        Assert.Null(parsed.Reply!.SourceMessageId);
+        Assert.Equal("wxid_bob", parsed.Reply.SenderSourceId);
+        Assert.Equal("没有服务端引用号的引用", parsed.Reply.Text);
+    }
+
+    [Fact]
+    public void QuoteSvridIsPreservedVerbatimWithoutNumericInterpretation()
+    {
+        // The upstream svrid is wrapped verbatim downstream (adapter-level); the parser never
+        // parses, reformats or drops an unexpected reference value (Issue #99).
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppQuote,
+            """
+            <msg><appmsg><title>引用格式异常</title><refermsg>
+            <svrid>not-a-numeric-server-id</svrid><fromusr>wxid_bob</fromusr>
+            <displayname>Kevin</displayname><content>原文</content>
+            <createtime>1776678109</createtime><type>1</type></refermsg>
+            <type>57</type></appmsg></msg>
+            """);
+
+        Assert.NotNull(parsed.Reply);
+        Assert.Equal("not-a-numeric-server-id", parsed.Reply!.SourceMessageId);
+    }
+
+    [Fact]
     public void ForwardBundleKeepsNestedItemsWithoutInventingSenders()
     {
         var parsed = Parse(
@@ -437,6 +481,19 @@ public sealed class WeChatContentParserTests
 
         Assert.Equal(SourceContentKind.Revoke, parsed.Content.Kind);
         Assert.Equal("你撤回了一条消息", parsed.Content.SystemText);
+        // No locally recorded newmsgid: no addressable target (baseline E2 null-fallback, Issue #99).
+        Assert.Null(parsed.Content.RevokedSourceMessageId);
+
+        var withNewMsgId = Parse(
+            WeChat4Schema.TypeSystem,
+            0,
+            """
+            <?xml version="1.0"?><sysmsg type="revokemsg"><revokemsg>
+            <newmsgid>954009715970562000</newmsgid><content>你撤回了一条消息</content>
+            <revoketime>1757323696</revoketime></revokemsg></sysmsg>
+            """);
+
+        Assert.Equal("954009715970562000", withNewMsgId.Content.RevokedSourceMessageId);
     }
 
     [Fact]

@@ -30,10 +30,14 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
 
     // Load-bearing bump: RawVaultIngestService skips a conversation only while its checkpoint
     // carries the current reader version, so raising this version invalidates every existing
-    // ingest checkpoint and the next ingest re-scans and backfills conversations whose history
-    // spans rotated message shards (Issue #71). 0.1.0 read a single rotation window per
-    // conversation; 0.2.0 reads all of them.
-    public const string Version = "0.2.0";
+    // ingest checkpoint and the next ingest re-scans and re-imports affected conversations
+    // (Issue #71). 0.1.0 read a single rotation window per conversation; 0.2.0 reads all of
+    // them; 0.3.0 rewrites reply references from the raw upstream svrid into the documented
+    // composite `s:<server_id>` form so the archive's reply-resolution pass can actually match
+    // them (Issue #99, docs/DATA_MODEL.md sections 8.7 and 16.2). The re-import is idempotent:
+    // the upsert clears a stale resolved target whenever the reference changes and the backfill
+    // pass re-resolves it against the archived record.
+    public const string Version = "0.3.0";
 
     private readonly IWeChatDatabaseKeyAcquirer _keyAcquirer;
     private readonly Lock _gate = new();
@@ -266,7 +270,7 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
                 SourceMessageId = BuildSourceMessageId(row),
                 SourceOrderKey = row.LocalId.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 Content = parsed.Content,
-                Reply = parsed.Reply,
+                Reply = ComposeReplyReference(parsed.Reply),
             };
 
             // The reader is synchronous; yielding periodically keeps cancellation responsive
@@ -324,6 +328,24 @@ public sealed class WeChatWindowsSourceAdapter : ISourceAdapter, IDisposable
     /// Referenced messages are addressed by server id, matching <see cref="BuildSourceMessageId"/>.
     /// </summary>
     public static string BuildReplySourceMessageId(string serverId) => $"s:{serverId}";
+
+    /// <summary>
+    /// Puts the parser's raw upstream <c>&lt;refermsg&gt;&lt;svrid&gt;</c> value into the same
+    /// composite identity space the adapter archives target messages under
+    /// (<c>s:&lt;server_id&gt;</c>, docs/DATA_MODEL.md sections 8.7 and 16.2), which is what
+    /// makes the archive's reply-resolution pass able to match it (Issue #99).
+    /// <para>
+    /// The svrid is wrapped verbatim — no numeric interpretation, no lookup, no invented id.
+    /// A reference never resolves to a target whose row carries no server id (addressable only
+    /// as the partition-local <c>l:</c> composite) or whose record is absent; such replies stay
+    /// unresolved with their snapshot instead of being guessed. Resolution itself happens
+    /// inside the archive, scoped to the same conversation.
+    /// </para>
+    /// </summary>
+    public static SourceReplySnapshot? ComposeReplyReference(SourceReplySnapshot? reply) =>
+        reply is null || reply.SourceMessageId is null
+            ? reply
+            : reply with { SourceMessageId = BuildReplySourceMessageId(reply.SourceMessageId) };
 
     private static string? ResolveTitle(WeChatContactRow? contact, string userName)
     {

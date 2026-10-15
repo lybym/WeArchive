@@ -12,13 +12,21 @@ namespace WeArchive.Tests.Support;
 /// <param name="Type">Upstream <c>local_type</c> low 32 bits (classic type code).</param>
 /// <param name="SubType">Upstream <c>local_type</c> high bits (app subtype).</param>
 /// <param name="Content">Raw message content exactly as stored in the shard column.</param>
+/// <param name="ServerId">
+/// Upstream <c>server_id</c> column value the shard row would carry (additive M2c field,
+/// Issue #99). When present the test adapter archives the record under the documented
+/// <c>s:&lt;server_id&gt;</c> composite identity (docs/DATA_MODEL.md section 16.2) exactly like
+/// the shipped WeChat adapter; records without one keep their pre-existing
+/// <c>sb:&lt;record_id&gt;</c> test identity, so no existing record id is mutated.
+/// </param>
 public sealed record SemanticBaselineRecord(
     string RecordId,
     string SourceConversationId,
     string? SenderSourceUserId,
     int Type,
     int SubType,
-    string? Content);
+    string? Content,
+    long? ServerId = null);
 
 /// <summary>
 /// Deterministic, privacy-safe synthetic WeChat 4.x wire corpus for the M2a semantic
@@ -85,6 +93,27 @@ public static class SemanticBaselineCorpus
             """<msg><appmsg><title>商品详情</title><des>XX商城</des><weappinfo><pagepath>pages/product?id=123</pagepath><appid>wx1234567890abcd</appid></weappinfo><sourcedisplayname>XX商城</sourcedisplayname><type>33</type></appmsg></msg>"""),
         new("quote_direct", DirectConversation, "wxid_bob", 49, 57,
             """<msg><appmsg><title>我同意这个方案</title><refermsg><svrid>954009715970562000</svrid><fromusr>wxid_bob</fromusr><displayname>张三</displayname><content>下午三点开会。</content><createtime>1776678109</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>"""),
+        // ---- M2c reply/quote reference matrix (additive, Issue #99) -------------------
+        // The resolved pair: the target row carries a server id, so the quote's svrid
+        // resolves against the archived `s:<server_id>` identity after the backfill pass.
+        new("m2c_quote_target_text", DirectConversation, "wxid_bob", 1, 0, "上午十点评审。",
+            ServerId: 954009715971000100),
+        new("m2c_quote_resolved", DirectConversation, "wxid_bob", 49, 57,
+            """<msg><appmsg><title>收到，我准时到。</title><refermsg><svrid>954009715971000100</svrid><fromusr>wxid_bob</fromusr><displayname>张三</displayname><content>上午十点评审。</content><createtime>1776678209</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>"""),
+        // A reference whose target was never archived: the svrid names no record anywhere.
+        // The snapshot stays, the target stays null, nothing is invented.
+        new("m2c_quote_target_absent", DirectConversation, "wxid_bob", 49, 57,
+            """<msg><appmsg><title>这条我补充一下</title><refermsg><svrid>954009715971000200</svrid><fromusr>wxid_bob</fromusr><displayname>李四</displayname><content>一条没有落库的引用</content><createtime>1776678309</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>"""),
+        // The unaddressable-target negative case: a text record with the exact quoted text
+        // exists but carries no server id (addressable only by its partition-local composite),
+        // so the resolver has no identity to match and must NOT fall back to content matching.
+        new("m2c_quote_target_unaddressable", DirectConversation, "wxid_bob", 1, 0, "这版PPT我晚上发你。"),
+        new("m2c_quote_unaddressable_target", DirectConversation, "wxid_bob", 49, 57,
+            """<msg><appmsg><title>好的。</title><refermsg><svrid>954009715971000300</svrid><fromusr>wxid_bob</fromusr><displayname>王五</displayname><content>这版PPT我晚上发你。</content><createtime>1776678409</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>"""),
+        // A malformed reference: the refermsg carries no svrid at all, so nothing is
+        // addressable; the locally available snapshot is still preserved verbatim.
+        new("m2c_quote_without_svrid", DirectConversation, "wxid_bob", 49, 57,
+            """<msg><appmsg><title>继续讨论</title><refermsg><fromusr>wxid_bob</fromusr><displayname>张三</displayname><content>没有服务端引用号的引用</content><createtime>1776678509</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>"""),
         new("location_direct", DirectConversation, "wxid_bob", 48, 0,
             """<msg><location poiname="南京南站" label="南京市雨花台区" x="31.968" y="118.796" address="南京市雨花台区示例路1号" /></msg>"""),
         new("contactcard_direct", DirectConversation, "wxid_bob", 42, 0,
@@ -122,6 +151,10 @@ public static class SemanticBaselineCorpus
             """<sysmsg type="sysmsgtemplate"><sysmsgtemplate><content_template><![CDATA["$username$"邀请"$invitee$"加入了群聊]]></content_template><link_list><link name="username"><title>张三</title></link><link name="invitee"><title>李四</title></link></link_list></sysmsgtemplate></sysmsg>"""),
         new("revoke_group", GroupConversation, null, 10000, 0,
             """<sysmsg type="revokemsg"><revokemsg session="wxid_alice"><newmsgid>954009715970562000</newmsgid><content>你撤回了一条消息</content><revoketime>1776678109</revoketime></revokemsg></sysmsg>"""),
+        // M2c E2 null-fallback (Issue #99): a revoke whose wire record carries no <newmsgid>
+        // has no addressable target at all; the payload's revoked_message_id stays null.
+        new("m2c_revoke_without_newmsgid", GroupConversation, null, 10000, 0,
+            """<sysmsg type="revokemsg"><revokemsg session="wxid_carol"><content>王五撤回了一条消息</content><revoketime>1776678609</revoketime></revokemsg></sysmsg>"""),
         new("voice_group_untimed", GroupConversation, "wxid_carol", 34, 0, "wxid_carol:\n<msg><voicemsg voiceformat=\"4\" /></msg>"),
 
         // ---- official-account conversation (gh_example_news) --------------------------

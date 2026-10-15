@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
+using WeArchive.Infrastructure.WeChat;
 using WeArchive.Infrastructure.WeChat.Compatibility;
 using WeArchive.Infrastructure.WeChat.Parsers;
 
@@ -120,6 +121,14 @@ public sealed class SemanticBaselineSourceAdapter : ISourceAdapter
     /// Converts the corpus records of one conversation into source messages by running the
     /// shipped wire parser. The sender is the parser's group-prefix hint when present and
     /// the corpus sender otherwise; neither is invented.
+    /// <para>
+    /// Identities follow the shipped WeChat adapter contract (docs/DATA_MODEL.md section 16.2):
+    /// a record carrying a server id is archived under <c>s:&lt;server_id&gt;</c>, every other
+    /// record keeps the test corpus's stable <c>sb:&lt;record_id&gt;</c> identity. The reply
+    /// reference is composed through the same
+    /// <see cref="WeChatWindowsSourceAdapter.ComposeReplyReference"/> rule the shipped adapter
+    /// applies, so the corpus measures the real resolution boundary (Issue #99).
+    /// </para>
     /// </summary>
     public static IReadOnlyList<SourceMessage> BuildMessages(string sourceConversationId)
     {
@@ -153,15 +162,25 @@ public sealed class SemanticBaselineSourceAdapter : ISourceAdapter
                 SourceType = record.Type.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 SourceSubtype = record.SubType.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 SourcePartition = "message_0",
-                SourceMessageId = $"sb:{record.RecordId}",
+                SourceMessageId = SourceMessageIdFor(record),
                 SourceOrderKey = index.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 Content = parsed.Content,
-                Reply = parsed.Reply,
+                Reply = WeChatWindowsSourceAdapter.ComposeReplyReference(parsed.Reply),
             });
         }
 
         return messages;
     }
+
+    /// <summary>
+    /// The upstream identity the test adapter archives a corpus record under: the documented
+    /// <c>s:&lt;server_id&gt;</c> composite when the record carries a server id, the corpus
+    /// identity <c>sb:&lt;record_id&gt;</c> otherwise (docs/DATA_MODEL.md section 16.2).
+    /// </summary>
+    public static string SourceMessageIdFor(SemanticBaselineRecord record) =>
+        record.ServerId is > 0
+            ? $"s:{record.ServerId}"
+            : $"sb:{record.RecordId}";
 
     /// <summary>Fixed epoch so every derived timestamp — and therefore every export — is reproducible.</summary>
     public static readonly DateTimeOffset Base = new(2026, 9, 13, 14, 0, 0, TimeSpan.FromHours(8));
