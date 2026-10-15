@@ -159,6 +159,14 @@ Initial searchable material should include at least:
 
 FTS is rebuildable from `wearchive.db` and is not an archival source of truth.
 
+The M3b-0 specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) fixes this contract before
+implementation: the searchable-field inventory, a deterministic CJK bigram projection as the index
+input (so 2-character Chinese queries such as `模型` and mixed terms such as `AI玩具` match),
+term/phrase/prefix matching with implicit AND, `bm25` ranking with the canonical timeline order as
+tie-break, conversation/Collection/time/participant/type filters, opaque cursor pagination, and a
+derived R0 index lifecycle (forward migration, same-transaction maintenance, deterministic rebuild
+from canonical rows only). Search itself is not implemented yet.
+
 ## 8. Collections as a shared scope abstraction
 
 A Collection is one named reusable set of stable conversation IDs.
