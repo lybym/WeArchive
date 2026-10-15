@@ -435,16 +435,25 @@ internal static partial class WeChatContentParser
                     break;
 
                 default:
-                    if (WeChatXml.Element(appMsg, "wcpayinfo") is { } wcpayInfo)
+                    if (WeChatXml.Element(appMsg, "wcpayinfo") is { } payCard
+                        && (title?.Contains("红包", StringComparison.Ordinal) ?? false))
                     {
-                        // A pay card carries its money semantics locally: a red-packet card is
-                        // identified by its red-packet title, every other pay card is a
-                        // transfer (docs/MESSAGE_SCHEMA.md sections 4 and 15, baseline
-                        // defect D1). Unreadable financial fields stay null instead of
-                        // being guessed.
-                        result = title?.Contains("红包", StringComparison.Ordinal) ?? false
-                            ? ParseRedPacket(wcpayInfo)
-                            : ParseTransfer(wcpayInfo);
+                        // The shipped red-packet rule is unchanged: the red-packet title
+                        // identifies the card (baseline defect D2 only adds the readable
+                        // amount). Unreadable financial fields stay null instead of being
+                        // guessed.
+                        result = ParseRedPacket(payCard);
+                    }
+                    else if (appType == WeChat4Schema.AppTransfer
+                             && WeChatXml.Element(appMsg, "wcpayinfo") is { } transferCard)
+                    {
+                        // Baseline defect D1, bounded to the sampled shape
+                        // (docs/SEMANTIC_QUALITY_BASELINE.md section 7): only the 49/2001
+                        // pay card is classified as transfer; every other wcpayinfo shape
+                        // keeps the documented app_share/unknown fallbacks below instead of
+                        // being guessed into a more specific type
+                        // (docs/MESSAGE_SCHEMA.md section 4).
+                        result = ParseTransfer(transferCard);
                     }
                     else if (title is not null || description is not null || url is not null)
                     {
@@ -508,11 +517,11 @@ internal static partial class WeChatContentParser
     }
 
     /// <summary>
-    /// A local pay card that is not a red packet is a transfer (docs/MESSAGE_SCHEMA.md
-    /// section 4: a record only becomes <c>transfer</c> when the local record carries the
-    /// semantics that identify it; baseline defect D1). Financial fields are preserved only
-    /// when they are reliably readable; the title/description of the card is deliberately
-    /// not copied into the transfer payload.
+    /// The sampled 49/2001 pay card is a transfer (docs/MESSAGE_SCHEMA.md section 4: a
+    /// record only becomes <c>transfer</c> when the local record carries the semantics that
+    /// identify it; baseline defect D1). Financial fields are preserved only when they are
+    /// reliably readable; the title/description of the card is deliberately not copied into
+    /// the transfer payload.
     /// </summary>
     private static SourceMessageContent ParseTransfer(XElement wcpayInfo)
     {
@@ -541,8 +550,9 @@ internal static partial class WeChatContentParser
 
     /// <summary>
     /// Amounts are read from the locally recorded fee description only when it is a plain
-    /// unsigned decimal such as <c>200.00</c>. Decorated forms (currency symbols, thousands
-    /// separators) are not sampled yet and stay null rather than being guessed
+    /// unsigned decimal with a non-empty integer part, such as <c>200.00</c> or <c>200</c>.
+    /// Decorated forms (currency symbols, thousands separators) and fragmentary forms
+    /// (<c>.50</c>, <c>200.</c>) are not accepted and stay null rather than being guessed
     /// (docs/MESSAGE_SCHEMA.md section 15).
     /// </summary>
     private static string? ReadPlainAmount(string? feedesc)
@@ -553,13 +563,21 @@ internal static partial class WeChatContentParser
         }
 
         var candidate = feedesc.Trim();
-        var digits = 0;
+        var digitsBeforeDot = 0;
+        var digitsAfterDot = 0;
         var dots = 0;
         foreach (var ch in candidate)
         {
             if (char.IsAsciiDigit(ch))
             {
-                digits++;
+                if (dots > 0)
+                {
+                    digitsAfterDot++;
+                }
+                else
+                {
+                    digitsBeforeDot++;
+                }
             }
             else if (ch == '.')
             {
@@ -574,7 +592,10 @@ internal static partial class WeChatContentParser
             }
         }
 
-        return digits > 0 ? candidate : null;
+        // "200" and "200.00" are plain decimals; ".50", "200." and "." are not.
+        return dots == 1 && (digitsBeforeDot == 0 || digitsAfterDot == 0)
+            ? null
+            : digitsBeforeDot > 0 ? candidate : null;
     }
 
     private static SourceMessageContent BuildLink(string? title, string? description, string? url)

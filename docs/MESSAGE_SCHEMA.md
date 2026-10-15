@@ -394,9 +394,14 @@ Rules:
   timestamp, and a missing time must stay null rather than being replaced by the bundle's own
   time or by an inferred value;
 - when the structured item list is unavailable and nested items are recovered from the
-  summary description instead, the record stays explicitly partial and carries the
-  parser-level diagnostic `forward_bundle_description_fallback`; the ingest-level partial
-  diagnostic remains `partial_app_message`.
+  summary description instead, the parser marks that fallback with the parser-level code
+  `forward_bundle_description_fallback`. The record stays explicitly partial only when the
+  structured list could not be parsed at all; the existing outcome is unchanged otherwise
+  (for example, a parsable record info without data items recovers its items from the
+  summary and is not flagged partial). The code is parser-level observability only — the
+  ingest-level partial diagnostic remains `partial_app_message`, and the parser-level code
+  does not appear in archive artifacts or exports; propagating it downstream would be a
+  separate, documented contract decision.
 
 ---
 
@@ -494,8 +499,9 @@ Financial attributes are optional. Preserve them only when their semantics are r
 Field rules (baseline defects D1/D2, measured in `docs/SEMANTIC_QUALITY_BASELINE.md`):
 
 - `amount` is recorded only when the locally recorded fee description is a plain unsigned
-  decimal such as `200.00`. Decorated forms — currency symbols, thousands separators — are
-  not sampled yet and stay `null` rather than being parsed or estimated.
+  decimal with a non-empty integer part, such as `200.00` or `200`. Fragmentary forms
+  (`.50`, `200.`) and decorated forms — currency symbols, thousands separators — are not
+  accepted and stay `null` rather than being parsed or estimated.
 - `currency` and `status` are reserved for locally recorded evidence; they stay `null` until
   a sampled source field reliably carries them.
 - A transfer whose amount cannot be read stays an explicitly partial record; a red packet

@@ -207,6 +207,82 @@ public sealed class WeChatContentParserTests
         Assert.True(parsed.Content.IsPartial);
     }
 
+    [Theory]
+    [InlineData(".50")]
+    [InlineData("200.")]
+    [InlineData(".")]
+    public void TransferAmountRequiresDigitsOnBothSidesOfTheDecimalPoint(string feedesc)
+    {
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppTransfer,
+            $"""
+            <msg><appmsg><title>转账给李四</title><type>2001</type>
+            <wcpayinfo><paysubtype>3</paysubtype><feedesc>{feedesc}</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        // Fragmentary decimals are outside the documented plain-decimal grammar
+        // (docs/MESSAGE_SCHEMA.md section 15): the amount stays null instead of guessing.
+        Assert.Equal(SourceContentKind.Transfer, parsed.Content.Kind);
+        Assert.Null(parsed.Content.Amount);
+        Assert.True(parsed.Content.IsPartial);
+    }
+
+    [Fact]
+    public void TransferClassificationIsBoundedToTheSampledSubtype()
+    {
+        // Review round 1 (P1-1): only the sampled 49/2001 pay card is transfer. Any other
+        // wcpayinfo subtype keeps the documented app_share partial fallback, and a pay card
+        // without title/description/url stays the explicit unknown fallback — the card type
+        // is never guessed from the pay payload alone (docs/SEMANTIC_QUALITY_BASELINE.md
+        // section 7, D1 bounded requirement).
+        var unsampled = Parse(
+            WeChat4Schema.TypeApp,
+            2003,
+            """
+            <msg><appmsg><title>群收款卡片占位</title><type>2003</type>
+            <wcpayinfo><paysubtype>4</paysubtype><feedesc>100.00</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.AppShare, unsampled.Content.Kind);
+        Assert.True(unsampled.Content.IsPartial);
+        Assert.Equal("群收款卡片占位", unsampled.Content.Title);
+        Assert.Null(unsampled.Content.Amount);
+
+        var titleless = Parse(
+            WeChat4Schema.TypeApp,
+            2005,
+            """
+            <msg><appmsg><type>2005</type>
+            <wcpayinfo><paysubtype>5</paysubtype><feedesc>30.00</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.Unknown, titleless.Content.Kind);
+        Assert.True(titleless.Content.IsPartial);
+    }
+
+    [Fact]
+    public void RedPacketTitleBeatsTheTransferSubtype()
+    {
+        // The shipped red-packet rule is unchanged and keeps precedence inside the default
+        // branch: a wcpayinfo card whose title carries red-packet semantics stays a red
+        // packet even on the 2001 subtype.
+        var parsed = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppTransfer,
+            """
+            <msg><appmsg><title>收到一个红包</title><type>2001</type>
+            <wcpayinfo><paysubtype>3</paysubtype><feedesc>66.00</feedesc></wcpayinfo>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.RedPacket, parsed.Content.Kind);
+        Assert.Equal("66.00", parsed.Content.Amount);
+    }
+
     [Fact]
     public void RedPacketExposesTheReadableAmount()
     {
@@ -270,6 +346,32 @@ public sealed class WeChatContentParserTests
 
         Assert.Equal(SourceContentKind.ForwardBundle, structured.Content.Kind);
         Assert.Null(structured.DiagnosticCode);
+    }
+
+    [Fact]
+    public void EmptyStructuredForwardBundleFallsBackToTheDescriptionWithoutFlaggingPartial()
+    {
+        // Forward-bundle fallback path (b), review round 1 test gap 2: the structured
+        // recordinfo parses but carries no data items, so the nested items are recovered
+        // from the summary description. This is the pre-existing non-partial outcome, now
+        // pinned together with the same parser-level fallback marker as path (a).
+        var recovered = Parse(
+            WeChat4Schema.TypeApp,
+            WeChat4Schema.AppForwardBundle,
+            """
+            <msg><appmsg><title>仅摘要转发的聊天记录</title>
+            <des>张三: 第一版价格是不是太高了</des>
+            <type>19</type>
+            <recorditem><![CDATA[<recordinfo><title>项目讨论聊天记录</title></recordinfo>]]></recorditem>
+            </appmsg></msg>
+            """);
+
+        Assert.Equal(SourceContentKind.ForwardBundle, recovered.Content.Kind);
+        Assert.False(recovered.Content.IsPartial); // items were recovered; existing behavior
+        Assert.Single(recovered.Content.ForwardItems!);
+        Assert.Equal("张三", recovered.Content.ForwardItems![0].SenderName);
+        Assert.Equal("第一版价格是不是太高了", recovered.Content.ForwardItems[0].Text);
+        Assert.Equal(DiagnosticCodes.ForwardBundleDescriptionFallback, recovered.DiagnosticCode);
     }
 
     [Fact]
