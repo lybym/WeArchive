@@ -368,12 +368,13 @@ internal static partial class WeChatContentParser
             WeChatXml.NestedValue(appMsg, "weappinfo", "pagepath"),
             WeChatXml.NestedAttribute(appMsg, "weappinfo", "weappinfo", "pagepath"));
         var isPartial = false;
+        string? forwardBundleDiagnostic = null;
 
         SourceMessageContent result;
 
         if (WeChatXml.Element(appMsg, "recorditem") is not null)
         {
-            result = ParseForwardBundle(document, appMsg, title, description, appType);
+            (result, forwardBundleDiagnostic) = ParseForwardBundle(document, appMsg, title, description, appType);
         }
         else if (appType is WeChat4Schema.AppMiniProgram or WeChat4Schema.AppMiniProgramAlt
                  || (pagePath is not null && appId is not null))
@@ -430,14 +431,29 @@ internal static partial class WeChatContentParser
                     break;
 
                 case WeChat4Schema.AppForwardBundle:
-                    result = ParseForwardBundle(document, appMsg, title, description, appType);
+                    (result, forwardBundleDiagnostic) = ParseForwardBundle(document, appMsg, title, description, appType);
                     break;
 
                 default:
-                    if (WeChatXml.Element(appMsg, "wcpayinfo") is not null
+                    if (WeChatXml.Element(appMsg, "wcpayinfo") is { } payCard
                         && (title?.Contains("红包", StringComparison.Ordinal) ?? false))
                     {
-                        result = new SourceMessageContent { Kind = SourceContentKind.RedPacket };
+                        // The shipped red-packet rule is unchanged: the red-packet title
+                        // identifies the card (baseline defect D2 only adds the readable
+                        // amount). Unreadable financial fields stay null instead of being
+                        // guessed.
+                        result = ParseRedPacket(payCard);
+                    }
+                    else if (appType == WeChat4Schema.AppTransfer
+                             && WeChatXml.Element(appMsg, "wcpayinfo") is { } transferCard)
+                    {
+                        // Baseline defect D1, bounded to the sampled shape
+                        // (docs/SEMANTIC_QUALITY_BASELINE.md section 7): only the 49/2001
+                        // pay card is classified as transfer; every other wcpayinfo shape
+                        // keeps the documented app_share/unknown fallbacks below instead of
+                        // being guessed into a more specific type
+                        // (docs/MESSAGE_SCHEMA.md section 4).
+                        result = ParseTransfer(transferCard);
                     }
                     else if (title is not null || description is not null || url is not null)
                     {
@@ -470,11 +486,14 @@ internal static partial class WeChatContentParser
             }
         }
 
+        // A dedicated per-branch diagnostic (e.g. the forward-bundle description fallback)
+        // is more specific than the generic partial-app-message code; the ingest-level
+        // partial diagnostic is derived from IsPartial and is unchanged either way.
         return new ParsedWeChatContent(
             result with { IsPartial = result.IsPartial || isPartial },
             reply,
             senderHint,
-            isPartial ? DiagnosticCodes.PartialAppMessage : null);
+            forwardBundleDiagnostic ?? (isPartial ? DiagnosticCodes.PartialAppMessage : null));
     }
 
     private static SourceMessageContent ParseFile(XElement appMsg, string? title)
@@ -497,6 +516,88 @@ internal static partial class WeChatContentParser
         };
     }
 
+    /// <summary>
+    /// The sampled 49/2001 pay card is a transfer (docs/MESSAGE_SCHEMA.md section 4: a
+    /// record only becomes <c>transfer</c> when the local record carries the semantics that
+    /// identify it; baseline defect D1). Financial fields are preserved only when they are
+    /// reliably readable; the title/description of the card is deliberately not copied into
+    /// the transfer payload.
+    /// </summary>
+    private static SourceMessageContent ParseTransfer(XElement wcpayInfo)
+    {
+        var amount = ReadPlainAmount(WeChatXml.Value(wcpayInfo, "feedesc"));
+        return new SourceMessageContent
+        {
+            Kind = SourceContentKind.Transfer,
+            Amount = amount,
+            IsPartial = amount is null,
+        };
+    }
+
+    /// <summary>
+    /// Red packets keep their shipped complete shape; the amount is only added when the
+    /// local record actually carries a readable one (baseline defect D2). Nothing is
+    /// estimated and nothing else about the shipped red-packet behavior changes.
+    /// </summary>
+    private static SourceMessageContent ParseRedPacket(XElement wcpayInfo)
+    {
+        return new SourceMessageContent
+        {
+            Kind = SourceContentKind.RedPacket,
+            Amount = ReadPlainAmount(WeChatXml.Value(wcpayInfo, "feedesc")),
+        };
+    }
+
+    /// <summary>
+    /// Amounts are read from the locally recorded fee description only when it is a plain
+    /// unsigned decimal with a non-empty integer part, such as <c>200.00</c> or <c>200</c>.
+    /// Decorated forms (currency symbols, thousands separators) and fragmentary forms
+    /// (<c>.50</c>, <c>200.</c>) are not accepted and stay null rather than being guessed
+    /// (docs/MESSAGE_SCHEMA.md section 15).
+    /// </summary>
+    private static string? ReadPlainAmount(string? feedesc)
+    {
+        if (string.IsNullOrWhiteSpace(feedesc))
+        {
+            return null;
+        }
+
+        var candidate = feedesc.Trim();
+        var digitsBeforeDot = 0;
+        var digitsAfterDot = 0;
+        var dots = 0;
+        foreach (var ch in candidate)
+        {
+            if (char.IsAsciiDigit(ch))
+            {
+                if (dots > 0)
+                {
+                    digitsAfterDot++;
+                }
+                else
+                {
+                    digitsBeforeDot++;
+                }
+            }
+            else if (ch == '.')
+            {
+                if (++dots > 1)
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        // "200" and "200.00" are plain decimals; ".50", "200." and "." are not.
+        return dots == 1 && (digitsBeforeDot == 0 || digitsAfterDot == 0)
+            ? null
+            : digitsBeforeDot > 0 ? candidate : null;
+    }
+
     private static SourceMessageContent BuildLink(string? title, string? description, string? url)
     {
         var wrapper = IsWrapperUrl(url);
@@ -514,8 +615,13 @@ internal static partial class WeChatContentParser
     /// A merged/forwarded chat record. WeChat stores the human-readable form in
     /// <c>&lt;des&gt;</c> and the per-item list in <c>&lt;recorditem&gt;&lt;datalist&gt;</c>.
     /// Items that carry no resolvable identity keep their display name and no ID.
+    /// <para>
+    /// When the structured list is unavailable and the items are recovered from the summary
+    /// description, the returned diagnostic marks that fallback (baseline defect D4); the
+    /// record itself stays partial exactly as before.
+    /// </para>
     /// </summary>
-    private static SourceMessageContent ParseForwardBundle(
+    private static (SourceMessageContent Content, string? DiagnosticCode) ParseForwardBundle(
         XDocument document,
         XElement appMsg,
         string? title,
@@ -526,14 +632,14 @@ internal static partial class WeChatContentParser
         {
             // The nested record may only exist as CDATA text; fall back to the summary.
             var items = ParseDescriptionItems(description);
-            return new SourceMessageContent
+            return (new SourceMessageContent
             {
                 Kind = SourceContentKind.ForwardBundle,
                 Title = title,
                 ForwardItemCount = items.Count,
                 ForwardItems = items,
                 IsPartial = true,
-            };
+            }, DiagnosticCodes.ForwardBundleDescriptionFallback);
         }
 
         var dataItems = record.Descendants()
@@ -557,23 +663,25 @@ internal static partial class WeChatContentParser
             });
         }
 
+        var recoveredFromDescription = false;
         if (parsed.Count == 0)
         {
             parsed = ParseDescriptionItems(description);
+            recoveredFromDescription = parsed.Count > 0;
         }
 
         var declaredCount = WeChatXml.ParseLong(WeChatXml.Attribute(
             record.Descendants().FirstOrDefault(e => WeChatXml.LocalNameEquals(e, "datalist")),
             "count"));
 
-        return new SourceMessageContent
+        return (new SourceMessageContent
         {
             Kind = SourceContentKind.ForwardBundle,
             Title = title,
             ForwardItemCount = declaredCount is > 0 ? (int)declaredCount.Value : parsed.Count,
             ForwardItems = parsed,
             IsPartial = parsed.Count == 0 && appType == WeChat4Schema.AppForwardBundle,
-        };
+        }, recoveredFromDescription ? DiagnosticCodes.ForwardBundleDescriptionFallback : null);
     }
 
     /// <summary>

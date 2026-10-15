@@ -157,8 +157,19 @@ public static class MessageNormalizer
             case CanonicalMessageType.Image:
             case CanonicalMessageType.Video:
             case CanonicalMessageType.Emoji:
-            case CanonicalMessageType.RedPacket:
                 return null;
+
+            case CanonicalMessageType.RedPacket:
+                // Red packets keep the shipped null payload unless the local record carried
+                // a readable financial field (docs/MESSAGE_SCHEMA.md section 15).
+                return content.Amount is null && content.Currency is null && content.TransferStatus is null
+                    ? null
+                    : new JsonObject
+                    {
+                        ["amount"] = content.Amount,
+                        ["currency"] = content.Currency,
+                        ["status"] = content.TransferStatus,
+                    };
 
             case CanonicalMessageType.Voice:
                 return new JsonObject { ["duration_seconds"] = content.DurationSeconds };
