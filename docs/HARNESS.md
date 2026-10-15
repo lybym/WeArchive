@@ -26,18 +26,18 @@ Harnesses MUST NOT normally:
 - recursively scan JSONL exports for interactive retrieval when a query API exists;
 - depend on WeChat table names, numeric message types or parser-specific source structures.
 
-This contract is now partially shipped. `ArchiveQueryService`, `wearchive message list` and
-`wearchive context` are implemented (Issue #27 / M3a) and are read-only over the canonical archive.
-The derived FTS index and the search service contract are implemented (Issue #102 / M3b-1); the
-`wearchive search` CLI transport, a CLI archive-status command and MCP transport are not
-implemented yet.
+This contract is now shipped for interactive retrieval. `ArchiveQueryService`, `wearchive message
+list` and `wearchive context` are implemented (Issue #27 / M3a) and are read-only over the
+canonical archive. The derived FTS index and the search service contract are implemented
+(Issue #102 / M3b-1), and the `wearchive search` CLI transport is implemented (issue #103 /
+M3b-2). A CLI archive-status command and MCP transport are not implemented yet.
 
 **Post-v0.6.0 implementation order:** M2 message-semantic correctness and
 provenance first, then M3b rebuildable SQLite FTS5/`wearchive search`
 (including measured Chinese/mixed-language recall), then remaining M4
 Collection-scope search/export, freshness-status CLI and bounded evidence
-references. The M3b index slice is delivered; the CLI transport is still a
-target, **not shipped**. Existing M3a query/context
+references. The M3b index slice and the CLI transport are both delivered.
+Existing M3a query/context
 and Collection sync already ship; do not reimplement them. The V2-only
 forward decision affects preservation/capture, not this canonical query
 boundary (ADR 0012).
@@ -78,8 +78,9 @@ It must return canonical DTOs and stable IDs, not SQLite implementation details.
 **Shipped by Issue #27 (M3a minimum retrieval):** listing messages by stable conversation, date
 range, canonical sender and canonical type with opaque cursor pagination; bounded context-window
 retrieval around a stable message id; and capture/ingest/canonical freshness. Keyword/full-text
-search and statistics/activity summaries remain target behavior, and no CLI status command is wired
-to the freshness API yet.
+search is delivered by the M3b slices (Issues #102/#103) through the same service. Statistics and
+activity summaries remain target behavior, and no CLI status command is wired to the freshness API
+yet.
 
 ## 4. CLI query surface
 
@@ -105,10 +106,11 @@ wearchive context m_xxx `
   --json
 ```
 
-`message list` and `context` are **shipped** and normative in [`CLI.md`](CLI.md) — including the
-`items` / `next_cursor` / `has_more` page shape, the context DTO that separates the target message
-from the messages before and after it, the `--participant` / `--type` filters and the time grammar.
-`search` remains target behavior: it needs the FTS index of section 7, which does not exist.
+`message list`, `context` and `search` are **shipped** and normative in [`CLI.md`](CLI.md) —
+including the `items` / `next_cursor` / `has_more` page shape, the context DTO that separates the
+target message from the messages before and after it, the `--participant` / `--type` filters and
+the time grammar. `search` runs over the FTS index of section 7 and returns the same canonical
+message DTO, so the workflow below is the shipped retrieval pattern.
 
 ## 5. Pagination
 
@@ -169,7 +171,8 @@ term/phrase/prefix matching with implicit AND, `bm25` ranking with the canonical
 tie-break, conversation/Collection/time/participant/type filters, opaque cursor pagination, and a
 derived R0 index lifecycle (forward migration, same-transaction maintenance, deterministic rebuild
 from canonical rows only). The index and the service contract are implemented by the M3b index
-slice (Issue #102); the `wearchive search` CLI transport is the follow-up slice (issue #103).
+slice (Issue #102); the `wearchive search` CLI transport is implemented by the M3b CLI slice
+(issue #103) and is normative in [`CLI.md`](CLI.md).
 
 ## 8. Collections as a shared scope abstraction
 

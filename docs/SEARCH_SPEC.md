@@ -2,16 +2,17 @@
 
 Status: normative specification. Sections 3–6 and 9–10 are **implemented** by the M3b index slice
 ([Issue #102](https://github.com/lybym/WeArchive/issues/102)); the `wearchive search` CLI transport
-(sections 7–9 at the CLI layer and 12's exit-code mapping) is the follow-up slice (issue #103) and
-is not implemented yet. This document is the deliverable of
+(sections 7–9 at the CLI layer and 12's exit-code mapping) is **implemented** by the M3b CLI slice
+([Issue #103](https://github.com/lybym/WeArchive/issues/103)) and is normative in `docs/CLI.md`.
+This document is the deliverable of
 [Issue #101](https://github.com/lybym/WeArchive/issues/101) (Roadmap M3b-0, PRD FR-15/16/17,
 HARNESS.md sections 6–7). It fixes the searchable-field inventory, the normalized index input, the
 matching/filter/cursor contract and the derived-index lifecycle for canonical full-text search, and
 records the benchmark evidence that selects the FTS5 tokenization strategy (ADR 0013).
 
-Until the CLI slice ships, `ArchiveQueryService` implements search (section 9.1) but no
-`wearchive search` command exists. Shipped-status sections of other documents must not claim the
-CLI command until it is delivered and tested.
+`ArchiveQueryService` implements search (section 9.1) and the `wearchive search` command is
+implemented and tested at the CLI layer. Shipped-status sections of other documents must keep
+claiming only what is delivered and tested.
 
 ## 1. Requirements trace
 
@@ -259,7 +260,7 @@ resolved reply and the full provenance block (MESSAGE_SCHEMA section 3.4) — so
 canonical archive through `IArchiveStore`; validation, filter resolution and cursor handling follow
 the M3a service patterns (R0: no write path, no checkpoint, no recovery state).
 
-### 9.2 CLI transport (proposed `wearchive search`; implemented by the follow-up CLI slice)
+### 9.2 CLI transport (`wearchive search`; implemented by the CLI slice, normative in docs/CLI.md)
 
 ```text
 wearchive search <query> [--conversation <stable-id>] [--collection <name>]
@@ -472,8 +473,9 @@ ideographs, punctuation-transparent phrases) are documented in sections 4.2/5.1 
   section 11 at all times — a failing pin invalidates the evidence and forces re-evaluation.
 - The index slice (FTS5 table, migration, migration test, rebuild, integrity, `ArchiveQueryService`
   extension) is delivered by [Issue #102](https://github.com/lybym/WeArchive/issues/102); the CLI
-  slice (`wearchive search` transport, JSON/error contract, CLI contract tests) is the follow-up
-  Issue #103; each must reference this specification and keep its PR within its own scope
-  (DEVELOPMENT.md section 6).
-- Shipped-status language anywhere in `docs/` must continue to distinguish implemented (the index
-  slice) from the not-yet-implemented CLI transport (issue #103).
+  slice (`wearchive search` transport, JSON/error contract, CLI contract tests) is delivered by
+  [Issue #103](https://github.com/lybym/WeArchive/issues/103); each must reference this
+  specification and keep its PR within its own scope (DEVELOPMENT.md section 6).
+- Shipped-status language anywhere in `docs/` must distinguish what each slice delivered: the
+  index slice (Issue #102) and the CLI transport (issue #103) are both implemented; a future
+  change to this contract is shipped and documented the same way.

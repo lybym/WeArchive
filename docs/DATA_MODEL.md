@@ -628,8 +628,9 @@ Shipped by the M3b index slice ([Issue #102](https://github.com/lybym/WeArchive/
   and then the canonical timeline tail `(occurred_utc, source_order_key, id)`, so ties never shuffle
   between pages. The contract exposes no score value.
 
-The `wearchive search` CLI transport (JSON/error contract, CLI contract tests) is the follow-up
-slice (issue #103) and is not implemented yet.
+The `wearchive search` CLI transport (JSON/error contract, CLI contract tests) is implemented by
+the follow-up slice ([Issue #103](https://github.com/lybym/WeArchive/issues/103)); it is a thin
+adapter over `SearchAsync` and owns none of the query semantics this section defines.
 
 ## 20. Raw source retention
 

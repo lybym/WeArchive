@@ -73,12 +73,13 @@ Agent/search/export reads remain canonical SQLite, not Raw Vault physical packs.
 
 There is intentionally no Phase 1 media archive. Binary media/files are represented only by normalized textual events and locally available metadata such as filename or duration.
 
-`Search / Query` is partially shipped: the M3a minimum retrieval slice — `ArchiveQueryService`,
+`Search / Query` is shipped: the M3a minimum retrieval slice — `ArchiveQueryService`,
 `message list` and `context` — reads the canonical archive through its existing timeline index
 (section 3.9). The M3b index slice ([Issue #102](https://github.com/lybym/WeArchive/issues/102))
 adds the derived FTS5 search index and the `ArchiveQueryService` search contract exactly as
 [SEARCH_SPEC.md](SEARCH_SPEC.md) specifies (ADR 0013's unicode61 + CJK bigram-projection
-strategy). The `wearchive search` CLI transport remains follow-up work (issue #103).
+strategy), and the M3b CLI slice ([Issue #103](https://github.com/lybym/WeArchive/issues/103))
+ships the `wearchive search` command as a thin adapter over the same service.
 
 ## 3. Layering
 
@@ -125,10 +126,12 @@ wearchive capture [--account <id>]
 
 Search/statistics/query commands are added only when their underlying requirements are implemented.
 The query commands (`message list`, `context`) are implemented by Issue #27 and are thin adapters
-over `ArchiveQueryService` (section 3.9); keyword search is not implemented.
+over `ArchiveQueryService` (section 3.9); `wearchive search` is implemented by issue #103 as a
+thin adapter over the same service's `SearchAsync`.
 The Collection scope commands (`collection list`, `collection show <name>`, `sync --collection <name>`)
-are implemented by Issue #26; Collection query/search/export selection remains M3/M4 follow-up work
-(see section 3.8).
+are implemented by Issue #26; Collection-scoped search reaches the CLI through
+`search --collection` (issue #103), while Collection-scoped `message list` filtering and export
+selection remain M3/M4 follow-up work (see section 3.8).
 
 ### 3.1.1 CLI process contract
 
@@ -528,7 +531,9 @@ stays read-only (R0): the derived index is created by migration 3, maintained in
 R2 conversation-import transaction, deterministically rebuildable from canonical rows only
 (section 10.3 of the specification), and a missing or inconsistent index fails closed
 (`search_index_unavailable`) instead of being repaired by a query. The `wearchive search` CLI
-transport is the follow-up slice (issue #103) and is not implemented yet.
+transport is delivered by the M3b CLI slice
+([Issue #103](https://github.com/lybym/WeArchive/issues/103)) as a thin adapter over `SearchAsync`:
+it parses options and renders the page and owns no query semantics (docs/CLI.md).
 
 ## 4. Data flow
 

@@ -246,7 +246,7 @@ Not delivered by M3a (still open in M3):
 - a CLI status command and MCP transport over the query service;
 - Collection-scoped query filtering.
 
-### M3b — Canonical full-text retrieval (partially delivered)
+### M3b — Canonical full-text retrieval (delivered)
 
 - **M3b-0 specification and benchmark (delivered by Issue #101):** `docs/SEARCH_SPEC.md` and
   ADR 0013 fix the searchable-field inventory, the CJK bigram-projection index input, the
@@ -257,8 +257,10 @@ Not delivered by M3a (still open in M3):
   (migration 3 + same-transaction maintenance + deterministic rebuild + integrity verification)
   and the `ArchiveQueryService` search contract (matching, filters, keyset cursor pagination),
   implementing the specification; the recall baseline passes through the real archive.
-- `wearchive search` CLI transport (JSON/error contract, CLI contract tests) remains the
-  follow-up slice (issue #103) and must implement the same specification.
+- **M3b-2 CLI slice (delivered by Issue #103):** the `wearchive search` command — one-document
+  JSON contract, human output, section 7 filters including Collection scope, opaque cursor
+  pagination, the section 12 error mapping and the CLI contract tests — implements the same
+  specification and is normative in `docs/CLI.md`.
 
 ## M4 — Harness-oriented workflows
 

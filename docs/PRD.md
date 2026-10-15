@@ -365,8 +365,9 @@ The M3b-0 search specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) defi
 field inventory, the CJK-aware index input, the matching/filter/cursor contract and the derived
 index lifecycle. Shipped by the M3b index slice (Issue #102): the rebuildable FTS5 index
 (migration 3, same-transaction maintenance, deterministic rebuild, integrity verification) and the
-`ArchiveQueryService.SearchAsync` contract. The `wearchive search` CLI transport remains
-follow-up work (issue #103).
+`ArchiveQueryService.SearchAsync` contract. Shipped by the M3b CLI slice (issue #103): the
+`wearchive search` command with bounded pages, filters, opaque cursor pagination and the
+documented error mapping ([`CLI.md`](CLI.md)).
 
 ### FR-16 Structured retrieval
 
@@ -379,8 +380,8 @@ Shipped by Issue #27 (M3a minimum retrieval) through `ArchiveQueryService` and t
 opaque keyset cursor, `since`/`until` bounds are inclusive instants, participant and canonical type
 filters use stable canonical semantics, and `context` returns a bounded before/target/after window
 around a stable message ID. Keyword search is delivered as a service contract by the M3b index
-slice (Issue #102) — see FR-15; its CLI command remains follow-up work. Archive statistics beyond
-freshness remain future work.
+slice (Issue #102) — see FR-15 — and reaches the CLI through `wearchive search` (issue #103).
+Archive statistics beyond freshness remain future work.
 
 ### FR-17 ArchiveQueryService
 
@@ -389,10 +390,11 @@ All interactive query/search/context operations are implemented behind a source-
 Harnesses must not be required to know SQLite table layouts.
 
 Shipped by Issue #27 for structured retrieval, context windows and capture/ingest/canonical
-freshness. It reads only the canonical archive: it never opens live WeChat, acquires a key, reads
-Raw Vault artifacts or uses exported JSONL as a runtime store, and it returns canonical DTOs and
-stable IDs rather than SQLite rows or WeChat structures. Keyword search is not implemented yet, so
-FR-17 is not yet complete for search.
+freshness, and by the M3b slices (Issues #102/#103) for full-text search. It reads only the
+canonical archive: it never opens live WeChat, acquires a key, reads Raw Vault artifacts or uses
+exported JSONL as a runtime store, and it returns canonical DTOs and stable IDs rather than SQLite
+rows or WeChat structures. Keyword search is implemented behind this service, so FR-17 is complete
+for query/search/context; a future MCP transport remains optional future work.
 
 ### FR-18 Selective export
 
@@ -441,14 +443,17 @@ membership entries are deterministic outcomes. Shipped status per intended use:
 
 ```text
 sync                 -> shipped in this Issue
-query/search         -> follow-up (uses the same Collection catalog)
+query/search         -> `search --collection` is shipped (issue #103, same Collection catalog);
+                        Collection-scoped `message list` filtering is follow-up
 Harness analysis     -> follow-up (CLI JSON resolution is shipped)
 export               -> follow-up (Collection-scoped export selection not yet wired)
 ```
 
 Ownership and rebuild-survival semantics are recorded in
-[ADR 0009](adr/0009-collection-configuration-ownership.md). This does not authorize Collection
-keyword/query filtering, an interactive Collection editor, or MCP/scheduler synchronization.
+[ADR 0009](adr/0009-collection-configuration-ownership.md). Collection-scoped search filtering is
+authorized by [SEARCH_SPEC.md](SEARCH_SPEC.md) section 7 and delivered by issue #103. This does
+not authorize Collection-scoped `message list` filtering, an interactive Collection editor, or
+MCP/scheduler synchronization.
 
 ### FR-24 Canonical message envelope
 
@@ -511,10 +516,9 @@ Planned query commands include message listing, keyword search and message-conte
 Shipped status: `wearchive message list` and `wearchive context` are implemented (Issue #27) and
 normative in [`CLI.md`](CLI.md), including their `--json` DTOs and exit/error codes. The search
 service contract (`ArchiveQueryService.SearchAsync`) and the derived FTS5 index are implemented by
-the M3b index slice (Issue #102, specified by [SEARCH_SPEC.md](SEARCH_SPEC.md)); the
-`wearchive search` CLI command is not implemented yet and becomes normative in [`CLI.md`](CLI.md)
-only when its transport slice (issue #103) ships. A CLI archive-status command is also not
-implemented.
+the M3b index slice (Issue #102, specified by [SEARCH_SPEC.md](SEARCH_SPEC.md)), and the
+`wearchive search` CLI command is implemented and normative in [`CLI.md`](CLI.md) by the M3b CLI
+slice (issue #103). A CLI archive-status command is not implemented.
 
 ### FR-31 Future MCP transport
 
