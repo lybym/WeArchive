@@ -210,6 +210,16 @@ export-level hook and wins over the generated default; it is not an archive colu
 
 Display names can change and collide. Stable participant IDs must remain the canonical identity.
 
+Metadata refresh/merge rule (M2d, Issue #100): participants are refreshed from the
+adapter's contact snapshot on every account ingest and from the captured generation
+during rebuild. The merge is null-safe and evidence-supported: a non-null newer
+remark/nickname/alias replaces the archived value; a cleared value (null after adapter
+normalization) or an absent contact row provides no evidence and never erases the last
+observed value. Stable participant, conversation and message IDs are never re-derived
+from display metadata, so paths survive renames (docs/EXPORT_PRD.md section 3.1), and
+the rebuild carries `user_display_name` overrides into the fresh archive when a matching
+canonical participant remains (section 21.8).
+
 ## 7. ConversationParticipant
 
 Many-to-many relation between conversations and participants.
