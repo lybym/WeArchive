@@ -942,6 +942,126 @@ section 10.3) or `archive_unavailable`; `2` with `usage_error` (missing query or
 unknown option, invalid value, mutually exclusive scopes), `query_invalid` or `cursor_invalid`;
 `130` on cancellation.
 
+### `wearchive stats [options]`
+
+Reports one bounded, read-only statistics document over the canonical archive: totals, the
+canonical type distribution and one page of a requested breakdown (issue #104 / M3c,
+[`DATA_MODEL.md`](DATA_MODEL.md) section 24, [`PRD.md`](PRD.md) FR-16/FR-17). Like `message list`,
+`context` and `search` it is read-only (**R0**): a thin adapter over
+`ArchiveQueryService.GetStatisticsAsync`, it never mutates canonical data, never reads the Raw
+Vault, never opens live WeChat and never scans exported JSONL. Every count is derived from
+canonical `messages` rows at query time — no derived statistics state exists to read, maintain or
+rebuild.
+
+```text
+wearchive stats [--conversation <stable-id>] [--collection <name>]
+                [--since <time>] [--until <time>] [--bucket day|month|conversation]
+                [--limit <n>] [--cursor <opaque>] [--json] [--no-input] [--quiet]
+```
+
+Options:
+
+```text
+--conversation <stable-id>   Optional. Stable conversation id (g_<16 hex> / u_<16 hex>); narrows
+                             every count to that conversation. Mutually exclusive with --collection.
+--collection <name>          Optional. Counts the union of the Collection's archived member
+                             conversations, resolved through the one authoritative Collection
+                             catalog (ADR 0009). An unknown name is `collection_not_found` (exit 1),
+                             an invalid configuration is `collection_config_invalid` (exit 2), and
+                             a member that resolves to no archived conversation contributes no
+                             counts and never errors by itself.
+--since <time>               Optional. Inclusive lower bound; the `message list` time grammar.
+--until <time>               Optional. Inclusive upper bound; the `message list` time grammar.
+--bucket <kind>              Optional. Breakdown: `day` (default), `month` or `conversation`.
+--limit <n>                  Optional. Breakdown page size, 1–500. Default 100.
+--cursor <opaque-cursor>     Optional. Resume the breakdown from a previous next_cursor.
+```
+
+`--since` / `--until` reuse the `message list` semantics exactly: inclusive instants, the same
+accepted value forms, a date-only or offset-less value interpreted in the machine's local offset,
+an unparseable value rejected as `usage_error` rather than silently widening the range. Bounds are
+compared at the archive's one-second resolution. `--conversation` and `--collection` are mutually
+exclusive scopes; supplying both is a usage error.
+
+**What is counted.** Every number is an observation over archived canonical records inside the
+resolved scope and range. It is never a claim about the source's unarchived remainder: the
+document says what was counted (`scope`), when and against which archive (`basis`), and the
+counts themselves. Unknown semantics (`type: unknown`), partial records (`is_partial`) and
+messages whose sender could not be resolved are reported as explicit totals and are counted
+inside their type and breakdown bucket instead of being silently dropped. Distinct senders are
+counted from stable participant IDs only; an unresolvable sender is never fabricated into one.
+`conversation_count` counts archived conversations that contributed at least one counted message.
+
+**Breakdowns.** `day` and `month` buckets are UTC calendar buckets derived from the canonical
+instant, so a timeline is deterministic regardless of which machine renders it; a bucket's
+`bucket_start` is the UTC start instant of the day/month. `conversation` buckets are keyed by the
+stable conversation ID in ordinal order. The breakdown page reads one bucket beyond its limit, so
+`has_more` is a fact about the archive; `next_cursor` is an opaque token bound to the resolved
+scope, the range and the breakdown kind — changing `--limit` between pages is allowed, changing a
+scope, a bound or the bucket is `cursor_invalid`. `next_cursor` is null exactly when `has_more`
+is false. Scope-wide totals are identical on every page.
+
+JSON shape (exit 0):
+
+```json
+{
+  "scope": {
+    "kind": "archive",
+    "conversation_id": null,
+    "collection": null,
+    "since": null,
+    "until": null
+  },
+  "basis": {
+    "source": "canonical_archive",
+    "archive_path": "C:\\…\\wearchive.db",
+    "queried_at": "2026-03-01T12:00:00+08:00"
+  },
+  "totals": {
+    "message_count": 12,
+    "conversation_count": 2,
+    "sender_participant_count": 2,
+    "unattributed_message_count": 1,
+    "unknown_count": 1,
+    "partial_count": 1,
+    "first_message_at": "2026-01-01T09:00:00+08:00",
+    "last_message_at": "2026-02-02T09:00:00+08:00"
+  },
+  "by_type": [
+    { "type": "text", "count": 6 },
+    { "type": "unknown", "count": 1 }
+  ],
+  "breakdown": {
+    "bucket": "day",
+    "items": [
+      {
+        "bucket_start": "2026-01-01T00:00:00+00:00",
+        "conversation_id": null,
+        "message_count": 3,
+        "unknown_count": 1,
+        "partial_count": 0
+      }
+    ],
+    "next_cursor": "opaque-cursor-or-null",
+    "has_more": false
+  }
+}
+```
+
+`by_type` lists only observed canonical types in wire-name order (the canonical type inventory is
+closed, so the listing is inherently bounded); the full example above is truncated. In the
+`conversation` breakdown each item carries `conversation_id` instead of `bucket_start`; the other
+key is null. An empty archive, an empty scope or an empty range is a successful zero report —
+zero totals, empty `by_type`, empty `items`, exit 0.
+
+Human output prints the scope, the totals (including unknown, partial and unattributed), the
+first/last observed instants, the `as of` instant and archive basis, the type distribution and one
+line per breakdown bucket, then the `next cursor:` line when the breakdown is resumable.
+
+Exits `1` with `conversation_not_found`, `collection_not_found` or `archive_unavailable`; `2` with
+`usage_error` (unknown option, unexpected positional argument, invalid value, mutually exclusive
+scopes) or `cursor_invalid`; `130` on cancellation. No new error codes are introduced.
+
 ## Failure document (`--json`)
 
 In `--json` mode a non-zero exit still writes exactly one JSON document to stdout so callers can
@@ -1072,9 +1192,11 @@ interactive Collection editor are not.
 the `ArchiveQueryService` search contract are implemented by the M3b index slice (Issue #102,
 [SEARCH_SPEC.md](SEARCH_SPEC.md)), and the `wearchive search` command — its JSON/error contract
 ([SEARCH_SPEC.md](SEARCH_SPEC.md) sections 7–9 and 12) and its CLI contract tests — is implemented
-by the M3b CLI slice (issue #103) and is normative in this document. Statistics/activity timelines
-beyond archive freshness and the MCP transport are not implemented: `ArchiveQueryService` already
-exposes capture/ingest/canonical freshness, but no CLI status command is wired to it yet.
+by the M3b CLI slice (issue #103) and is normative in this document. Archive statistics and the
+activity timeline are implemented by the M3c slice (issue #104) as `wearchive stats`, a read-only
+query-family command over the same `ArchiveQueryService`; the MCP transport is not implemented:
+`ArchiveQueryService` already exposes capture/ingest/canonical freshness, but no CLI status
+command is wired to it yet.
 
 `--collection` is not accepted by `message list`; Collection scoping reaches interactive retrieval
 through `wearchive search --collection`, whose scope resolves through the same authoritative

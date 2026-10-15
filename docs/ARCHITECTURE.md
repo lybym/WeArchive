@@ -127,7 +127,8 @@ wearchive capture [--account <id>]
 Search/statistics/query commands are added only when their underlying requirements are implemented.
 The query commands (`message list`, `context`) are implemented by Issue #27 and are thin adapters
 over `ArchiveQueryService` (section 3.9); `wearchive search` is implemented by issue #103 as a
-thin adapter over the same service's `SearchAsync`.
+thin adapter over the same service's `SearchAsync`; `wearchive stats` is implemented by issue #104
+as a thin adapter over the same service's `GetStatisticsAsync`.
 The Collection scope commands (`collection list`, `collection show <name>`, `sync --collection <name>`)
 are implemented by Issue #26; Collection-scoped search reaches the CLI through
 `search --collection` (issue #103), while Collection-scoped `message list` filtering and export
@@ -502,7 +503,10 @@ Responsibilities:
 - list bounded canonical messages by stable conversation, date range, participant and canonical
   type, with opaque keyset cursor pagination;
 - return a bounded context window around a stable message id;
-- report capture, ingest and canonical freshness from independent sources.
+- report capture, ingest and canonical freshness from independent sources;
+- report one bounded, read-only statistics document — scope totals, canonical type distribution
+  and one keyset-paginated breakdown page (day/month/conversation buckets) — derived from
+  canonical rows at query time (M3c, issue #104, docs/DATA_MODEL.md section 24).
 
 It reads **only** the canonical SQLite archive for retrieval, through `IArchiveStore` and the
 existing timeline index. It never opens live WeChat, never acquires or holds a key, never reads Raw
@@ -534,6 +538,17 @@ R2 conversation-import transaction, deterministically rebuildable from canonical
 transport is delivered by the M3b CLI slice
 ([Issue #103](https://github.com/lybym/WeArchive/issues/103)) as a thin adapter over `SearchAsync`:
 it parses options and renders the page and owns no query semantics (docs/CLI.md).
+
+Archive statistics are the M3c extension of the same service
+([Issue #104](https://github.com/lybym/WeArchive/issues/104)): `GetStatisticsAsync` owns scope
+resolution — the whole archive, one existence-verified conversation, or one Collection through the
+one authoritative catalog — plus bound validation and the opaque breakdown cursor, while the
+archive store derives every count from canonical `messages` rows at query time
+(docs/DATA_MODEL.md section 24). Statistics add no derived state: there is no statistics table or
+aggregate index to maintain or rebuild, and an offline canonical rebuild reproduces the same
+report because it reproduces the same canonical rows. Unknown, partial and unattributed records
+are explicit totals and are counted inside their buckets instead of being silently dropped.
+`wearchive stats` is the thin CLI transport over it.
 
 ## 4. Data flow
 

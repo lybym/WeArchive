@@ -628,6 +628,10 @@ public sealed class CliContractTests
             ArchiveSearchQuery query, CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 
+        public Task<ArchiveStatisticsResult> GetArchiveStatisticsAsync(
+            ArchiveStatisticsQuery query, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
         public Task<SearchIndexVerification> VerifySearchIndexAsync(CancellationToken cancellationToken) =>
             throw new NotImplementedException();
 

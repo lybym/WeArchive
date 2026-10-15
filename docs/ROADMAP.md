@@ -242,7 +242,7 @@ Delivered:
 
 Not delivered by M3a (still open in M3):
 
-- archive statistics and activity timeline beyond basic freshness;
+- archive statistics and activity timeline beyond basic freshness (delivered later by M3c);
 - a CLI status command and MCP transport over the query service;
 - Collection-scoped query filtering.
 
@@ -261,6 +261,29 @@ Not delivered by M3a (still open in M3):
   JSON contract, human output, section 7 filters including Collection scope, opaque cursor
   pagination, the section 12 error mapping and the CLI contract tests — implements the same
   specification and is normative in `docs/CLI.md`.
+
+### M3c — Archive statistics and activity timeline (delivered by Issue #104)
+
+**Goal:** expose source-neutral canonical counts and activity timelines without duplicating search
+or inventing engagement metrics.
+
+Delivered:
+
+- `ArchiveQueryService.GetStatisticsAsync`: one bounded, read-only statistics report with the
+  whole-archive / conversation / Collection scope resolution, inclusive `since`/`until` bounds and
+  the canonical type distribution;
+- `wearchive stats` as a thin query-family CLI transport with a pinned one-document `--json`
+  contract (scope, basis, totals, `by_type`, one breakdown page) and the documented query-family
+  error mapping;
+- day/month UTC time buckets and per-conversation buckets with keyset cursor pagination; unknown,
+  partial and unattributed records are explicit totals and are counted inside their buckets;
+- no new persisted or derived state: every count is computed from canonical rows at query time, so
+  an offline canonical rebuild reproduces the same statistics.
+
+Not delivered by M3c (still open in M3):
+
+- a CLI status command and MCP transport over the query service;
+- Collection-scoped `message list` filtering.
 
 ## M4 — Harness-oriented workflows
 
