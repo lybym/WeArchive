@@ -75,7 +75,9 @@ There is intentionally no Phase 1 media archive. Binary media/files are represen
 
 `Search / Query` is partially shipped: the M3a minimum retrieval slice — `ArchiveQueryService`,
 `message list` and `context` — reads the canonical archive through its existing timeline index
-(section 3.9). Keyword/full-text search remains M3b work and no FTS index exists yet.
+(section 3.9). Keyword/full-text search is specified for M3b by [SEARCH_SPEC.md](SEARCH_SPEC.md)
+(ADR 0013 selects the unicode61 + CJK bigram-projection strategy) but is not implemented yet and
+no FTS index exists.
 
 ## 3. Layering
 
@@ -516,7 +518,11 @@ are opaque API tokens, not persistent archive records, so no migration is involv
 ([`DATA_MODEL.md`](DATA_MODEL.md) section 23).
 
 Keyword/full-text search remains M3b target work; `ArchiveQueryService` does not implement it and
-no FTS index exists.
+no FTS index exists. The M3b-0 specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) defines
+the search behavior a future slice must implement: searchable-field inventory, the CJK
+bigram-projection index input, the matching/filter/cursor contract and the R0 derived-index
+lifecycle (forward migration + same-transaction maintenance + deterministic rebuild from
+canonical rows only).
 
 ## 4. Data flow
 

@@ -249,6 +249,12 @@ Not delivered by M3a (still open in M3):
 ### M3b — Canonical full-text retrieval (planned)
 
 - SQLite FTS5 index and `wearchive search` keyword retrieval.
+- **M3b-0 specification and benchmark (delivered by Issue #101):** `docs/SEARCH_SPEC.md` and
+  ADR 0013 fix the searchable-field inventory, the CJK bigram-projection index input, the
+  matching/filter/cursor contract, the derived-index lifecycle and the measured tokenization
+  selection (unicode61 + bigram projection: recall 1.000/precision 1.000 on the pinned fixture
+  corpus; unicode61-only 0.420; trigram 0.560). The index and CLI implementations remain
+  follow-up slices and must implement that specification.
 
 ## M4 — Harness-oriented workflows
 

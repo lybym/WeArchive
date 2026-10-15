@@ -603,9 +603,15 @@ Migration 1 creates the initial canonical schema. Migration 2 adds scoped `inges
 
 Full-text search is a derived index, not the canonical store.
 
-The FTS index should be rebuildable from normalized `semantic_text` and selected structured payload fields such as filenames, link titles and descriptions.
+The FTS index should be rebuildable from normalized `semantic_text` and selected structured payload
+fields such as filenames, link titles and descriptions. The M3b-0 search specification
+([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) fixes the searchable-field inventory, the normalized
+index input (including the CJK bigram projection), the matching/cursor contract and the derived
+R0 index lifecycle: a forward migration creates and backfills the FTS5 table, index rows are
+maintained inside the same SQLite transaction as the conversation's message upserts, and a full
+rebuild is a pure re-derivation from canonical rows.
 
-No FTS index exists in migration 1; search is M3 work.
+No FTS index exists in migrations 1–2; search is an M3b follow-up slice and is not implemented yet.
 
 ## 20. Raw source retention
 

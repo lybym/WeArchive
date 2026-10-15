@@ -361,6 +361,10 @@ The shipped migration-1 generic `source_checkpoints` table is an earlier impleme
 
 Support local FTS over canonical semantic text and selected structured payload fields.
 
+The M3b-0 search specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) defines the searchable
+field inventory, the CJK-aware index input, the matching/filter/cursor contract and the derived
+index lifecycle that the M3b index and `wearchive search` slices must implement.
+
 ### FR-16 Structured retrieval
 
 Expose message listing/filtering and context-window retrieval by stable conversation/person/date/message identifiers.
@@ -501,7 +505,8 @@ Planned query commands include message listing, keyword search and message-conte
 
 Shipped status: `wearchive message list` and `wearchive context` are implemented (Issue #27) and
 normative in [`CLI.md`](CLI.md), including their `--json` DTOs and exit/error codes. Keyword search
-(`wearchive search`) and a CLI archive-status command are not implemented.
+(`wearchive search`) and a CLI archive-status command are not implemented; `wearchive search` is
+specified by [SEARCH_SPEC.md](SEARCH_SPEC.md) for the M3b implementation slices.
 
 ### FR-31 Future MCP transport
 

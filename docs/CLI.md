@@ -990,7 +990,9 @@ editor are not.
 (`wearchive search`), SQLite FTS indexing, statistics/activity timelines beyond archive freshness,
 Collection-scoped query filters and MCP transport are not: `ArchiveQueryService` already exposes
 capture/ingest/canonical freshness, but no CLI status command is wired to it yet. Keyword search is
-M3b work and no FTS index exists.
+M3b work and no FTS index exists; the future `wearchive search` command/JSON/error contract is
+specified by [SEARCH_SPEC.md](SEARCH_SPEC.md) (Issue #101) and becomes normative here only when
+its implementation slice ships.
 
 `--collection` is not accepted by `message list`; Collection-scoped query filtering is follow-up
 work layered on the same `ArchiveQueryService` and the same Collection catalog.
