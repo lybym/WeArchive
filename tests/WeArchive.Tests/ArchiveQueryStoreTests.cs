@@ -8,7 +8,8 @@ namespace WeArchive.Tests;
 
 /// <summary>
 /// Persistence-boundary tests for the bounded query methods: page bounding, keyset resumption,
-/// checkpoint projection and the guarantee that the query slice adds no index, migration or search
+/// checkpoint projection and the guarantee that the index slice adds exactly one derived FTS table
+/// and migration 3 (docs/SEARCH_SPEC.md section 10)
 /// engine (docs/DATA_MODEL.md sections 8.1, 14.1, 18, 19 and 23).
 /// </summary>
 public sealed class ArchiveQueryStoreTests
@@ -255,8 +256,16 @@ public sealed class ArchiveQueryStoreTests
         }
     }
 
+    /// <summary>
+    /// Shipped-status guard for the M3b index slice ([Issue #102](
+    /// https://github.com/lybym/WeArchive/issues/102)): the archive carries exactly the derived
+    /// search index of docs/SEARCH_SPEC.md section 10 — one FTS5 virtual table created by
+    /// migration 3 — and the M3a bounded retrieval still orders by the documented timeline index.
+    /// The CLI slice (issue #103) is the next follow-up; until it ships there is no
+    /// <c>wearchive search</c> transport.
+    /// </summary>
     [Fact]
-    public async Task QuerySliceAddsNoFtsIndexAndNoSchemaMigration()
+    public async Task IndexSliceAddsExactlyOneFtsTableAndMigrationThree()
     {
         using var harness = await SeededAsync();
 
@@ -265,20 +274,42 @@ public sealed class ArchiveQueryStoreTests
 
         using (var fts = connection.CreateCommand())
         {
-            fts.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%fts%' OR sql LIKE '%fts5%';";
-            Assert.Equal(0, Convert.ToInt32(fts.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture));
+            // Exactly the FTS5 virtual table and its shadow tables — no second index or
+            // unspecified FTS object may appear. Shadow tables are created internally by the
+            // FTS5 module and are identified by their name prefix.
+            fts.CommandText = "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts%' ORDER BY name;";
+            var names = new List<string>();
+            using (var reader = fts.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    names.Add(reader.GetString(0));
+                }
+            }
+
+            Assert.Equal(
+                new[]
+                {
+                    "messages_fts",
+                    "messages_fts_config",
+                    "messages_fts_content",
+                    "messages_fts_data",
+                    "messages_fts_docsize",
+                    "messages_fts_idx",
+                },
+                names);
         }
 
         using (var migrations = connection.CreateCommand())
         {
             migrations.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
-            Assert.Equal(2, Convert.ToInt32(migrations.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture));
+            Assert.Equal(3, Convert.ToInt32(migrations.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture));
         }
 
         using (var version = connection.CreateCommand())
         {
             version.CommandText = "PRAGMA user_version;";
-            Assert.Equal(2, Convert.ToInt32(version.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture));
+            Assert.Equal(3, Convert.ToInt32(version.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture));
         }
 
         using (var timeline = connection.CreateCommand())

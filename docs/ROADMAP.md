@@ -246,15 +246,19 @@ Not delivered by M3a (still open in M3):
 - a CLI status command and MCP transport over the query service;
 - Collection-scoped query filtering.
 
-### M3b — Canonical full-text retrieval (planned)
+### M3b — Canonical full-text retrieval (partially delivered)
 
-- SQLite FTS5 index and `wearchive search` keyword retrieval.
 - **M3b-0 specification and benchmark (delivered by Issue #101):** `docs/SEARCH_SPEC.md` and
   ADR 0013 fix the searchable-field inventory, the CJK bigram-projection index input, the
   matching/filter/cursor contract, the derived-index lifecycle and the measured tokenization
   selection (unicode61 + bigram projection: recall 1.000/precision 1.000 on the pinned fixture
-  corpus; unicode61-only 0.420; trigram 0.560). The index and CLI implementations remain
-  follow-up slices and must implement that specification.
+  corpus; unicode61-only 0.420; trigram 0.560).
+- **M3b-1 index slice (delivered by Issue #102):** the rebuildable SQLite FTS5 index
+  (migration 3 + same-transaction maintenance + deterministic rebuild + integrity verification)
+  and the `ArchiveQueryService` search contract (matching, filters, keyset cursor pagination),
+  implementing the specification; the recall baseline passes through the real archive.
+- `wearchive search` CLI transport (JSON/error contract, CLI contract tests) remains the
+  follow-up slice (issue #103) and must implement the same specification.
 
 ## M4 — Harness-oriented workflows
 

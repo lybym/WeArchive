@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
@@ -54,7 +55,8 @@ internal sealed class ArchiveQueryHarness : IDisposable
         // encoding, so the harness uses the real ingest service over the same archive. It must not
         // read the preservation store to report ingest progress, which ThrowingRawVaultStore proves.
         IngestProgress = new RawVaultIngestService(new ThrowingRawVaultStore(), Store, Clock);
-        Service = new ArchiveQueryService(Store, Vault, IngestProgress, Clock);
+        Collections = new CollectionCatalogService(CollectionSource);
+        Service = new ArchiveQueryService(Store, Vault, IngestProgress, Collections, Clock);
     }
 
     public FixedClock Clock { get; }
@@ -67,6 +69,14 @@ internal sealed class ArchiveQueryHarness : IDisposable
 
     /// <summary>Real ingest-progress owner over the harness archive.</summary>
     public RawVaultIngestService IngestProgress { get; }
+
+    /// <summary>
+    /// The stub Collection configuration the search scope resolution reads; tests set
+    /// <see cref="CollectionSource"/> members to control the authoritative catalog.
+    /// </summary>
+    public StubCollectionCatalogSource CollectionSource { get; } = new();
+
+    public CollectionCatalogService Collections { get; }
 
     public ArchiveQueryService Service { get; }
 
@@ -180,6 +190,32 @@ internal sealed class ArchiveQueryHarness : IDisposable
     public async Task<IReadOnlyList<CanonicalMessage>> ReadGroupMessagesAsync() =>
         await Store.ReadMessagesAsync(GroupConversationId, CancellationToken.None).ConfigureAwait(false);
 
+    /// <summary>
+    /// Failure injection: drops the derived FTS table, as out-of-band tampering would. Canonical
+    /// rows are untouched; search must fail closed afterwards.
+    /// </summary>
+    public async Task DropSearchIndexAsync()
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={ArchivePath};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DROP TABLE messages_fts;";
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Failure injection: deletes every derived index row while canonical rows stay. The
+    /// messages-vs-index row-count agreement check must catch it.
+    /// </summary>
+    public async Task DeleteAllIndexRowsAsync()
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={ArchivePath};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM messages_fts;";
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
     public void Dispose() => _temp.Dispose();
 
     /// <summary>
@@ -230,6 +266,21 @@ internal sealed class ArchiveQueryHarness : IDisposable
                 SourceVersion = "4.1.13.12",
             },
         };
+}
+
+/// <summary>
+/// Collection configuration stand-in whose document the test controls directly, so search scope
+/// resolution can be exercised without a real YAML file while the real
+/// <see cref="CollectionCatalogService"/> validation runs.
+/// </summary>
+internal sealed class StubCollectionCatalogSource : ICollectionCatalogSource
+{
+    public CollectionCatalogDocument? Document { get; set; }
+
+    public string Location { get; set; } = "stub:collections.yaml";
+
+    public Task<CollectionCatalogDocument?> ReadAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(Document);
 }
 
 /// <summary>

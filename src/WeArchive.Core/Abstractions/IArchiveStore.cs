@@ -139,6 +139,37 @@ public interface IArchiveStore
 
     /// <summary>Persists an account-level scan cursor after every conversation in a generation was examined.</summary>
     Task SetIngestCheckpointAsync(IngestCheckpoint checkpoint, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Runs one bounded page of a canonical full-text search over the archive's derived FTS index.
+    /// docs/SEARCH_SPEC.md sections 5–8 (M3b index slice).
+    /// <para>
+    /// <see cref="ArchiveSearchQuery.MatchExpression"/> is the caller-compiled query; the archive
+    /// executes it against the derived index together with the requested filters and returns rows
+    /// in the search total order (bm25 rank, then the canonical timeline tail). It reads — never
+    /// repairs: a missing or inconsistent index fails closed
+    /// (<see cref="WeArchive.Core.Query.ArchiveQueryErrorCodes.SearchIndexUnavailable"/>) because
+    /// search must never present a partial result set as a successful answer.
+    /// </para>
+    /// </summary>
+    Task<ArchiveSearchPage> SearchMessagesAsync(
+        ArchiveSearchQuery query,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Verifies the derived search index as an archive-maintenance operation: FTS5
+    /// <c>integrity-check</c> plus a messages-vs-index row-count agreement check
+    /// (docs/SEARCH_SPEC.md section 10.4). This is a diagnosis — it never repairs anything.
+    /// </summary>
+    Task<SearchIndexVerification> VerifySearchIndexAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Rebuilds the derived search index from canonical rows only, in one transaction:
+    /// recreate the FTS5 table and re-derive every row from <c>messages</c>
+    /// (docs/SEARCH_SPEC.md section 10.3). Re-running it against the same canonical rows yields a
+    /// functionally identical index. Canonical data and Raw Vault evidence are never touched.
+    /// </summary>
+    Task RebuildSearchIndexAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>Injectable time source so that exports and runs stay testable and deterministic.</summary>

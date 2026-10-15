@@ -28,13 +28,16 @@ Harnesses MUST NOT normally:
 
 This contract is now partially shipped. `ArchiveQueryService`, `wearchive message list` and
 `wearchive context` are implemented (Issue #27 / M3a) and are read-only over the canonical archive.
-Keyword/full-text search, a CLI archive-status command and MCP transport are not implemented yet.
+The derived FTS index and the search service contract are implemented (Issue #102 / M3b-1); the
+`wearchive search` CLI transport, a CLI archive-status command and MCP transport are not
+implemented yet.
 
 **Post-v0.6.0 implementation order:** M2 message-semantic correctness and
 provenance first, then M3b rebuildable SQLite FTS5/`wearchive search`
 (including measured Chinese/mixed-language recall), then remaining M4
 Collection-scope search/export, freshness-status CLI and bounded evidence
-references. These are targets, **not shipped**. Existing M3a query/context
+references. The M3b index slice is delivered; the CLI transport is still a
+target, **not shipped**. Existing M3a query/context
 and Collection sync already ship; do not reimplement them. The V2-only
 forward decision affects preservation/capture, not this canonical query
 boundary (ADR 0012).
@@ -159,13 +162,14 @@ Initial searchable material should include at least:
 
 FTS is rebuildable from `wearchive.db` and is not an archival source of truth.
 
-The M3b-0 specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) fixes this contract before
-implementation: the searchable-field inventory, a deterministic CJK bigram projection as the index
+The M3b-0 specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) fixes this contract: the
+searchable-field inventory, a deterministic CJK bigram projection as the index
 input (so 2-character Chinese queries such as `模型` and mixed terms such as `AI玩具` match),
 term/phrase/prefix matching with implicit AND, `bm25` ranking with the canonical timeline order as
 tie-break, conversation/Collection/time/participant/type filters, opaque cursor pagination, and a
 derived R0 index lifecycle (forward migration, same-transaction maintenance, deterministic rebuild
-from canonical rows only). Search itself is not implemented yet.
+from canonical rows only). The index and the service contract are implemented by the M3b index
+slice (Issue #102); the `wearchive search` CLI transport is the follow-up slice (issue #103).
 
 ## 8. Collections as a shared scope abstraction
 

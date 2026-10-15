@@ -596,7 +596,9 @@ public sealed class SqliteArchiveStoreTests
             command.CommandText = "SELECT COUNT(*) FROM import_runs;";
             Assert.Equal(1L, command.ExecuteScalar());
             command.CommandText = "SELECT MAX(version) FROM schema_migrations;";
-            Assert.Equal(2L, command.ExecuteScalar());
+            // The migration-1 archive upgrades through every later migration, including the
+            // migration-3 search index of Issue #102.
+            Assert.Equal(3L, command.ExecuteScalar());
             command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ix_ingest_checkpoints_scope';";
             Assert.Equal(1L, command.ExecuteScalar());
         }
@@ -610,7 +612,7 @@ public sealed class SqliteArchiveStoreTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT user_version FROM pragma_user_version;";
-            Assert.Equal(2L, command.ExecuteScalar());
+            Assert.Equal(3L, command.ExecuteScalar());
         }
     }
 

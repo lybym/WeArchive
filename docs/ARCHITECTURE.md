@@ -75,9 +75,10 @@ There is intentionally no Phase 1 media archive. Binary media/files are represen
 
 `Search / Query` is partially shipped: the M3a minimum retrieval slice — `ArchiveQueryService`,
 `message list` and `context` — reads the canonical archive through its existing timeline index
-(section 3.9). Keyword/full-text search is specified for M3b by [SEARCH_SPEC.md](SEARCH_SPEC.md)
-(ADR 0013 selects the unicode61 + CJK bigram-projection strategy) but is not implemented yet and
-no FTS index exists.
+(section 3.9). The M3b index slice ([Issue #102](https://github.com/lybym/WeArchive/issues/102))
+adds the derived FTS5 search index and the `ArchiveQueryService` search contract exactly as
+[SEARCH_SPEC.md](SEARCH_SPEC.md) specifies (ADR 0013's unicode61 + CJK bigram-projection
+strategy). The `wearchive search` CLI transport remains follow-up work (issue #103).
 
 ## 3. Layering
 
@@ -517,12 +518,17 @@ and no failure path mutates canonical data, Raw Vault evidence or a checkpoint. 
 are opaque API tokens, not persistent archive records, so no migration is involved
 ([`DATA_MODEL.md`](DATA_MODEL.md) section 23).
 
-Keyword/full-text search remains M3b target work; `ArchiveQueryService` does not implement it and
-no FTS index exists. The M3b-0 specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) defines
-the search behavior a future slice must implement: searchable-field inventory, the CJK
-bigram-projection index input, the matching/filter/cursor contract and the R0 derived-index
-lifecycle (forward migration + same-transaction maintenance + deterministic rebuild from
-canonical rows only).
+Canonical full-text search is implemented by the M3b index slice
+([Issue #102](https://github.com/lybym/WeArchive/issues/102)) as an extension of this service:
+`SearchAsync` owns query parsing, the CJK bigram projection of every term (SEARCH_SPEC.md section
+4.2/5.2, ADR 0013), filter validation — including Collection scope resolution through the one
+authoritative Collection catalog — and the opaque search cursor, while the archive store executes
+the compiled query against the derived FTS5 index and returns the same canonical DTOs. Search
+stays read-only (R0): the derived index is created by migration 3, maintained inside the existing
+R2 conversation-import transaction, deterministically rebuildable from canonical rows only
+(section 10.3 of the specification), and a missing or inconsistent index fails closed
+(`search_index_unavailable`) instead of being repaired by a query. The `wearchive search` CLI
+transport is the follow-up slice (issue #103) and is not implemented yet.
 
 ## 4. Data flow
 

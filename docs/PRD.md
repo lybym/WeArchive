@@ -363,7 +363,10 @@ Support local FTS over canonical semantic text and selected structured payload f
 
 The M3b-0 search specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) defines the searchable
 field inventory, the CJK-aware index input, the matching/filter/cursor contract and the derived
-index lifecycle that the M3b index and `wearchive search` slices must implement.
+index lifecycle. Shipped by the M3b index slice (Issue #102): the rebuildable FTS5 index
+(migration 3, same-transaction maintenance, deterministic rebuild, integrity verification) and the
+`ArchiveQueryService.SearchAsync` contract. The `wearchive search` CLI transport remains
+follow-up work (issue #103).
 
 ### FR-16 Structured retrieval
 
@@ -375,7 +378,9 @@ Shipped by Issue #27 (M3a minimum retrieval) through `ArchiveQueryService` and t
 `message list` / `context` CLI commands ([`CLI.md`](CLI.md)): listing is bounded and resumed with an
 opaque keyset cursor, `since`/`until` bounds are inclusive instants, participant and canonical type
 filters use stable canonical semantics, and `context` returns a bounded before/target/after window
-around a stable message ID. Keyword search and archive statistics remain M3b/FR-15 work.
+around a stable message ID. Keyword search is delivered as a service contract by the M3b index
+slice (Issue #102) — see FR-15; its CLI command remains follow-up work. Archive statistics beyond
+freshness remain future work.
 
 ### FR-17 ArchiveQueryService
 
@@ -504,9 +509,12 @@ maintaining a separate direct-live canonical publication path.
 Planned query commands include message listing, keyword search and message-context retrieval with stable JSON pagination. Exact syntax becomes normative in `CLI.md` only when implemented.
 
 Shipped status: `wearchive message list` and `wearchive context` are implemented (Issue #27) and
-normative in [`CLI.md`](CLI.md), including their `--json` DTOs and exit/error codes. Keyword search
-(`wearchive search`) and a CLI archive-status command are not implemented; `wearchive search` is
-specified by [SEARCH_SPEC.md](SEARCH_SPEC.md) for the M3b implementation slices.
+normative in [`CLI.md`](CLI.md), including their `--json` DTOs and exit/error codes. The search
+service contract (`ArchiveQueryService.SearchAsync`) and the derived FTS5 index are implemented by
+the M3b index slice (Issue #102, specified by [SEARCH_SPEC.md](SEARCH_SPEC.md)); the
+`wearchive search` CLI command is not implemented yet and becomes normative in [`CLI.md`](CLI.md)
+only when its transport slice (issue #103) ships. A CLI archive-status command is also not
+implemented.
 
 ### FR-31 Future MCP transport
 

@@ -1,16 +1,17 @@
 # WeArchive Canonical Search Specification (M3b-0)
 
-Status: specified, not implemented. This document is the deliverable of
+Status: normative specification. Sections 3–6 and 9–10 are **implemented** by the M3b index slice
+([Issue #102](https://github.com/lybym/WeArchive/issues/102)); the `wearchive search` CLI transport
+(sections 7–9 at the CLI layer and 12's exit-code mapping) is the follow-up slice (issue #103) and
+is not implemented yet. This document is the deliverable of
 [Issue #101](https://github.com/lybym/WeArchive/issues/101) (Roadmap M3b-0, PRD FR-15/16/17,
 HARNESS.md sections 6–7). It fixes the searchable-field inventory, the normalized index input, the
 matching/filter/cursor contract and the derived-index lifecycle for canonical full-text search, and
 records the benchmark evidence that selects the FTS5 tokenization strategy (ADR 0013).
 
-The FTS5 index itself and the `wearchive search` CLI command are **follow-up slices** — the index
-slice implements sections 3–6 and 10, the CLI slice implements sections 5, 7–9 and 12. Until those
-slices ship, no FTS table exists and `ArchiveQueryService` does not implement search (PRD FR-15/30
-shipped-status language is unchanged). Shipped-status sections of other documents must not claim
-search until it is delivered and tested.
+Until the CLI slice ships, `ArchiveQueryService` implements search (section 9.1) but no
+`wearchive search` command exists. Shipped-status sections of other documents must not claim the
+CLI command until it is delivered and tested.
 
 ## 1. Requirements trace
 
@@ -227,7 +228,8 @@ error. Filters narrow the candidate set; they never rewrite the query terms.
 ### 9.1 Core service extension
 
 Search is an **extension of the existing `ArchiveQueryService`** — no second query service, no
-model-specific chunk store, no new persistent entity:
+model-specific chunk store, no new persistent entity (implemented by the index slice,
+[Issue #102](https://github.com/lybym/WeArchive/issues/102)):
 
 ```csharp
 public sealed record SearchRequest
@@ -257,7 +259,7 @@ resolved reply and the full provenance block (MESSAGE_SCHEMA section 3.4) — so
 canonical archive through `IArchiveStore`; validation, filter resolution and cursor handling follow
 the M3a service patterns (R0: no write path, no checkpoint, no recovery state).
 
-### 9.2 CLI transport (proposed `wearchive search`)
+### 9.2 CLI transport (proposed `wearchive search`; implemented by the follow-up CLI slice)
 
 ```text
 wearchive search <query> [--conversation <stable-id>] [--collection <name>]
@@ -469,8 +471,9 @@ ideographs, punctuation-transparent phrases) are documented in sections 4.2/5.1 
   the benchmark pins live in `tests/WeArchive.Tests/FtsSearchBenchmarkTests.cs` and must match
   section 11 at all times — a failing pin invalidates the evidence and forces re-evaluation.
 - The index slice (FTS5 table, migration, migration test, rebuild, integrity, `ArchiveQueryService`
-  extension) and the CLI slice (`wearchive search` transport, JSON/error contract, CLI contract
-  tests) are separate follow-up Issues; each must reference this specification and keep its PR
-  within its own scope (DEVELOPMENT.md section 6).
-- Shipped-status language anywhere in `docs/` must continue to distinguish specified (this
-  document) from implemented (follow-up slices).
+  extension) is delivered by [Issue #102](https://github.com/lybym/WeArchive/issues/102); the CLI
+  slice (`wearchive search` transport, JSON/error contract, CLI contract tests) is the follow-up
+  Issue #103; each must reference this specification and keep its PR within its own scope
+  (DEVELOPMENT.md section 6).
+- Shipped-status language anywhere in `docs/` must continue to distinguish implemented (the index
+  slice) from the not-yet-implemented CLI transport (issue #103).

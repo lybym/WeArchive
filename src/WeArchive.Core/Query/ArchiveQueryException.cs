@@ -37,6 +37,25 @@ public static class ArchiveQueryErrorCodes
 
     /// <summary>The canonical archive could not be opened or queried.</summary>
     public const string ArchiveUnavailable = "archive_unavailable";
+
+    /// <summary>
+    /// A search query is empty or contains a term without any letter, digit or CJK ideograph
+    /// (docs/SEARCH_SPEC.md section 5.3, M3b index slice).
+    /// </summary>
+    public const string QueryInvalid = "query_invalid";
+
+    /// <summary>
+    /// The derived FTS index is missing, inconsistent with the canonical archive, or failed
+    /// verification; search fails closed instead of returning partial results
+    /// (docs/SEARCH_SPEC.md section 10.4, M3b index slice).
+    /// </summary>
+    public const string SearchIndexUnavailable = "search_index_unavailable";
+
+    /// <summary>The requested Collection name is not defined by the authoritative catalog.</summary>
+    public const string CollectionNotFound = "collection_not_found";
+
+    /// <summary>The authoritative Collection configuration exists but is not valid.</summary>
+    public const string CollectionConfigInvalid = "collection_config_invalid";
 }
 
 /// <summary>
@@ -94,5 +113,38 @@ public sealed class ArchiveQueryException : Exception
             // The exception type is included so an unexpected defect stays diagnosable instead of
             // being indistinguishable from an unreadable archive.
             $"the canonical archive could not be queried ({inner.GetType().Name}): {inner.Message}",
+            inner);
+
+    /// <summary>
+    /// A search query failed deterministic usage validation before any index access. The message
+    /// never echoes the query content (docs/SEARCH_SPEC.md section 5.3).
+    /// </summary>
+    public static ArchiveQueryException QueryInvalid(string message) =>
+        new(ArchiveQueryFailureKind.Validation, ArchiveQueryErrorCodes.QueryInvalid, message);
+
+    /// <summary>
+    /// The derived search index could not serve this query. Search is read-only (R0): this failure
+    /// carries no repair semantics; recovery is the explicit index rebuild of
+    /// docs/SEARCH_SPEC.md section 10.3. The reason never contains message or index content.
+    /// </summary>
+    public static ArchiveQueryException IndexUnavailable(string reason) =>
+        new(ArchiveQueryFailureKind.Unavailable, ArchiveQueryErrorCodes.SearchIndexUnavailable, reason);
+
+    /// <summary>
+    /// A requested Collection name is not defined. The message names the collection, which is the
+    /// caller's own input, not archive content.
+    /// </summary>
+    public static ArchiveQueryException CollectionNotFound(string name) =>
+        new(
+            ArchiveQueryFailureKind.NotFound,
+            ArchiveQueryErrorCodes.CollectionNotFound,
+            $"collection '{name}' is not defined in the collection configuration.");
+
+    /// <summary>The authoritative Collection configuration exists but is not valid.</summary>
+    public static ArchiveQueryException CollectionConfigInvalid(Exception inner) =>
+        new(
+            ArchiveQueryFailureKind.Validation,
+            ArchiveQueryErrorCodes.CollectionConfigInvalid,
+            $"the collection configuration is invalid: {inner.Message}",
             inner);
 }

@@ -6,6 +6,8 @@ using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using WeArchive.Core.Abstractions;
 using WeArchive.Core.Domain;
+using WeArchive.Core.Query;
+using WeArchive.Core.Search;
 
 namespace WeArchive.Infrastructure.Archive;
 
@@ -332,6 +334,14 @@ public sealed class SqliteArchiveStore : IArchiveStore
     /// The idempotent message upsert itself, on a caller-owned transaction and without
     /// publishing conversation aggregates, so a staged import transaction reuses exactly the
     /// same write path. docs/DATA_MODEL.md section 8.2.
+    /// <para>
+    /// The derived FTS index is maintained by the same transaction
+    /// (docs/SEARCH_SPEC.md section 10.2): a newly inserted message gains its index row, a
+    /// message whose semantic hash changed has its index row replaced, and an unchanged replay
+    /// writes nothing. There is no staleness window: a conversation is fully indexed when its
+    /// import transaction commits, and an index-write failure rolls the whole transaction back so
+    /// no unindexed canonical row is ever published.
+    /// </para>
     /// </summary>
     private static UpsertCounters UpsertMessagesCore(
         SqliteConnection connection,
@@ -344,6 +354,8 @@ public sealed class SqliteArchiveStore : IArchiveStore
         var unchanged = 0;
         var unknown = 0;
         var partial = 0;
+        var indexInserts = new List<KeyValuePair<string, string>>();
+        var indexReplacements = new List<string>();
 
         using var exists = connection.CreateCommand();
         exists.Transaction = transaction;
@@ -462,10 +474,15 @@ public sealed class SqliteArchiveStore : IArchiveStore
             if (existing is null)
             {
                 inserted++;
+                indexInserts.Add(new(message.Id, SearchableMessageText.Build(message)));
             }
             else if (!string.Equals(existing, hash, StringComparison.Ordinal))
             {
                 updated++;
+                // The projected body depends on semantic content, so a real update replaces the
+                // index row; an unchanged replay touches nothing.
+                indexReplacements.Add(message.Id);
+                indexInserts.Add(new(message.Id, SearchableMessageText.Build(message)));
             }
             else
             {
@@ -482,6 +499,11 @@ public sealed class SqliteArchiveStore : IArchiveStore
                 partial++;
             }
         }
+
+        // One batched replacement scan pays for every changed message of this transaction; the
+        // delete is content-agnostic, so it is correct for any stored index row.
+        ArchiveSearchIndex.DeleteMessageRows(connection, transaction, indexReplacements);
+        ArchiveSearchIndex.InsertBodies(connection, transaction, indexInserts);
 
         return new UpsertCounters
         {
@@ -1183,6 +1205,227 @@ public sealed class SqliteArchiveStore : IArchiveStore
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// One bounded page of the canonical full-text search, over the derived FTS index this store
+    /// maintains. docs/SEARCH_SPEC.md sections 5–8, docs/DATA_MODEL.md section 19.
+    /// <para>
+    /// Search fails closed: a missing or inconsistent index is
+    /// <see cref="WeArchive.Core.Query.ArchiveQueryErrorCodes.SearchIndexUnavailable"/>, never a
+    /// silently partial result set, and the index is never repaired by a query (R0). The guard is
+    /// the cheap part of the section 10.4 verification — index existence plus row-count agreement
+    /// — while the FTS5 integrity-check remains an explicit maintenance operation.
+    /// </para>
+    /// <para>
+    /// Ordering is the search total order: FTS5 bm25 rank ascending, then the canonical timeline
+    /// tail. The keyset predicate compares the same expressions the order by uses, so resuming a
+    /// page neither repeats nor skips a row of equal rank (docs/SEARCH_SPEC.md section 6).
+    /// </para>
+    /// </summary>
+    public Task<ArchiveSearchPage> SearchMessagesAsync(
+        ArchiveSearchQuery query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using var connection = Open();
+
+        // Fail-closed guard: the derived index must exist and agree with the canonical rows it
+        // derives from. Any deeper corruption is diagnosed by VerifySearchIndexAsync and repaired
+        // by RebuildSearchIndexAsync, never here.
+        if (!ArchiveSearchIndex.TableExists(connection))
+        {
+            throw ArchiveQueryException.IndexUnavailable(
+                "the FTS search index does not exist in this archive; run the archive maintenance index rebuild to restore search.");
+        }
+
+        long messageCount;
+        long indexCount;
+        using (var counts = connection.CreateCommand())
+        {
+            counts.CommandText = $"SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM {ArchiveSearchIndex.TableName});";
+            using var reader = counts.ExecuteReader();
+            reader.Read();
+            messageCount = reader.GetInt64(0);
+            indexCount = reader.GetInt64(1);
+        }
+
+        if (messageCount != indexCount)
+        {
+            throw ArchiveQueryException.IndexUnavailable(
+                $"the FTS search index does not agree with the canonical archive ({indexCount} index rows for {messageCount} messages); run the archive maintenance index rebuild to restore search.");
+        }
+
+        var sql = new StringBuilder();
+        sql.Append("SELECT ").Append(MessageColumns).Append(", f.rank")
+           .Append(" FROM messages m")
+           .Append(" JOIN ").Append(ArchiveSearchIndex.TableName).Append(" f ON f.message_id = m.id")
+           .Append(" WHERE f.messages_fts MATCH $expr");
+        var command = connection.CreateCommand();
+        command.Parameters.AddWithValue("$expr", query.MatchExpression);
+
+        if (query.ConversationId is not null)
+        {
+            sql.Append(" AND m.conversation_id = $conversation");
+            command.Parameters.AddWithValue("$conversation", query.ConversationId);
+        }
+
+        if (query.ConversationIds is not null)
+        {
+            sql.Append(" AND m.conversation_id IN (SELECT value FROM json_each($conversations))");
+            command.Parameters.AddWithValue("$conversations", JsonSerializer.Serialize(query.ConversationIds));
+        }
+
+        if (query.Since is not null)
+        {
+            sql.Append(" AND m.occurred_utc >= $since");
+            command.Parameters.AddWithValue("$since", query.Since.Value.ToUnixTimeSeconds());
+        }
+
+        if (query.Until is not null)
+        {
+            sql.Append(" AND m.occurred_utc <= $until");
+            command.Parameters.AddWithValue("$until", query.Until.Value.ToUnixTimeSeconds());
+        }
+
+        if (query.ParticipantId is not null)
+        {
+            sql.Append(" AND m.sender_id = $sender");
+            command.Parameters.AddWithValue("$sender", query.ParticipantId);
+        }
+
+        if (query.Type is not null)
+        {
+            sql.Append(" AND m.type = $type");
+            command.Parameters.AddWithValue("$type", query.Type.Value.ToWireName());
+        }
+
+        if (query.After is not null)
+        {
+            sql.Append(
+                """
+                 AND (f.rank > $afterRank
+                      OR (f.rank = $afterRank
+                          AND (m.occurred_utc > $afterUtc
+                               OR (m.occurred_utc = $afterUtc
+                                   AND (COALESCE(m.source_order_key, '') > $afterOrder
+                                        OR (COALESCE(m.source_order_key, '') = $afterOrder AND m.id > $afterId))))))
+                """);
+            command.Parameters.AddWithValue("$afterRank", query.After.Rank);
+            command.Parameters.AddWithValue("$afterUtc", query.After.OccurredUtc);
+            command.Parameters.AddWithValue("$afterOrder", query.After.SourceOrderKey);
+            command.Parameters.AddWithValue("$afterId", query.After.MessageId);
+        }
+
+        sql.Append(" ORDER BY f.rank ASC, m.occurred_utc ASC, COALESCE(m.source_order_key, '') ASC, m.id ASC LIMIT $limit;");
+        command.Parameters.AddWithValue("$limit", query.Limit + 1);
+        command.CommandText = sql.ToString();
+
+        var hits = new List<ArchiveSearchHit>(Math.Min(query.Limit, 128));
+        var hasMore = false;
+        try
+        {
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (hits.Count == query.Limit)
+                {
+                    hasMore = true;
+                    break;
+                }
+
+                hits.Add(new ArchiveSearchHit
+                {
+                    Message = ReadMessage(reader),
+                    Rank = reader.GetDouble(22),
+                });
+            }
+        }
+        catch (SqliteException ex)
+        {
+            // A corrupt index must not leak as a raw SQLite failure or as a partial result. The
+            // reason carries only the error number — never query content or index content
+            // (docs/SEARCH_SPEC.md sections 3 and 12).
+            throw ArchiveQueryException.IndexUnavailable(
+                $"the FTS search index could not serve the query (SQLite error {ex.SqliteErrorCode}); run the archive maintenance index verification for a diagnosis.");
+        }
+
+        return Task.FromResult(new ArchiveSearchPage { Hits = hits, HasMore = hasMore });
+    }
+
+    /// <summary>
+    /// Archive-maintenance verification of the derived search index
+    /// (docs/SEARCH_SPEC.md section 10.4): FTS5 integrity-check plus a messages-vs-index
+    /// row-count agreement check. Diagnoses only — it never repairs.
+    /// </summary>
+    public Task<SearchIndexVerification> VerifySearchIndexAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var connection = Open();
+
+        if (!ArchiveSearchIndex.TableExists(connection))
+        {
+            return Task.FromResult(new SearchIndexVerification
+            {
+                IsHealthy = false,
+                Reason = "the FTS search index does not exist in this archive.",
+            });
+        }
+
+        long messageCount;
+        long indexCount;
+        using (var counts = connection.CreateCommand())
+        {
+            counts.CommandText = $"SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM {ArchiveSearchIndex.TableName});";
+            using var reader = counts.ExecuteReader();
+            reader.Read();
+            messageCount = reader.GetInt64(0);
+            indexCount = reader.GetInt64(1);
+        }
+
+        if (messageCount != indexCount)
+        {
+            return Task.FromResult(new SearchIndexVerification
+            {
+                IsHealthy = false,
+                Reason = $"the index row count does not agree with the canonical archive ({indexCount} index rows for {messageCount} messages).",
+            });
+        }
+
+        try
+        {
+            using var check = connection.CreateCommand();
+            check.CommandText =
+                $"INSERT INTO {ArchiveSearchIndex.TableName}({ArchiveSearchIndex.TableName}) VALUES ('integrity-check');";
+            check.ExecuteNonQuery();
+        }
+        catch (SqliteException ex)
+        {
+            return Task.FromResult(new SearchIndexVerification
+            {
+                IsHealthy = false,
+                Reason = $"FTS5 integrity-check failed (SQLite error {ex.SqliteErrorCode}); the index is inconsistent with its stored content.",
+            });
+        }
+
+        return Task.FromResult(new SearchIndexVerification { IsHealthy = true });
+    }
+
+    /// <summary>
+    /// Deterministically rebuilds the derived search index from canonical rows only, in one
+    /// transaction (docs/SEARCH_SPEC.md section 10.3). Canonical data is never modified.
+    /// </summary>
+    public Task RebuildSearchIndexAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        ArchiveSearchIndex.Rebuild(connection, transaction, cancellationToken);
+        transaction.Commit();
+        return Task.CompletedTask;
+    }
+
     private SqliteConnection Open()
     {
         var connection = new SqliteConnection(_connectionString);
@@ -1230,6 +1473,8 @@ public sealed class SqliteArchiveStore : IArchiveStore
                 command.ExecuteNonQuery();
             }
 
+            migration.Backfill?.Invoke(connection, transaction);
+
             using (var record = connection.CreateCommand())
             {
                 record.Transaction = transaction;
@@ -1244,8 +1489,16 @@ public sealed class SqliteArchiveStore : IArchiveStore
             transaction.Commit();
         }
 
-        using (var version = connection.CreateCommand())
+        // user_version mirrors the current schema version. It is written only when it differs:
+        // opening a connection must stay a read-only operation on an up-to-date archive, because
+        // the canonical search reads through regular connections while an import transaction may
+        // hold the write lock (R0 read-only query, docs/ARCHITECTURE.md section 3.9).
+        var userVersion = Convert.ToInt32(
+            new SqliteCommand($"PRAGMA {SchemaVersionKey};", connection).ExecuteScalar(),
+            CultureInfo.InvariantCulture);
+        if (userVersion != ArchiveMigrations.CurrentVersion)
         {
+            using var version = connection.CreateCommand();
             version.CommandText = $"PRAGMA {SchemaVersionKey} = {ArchiveMigrations.CurrentVersion};";
             version.ExecuteNonQuery();
         }

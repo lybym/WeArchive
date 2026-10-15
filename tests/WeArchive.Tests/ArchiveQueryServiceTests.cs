@@ -764,6 +764,7 @@ public sealed class ArchiveQueryServiceTests
             harness.Store,
             new ThrowingRawVaultStore(),
             harness.IngestProgress,
+            harness.Collections,
             harness.Clock);
 
         var page = await service.ListMessagesAsync(Request(), CancellationToken.None);

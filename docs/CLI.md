@@ -986,16 +986,20 @@ Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26)
 query/search, Collection-scoped export selection, time-range selection and an interactive Collection
 editor are not.
 
-`message list` and `context` are implemented (Issue #27 / M3a). Keyword/full-text search
-(`wearchive search`), SQLite FTS indexing, statistics/activity timelines beyond archive freshness,
-Collection-scoped query filters and MCP transport are not: `ArchiveQueryService` already exposes
-capture/ingest/canonical freshness, but no CLI status command is wired to it yet. Keyword search is
-M3b work and no FTS index exists; the future `wearchive search` command/JSON/error contract is
-specified by [SEARCH_SPEC.md](SEARCH_SPEC.md) (Issue #101) and becomes normative here only when
-its implementation slice ships.
+`message list` and `context` are implemented (Issue #27 / M3a). The derived SQLite FTS index and
+the `ArchiveQueryService` search contract are implemented by the M3b index slice (Issue #102,
+[SEARCH_SPEC.md](SEARCH_SPEC.md)); the `wearchive search` command, its JSON/error contract and
+Collection-scoped query filters are not: there is no CLI surface for search yet, and the future
+`wearchive search` command/JSON/error contract is specified by
+[SEARCH_SPEC.md](SEARCH_SPEC.md) (sections 7–9, 12) and becomes normative here only when its
+transport slice (issue #103) ships. Statistics/activity timelines beyond archive freshness and the
+MCP transport are also not implemented: `ArchiveQueryService` already exposes
+capture/ingest/canonical freshness, but no CLI status command is wired to it yet.
 
-`--collection` is not accepted by `message list`; Collection-scoped query filtering is follow-up
-work layered on the same `ArchiveQueryService` and the same Collection catalog.
+`--collection` is not accepted by `message list`; Collection-scoped query filtering exists today
+only inside the search service contract (the search scope is resolved through the same
+authoritative Collection catalog) and reaches the CLI with the `wearchive search` transport
+(issue #103).
 
 `wearchive collection` has no `--account` option: stable conversation IDs are account-scoped by
 construction, and the capture account is auto-selected exactly as `capture` does. A member that
