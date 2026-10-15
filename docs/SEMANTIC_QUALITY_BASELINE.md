@@ -121,7 +121,38 @@ producers the shipped parser recognizes, with the corpus as evidence.
 All 33 records carry `source_version = synthetic-wechat4x-m2a-1` in provenance; the
 sample is single-version by design (section 1).
 
-### 4.3 Partial and diagnostics
+### 4.3 By upstream source type (type/subtype)
+
+21 distinct upstream `(type, subtype)` pairs in the corpus; the per-record verbatim codes
+are pinned by `EveryCorpusRecordReachesTheCanonicalBoundaryWithItsCodesPreserved`.
+
+| Upstream (type, subtype) | Records | Canonical outcome(s) |
+| --- | --- | --- |
+| (1, 0) text | 5 | text ×5 |
+| (34, 0) voice | 3 | voice ×3 (2 partial: duration unavailable) |
+| (3, 0) image | 1 | image |
+| (43, 0) video | 1 | video |
+| (47, 0) emoji | 1 | emoji |
+| (49, 5) app/url | 4 | link ×3, unknown ×1 (malformed XML, U3) |
+| (49, 6) app/file | 2 | file ×2 (1 partial: name unavailable) |
+| (49, 19) app/forward bundle | 2 | forward_bundle ×2 (1 partial: description fallback) |
+| (49, 33) app/mini program | 1 | mini_program |
+| (49, 57) app/quote | 1 | text + reply snapshot |
+| (49, 87) app/unmodeled | 1 | app_share partial (D3) |
+| (49, 101) app envelope w/o appmsg | 1 | unknown partial (U2) |
+| (49, 2000) app/red packet | 1 | red_packet |
+| (49, 2001) app/transfer | 1 | app_share partial (D1) |
+| (42, 0) contact card | 1 | contact_card |
+| (48, 0) location | 1 | location |
+| (50, 0) VoIP | 1 | system (event voip) |
+| (10000, 0) system | 2 | system (template), revoke |
+| (10002, 0) system extended | 1 | system |
+| (1000007, 0) unmodeled classic | 1 | unknown (U1) |
+| (1050001, 0) unmodeled classic | 1 | unknown (U1) |
+
+Four wire outcomes land in `unknown` (U1 ×2, U2, U3); none is dropped.
+
+### 4.4 Partial and diagnostics
 
 | Metric | Count |
 | --- | --- |
@@ -131,7 +162,7 @@ sample is single-version by design (section 1).
 | `partial_app_message` diagnostics | 6 (34/0 ×2, 49/6, 49/87, 49/2001, 49/19) |
 | `unresolved_reply_target` diagnostics | 0 (the corpus quote carries a locally available snapshot) |
 
-### 4.4 Export-manifest counters (real pipeline run)
+### 4.5 Export-manifest counters (real pipeline run)
 
 The corpus is imported through `ImportService` and exported through
 `JsonlDatasetExporter` into a fresh SQLite archive; the manifests aggregate to:
@@ -139,7 +170,7 @@ The corpus is imported through `ImportService` and exported through
 (`unsupported_count` mirrors `unknown_count` by exporter contract). Two independent
 archive-and-export runs produce byte-identical JSONL datasets and identical counters.
 
-### 4.5 Nested text preservation (baseline behaviors that must not regress)
+### 4.6 Nested text preservation (baseline behaviors that must not regress)
 
 - Quote/reply: `reply_to.sender_name` (张三), `reply_to.text` (下午三点开会。), resolved
   canonical `sender_id` and the quoted record's `createtime` are preserved;
