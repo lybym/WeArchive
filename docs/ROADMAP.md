@@ -180,9 +180,11 @@ media and R3+ recovery. They are not v0.6.0 release blockers.
 source completeness, stable IDs or deterministic export.
 
 Ordered proposed slices (each owns a separate Issue):
-1. **M2a quality baseline:** privacy-safe classification of unknown messages,
-   representative fixtures, measured semantics/coverage and reproducible
-   regression acceptance criteria.
+1. **M2a quality baseline (delivered by Issue #97):** privacy-safe classification of
+   unknown messages, representative fixtures, measured semantics/coverage and
+   reproducible regression acceptance criteria. The measured baseline, the synthetic
+   wire-level corpus and the pinned regression tests live in
+   `docs/SEMANTIC_QUALITY_BASELINE.md` and `tests/WeArchive.Tests/SemanticBaselineTests.cs`.
 2. **M2b special/unknown messages:** improve high-impact supported
    classifications, retain unsupported evidence and explicit diagnostics.
 3. **M2c reply/quote/forward relations:** resolve supported targets and
