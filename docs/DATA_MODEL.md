@@ -597,21 +597,39 @@ are valid data.
 - Backward-incompatible archive changes require a documented migration path.
 - Export and message schemas are independently versioned in `manifest.json`.
 
-Migration 1 creates the initial canonical schema. Migration 2 adds scoped `ingest_checkpoints`; it leaves migration-1 `source_checkpoints` and all existing archive rows untouched.
+Migration 1 creates the initial canonical schema. Migration 2 adds scoped `ingest_checkpoints`; it leaves migration-1 `source_checkpoints` and all existing archive rows untouched. Migration 3 (Issue #102) creates the derived canonical FTS5 search index (`messages_fts`) and backfills it from the existing canonical rows inside the migration's own transaction; it adds no canonical table or column and changes no existing row.
 
 ## 19. Search indexing
 
 Full-text search is a derived index, not the canonical store.
 
-The FTS index should be rebuildable from normalized `semantic_text` and selected structured payload
-fields such as filenames, link titles and descriptions. The M3b-0 search specification
-([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013) fixes the searchable-field inventory, the normalized
-index input (including the CJK bigram projection), the matching/cursor contract and the derived
-R0 index lifecycle: a forward migration creates and backfills the FTS5 table, index rows are
-maintained inside the same SQLite transaction as the conversation's message upserts, and a full
-rebuild is a pure re-derivation from canonical rows.
+The FTS index is rebuilt from normalized `semantic_text` and the selected structured payload fields
+(filenames, link titles and descriptions, mini-program names and titles, location labels and
+addresses, contact-card display names, forwarded-bundle titles and item texts) as fixed by the
+M3b-0 search specification ([SEARCH_SPEC.md](SEARCH_SPEC.md), ADR 0013), which also fixes the
+searchable-field inventory, the normalized index input (including the CJK bigram projection), the
+matching/cursor contract and the derived R0 index lifecycle.
 
-No FTS index exists in migrations 1–2; search is an M3b follow-up slice and is not implemented yet.
+Shipped by the M3b index slice ([Issue #102](https://github.com/lybym/WeArchive/issues/102)):
+
+- **Schema (migration 3).** One FTS5 virtual table `messages_fts(body, message_id UNINDEXED,
+  tokenize='unicode61')`: the `body` column stores the CJK bigram-projected searchable text of one
+  canonical message; the UNINDEXED `message_id` column is the stable message-id ↔ row mapping. No
+  canonical column changes. The migration also backfills the index from existing canonical rows
+  (ordered by id), so an upgraded archive is immediately searchable.
+- **Ownership and lifecycle.** The index is R0 derived state: created by migration 3, maintained
+  inside the same SQLite transaction as the message upserts of a conversation import (a published
+  conversation is always fully indexed; there is no staleness window), deterministically rebuildable
+  from canonical rows only, and verified as an archive-maintenance operation (FTS5 integrity-check
+  plus a messages-vs-index row-count agreement). A missing or inconsistent index fails closed
+  (`search_index_unavailable`); recovery is the explicit rebuild, never a query-time repair.
+- **Query.** `ArchiveQueryService.SearchAsync` compiles caller queries (projecting every term with
+  the same projection) and the archive store executes them; results are ordered by FTS5 bm25 rank
+  and then the canonical timeline tail `(occurred_utc, source_order_key, id)`, so ties never shuffle
+  between pages. The contract exposes no score value.
+
+The `wearchive search` CLI transport (JSON/error contract, CLI contract tests) is the follow-up
+slice (issue #103) and is not implemented yet.
 
 ## 20. Raw source retention
 

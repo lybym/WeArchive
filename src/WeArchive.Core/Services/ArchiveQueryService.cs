@@ -1,7 +1,9 @@
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
 using WeArchive.Core.Query;
 using WeArchive.Core.RawVault;
+using WeArchive.Core.Search;
 
 namespace WeArchive.Core.Services;
 
@@ -16,8 +18,16 @@ namespace WeArchive.Core.Services;
 /// boundary — never SQLite row shapes, WeChat tables or numeric source type codes.
 /// </para>
 /// <para>
+/// Canonical full-text search is part of this boundary (M3b index slice,
+/// docs/SEARCH_SPEC.md sections 5–9): the service owns query parsing, the CJK bigram projection of
+/// every term, filter validation, Collection scope resolution and cursor handling; the archive
+/// store owns the derived-index execution. Hits return the same canonical message DTO the M3a
+/// commands return, and the result contract exposes no score — only the order.
+/// </para>
+/// <para>
 /// Query is read-only (R0): no failure path mutates canonical data, Raw Vault evidence, the capture
-/// checkpoint or an ingest checkpoint, and no persistent recovery state exists for it.
+/// checkpoint or an ingest checkpoint, and no persistent recovery state exists for it. A failing
+/// derived index is diagnosed and repaired by explicit maintenance operations, never by a query.
 /// </para>
 /// <para>
 /// The preservation store is used for exactly one thing: reporting capture freshness through the
@@ -42,17 +52,20 @@ public sealed class ArchiveQueryService
     private readonly IArchiveStore _archive;
     private readonly IRawVaultStore _rawVault;
     private readonly IIngestProgressSource _ingestProgress;
+    private readonly CollectionCatalogService _collections;
     private readonly IClock _clock;
 
     public ArchiveQueryService(
         IArchiveStore archive,
         IRawVaultStore rawVault,
         IIngestProgressSource ingestProgress,
+        CollectionCatalogService collections,
         IClock clock)
     {
         _archive = archive ?? throw new ArgumentNullException(nameof(archive));
         _rawVault = rawVault ?? throw new ArgumentNullException(nameof(rawVault));
         _ingestProgress = ingestProgress ?? throw new ArgumentNullException(nameof(ingestProgress));
+        _collections = collections ?? throw new ArgumentNullException(nameof(collections));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
@@ -155,6 +168,125 @@ public sealed class ArchiveQueryService
             Message = context.Target,
             Before = context.Before,
             After = context.After,
+        };
+    }
+
+    /// <summary>
+    /// Runs one bounded page of a canonical full-text search (M3b index slice,
+    /// docs/SEARCH_SPEC.md sections 5–9).
+    /// </summary>
+    /// <exception cref="ArchiveQueryException">
+    /// The query is invalid (<c>query_invalid</c>), a filter or cursor is unusable, the requested
+    /// conversation or Collection is unknown, or the derived index is missing or inconsistent
+    /// (<c>search_index_unavailable</c> — fail-closed, never repaired by a query).
+    /// </exception>
+    public async Task<SearchPage> SearchAsync(
+        SearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // The query is validated and compiled before any archive access: a deterministic usage
+        // failure must not depend on archive state, and no invalid query ever reaches FTS5
+        // (docs/SEARCH_SPEC.md section 5.3).
+        var terms = SearchQueryCompiler.Parse(request.Query);
+        var matchExpression = SearchQueryCompiler.Compile(terms);
+
+        var limit = ValidateLimit(request.Limit);
+        var since = ParseInstant(request.Since, "since");
+        var until = ParseInstant(request.Until, "until");
+        if (since is not null && until is not null && since > until)
+            throw ArchiveQueryException.Invalid("since must not be later than until.");
+
+        var participant = ValidateParticipant(request.ParticipantId);
+        var type = ParseType(request.Type);
+
+        // --conversation and --collection are mutually exclusive scopes in v1
+        // (docs/SEARCH_SPEC.md section 7).
+        if (request.ConversationId is not null && request.CollectionName is not null)
+            throw ArchiveQueryException.Invalid(
+                "conversation and collection scopes are mutually exclusive; supply one search scope.");
+
+        string? conversationId = null;
+        IReadOnlyList<string> collectionConversationIds = [];
+        if (request.ConversationId is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.ConversationId))
+                throw ArchiveQueryException.Invalid("a stable conversation id is required.");
+
+            conversationId = request.ConversationId;
+            var conversation = await ReadAsync(
+                () => _archive.GetConversationAsync(conversationId, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (conversation is null)
+                throw ArchiveQueryException.ConversationNotFound(conversationId);
+        }
+        else if (request.CollectionName is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.CollectionName))
+                throw ArchiveQueryException.Invalid("a collection name is required.");
+
+            // The one authoritative Collection catalog resolves the scope; an unknown name and an
+            // invalid configuration are deterministic failures, while a member that resolves to no
+            // archived conversation contributes no results and never errors by itself.
+            CollectionDefinition definition;
+            try
+            {
+                definition = await _collections.ResolveAsync(request.CollectionName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (CollectionNotFoundException)
+            {
+                throw ArchiveQueryException.CollectionNotFound(request.CollectionName);
+            }
+            catch (CollectionConfigurationException exception)
+            {
+                throw ArchiveQueryException.CollectionConfigInvalid(exception);
+            }
+
+            collectionConversationIds = definition.ConversationIds;
+        }
+
+        // The cursor is bound to the normalized query (the parsed term structure, so two spellings
+        // of the same search share a cursor) plus the resolved filter set. The page size is
+        // excluded, so a caller may change the limit between pages (docs/SEARCH_SPEC.md section 8).
+        var fingerprint = SearchCursor.Fingerprint(
+            terms,
+            conversationId,
+            collectionConversationIds,
+            since?.ToUnixTimeSeconds(),
+            until?.ToUnixTimeSeconds(),
+            participant,
+            type?.ToWireName());
+
+        var page = await ReadAsync(
+            () => _archive.SearchMessagesAsync(new ArchiveSearchQuery
+            {
+                MatchExpression = matchExpression,
+                ConversationId = conversationId,
+                ConversationIds = request.CollectionName is null ? null : collectionConversationIds,
+                Since = since,
+                Until = until,
+                ParticipantId = participant,
+                Type = type,
+                Limit = limit,
+                After = request.Cursor is null ? null : SearchCursor.Decode(fingerprint, request.Cursor),
+            }, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+        // A page that reports more rows must hand back the cursor that reaches them; otherwise the
+        // caller would be told to continue with no way to continue. Zero matches is a successful
+        // result with no cursor (docs/SEARCH_SPEC.md section 5.4).
+        var hasMore = page.HasMore && page.Hits.Count > 0;
+        var nextCursor = hasMore
+            ? SearchCursor.Encode(fingerprint, OrderKeyOf(page.Hits[^1]))
+            : null;
+
+        return new SearchPage
+        {
+            Items = [.. page.Hits.Select(hit => hit.Message)],
+            HasMore = hasMore,
+            NextCursor = nextCursor,
         };
     }
 
@@ -380,6 +512,19 @@ public sealed class ArchiveQueryService
         OccurredUtc = message.OccurredAt.ToUnixTimeSeconds(),
         SourceOrderKey = message.Source.SourceOrderKey ?? string.Empty,
         MessageId = message.Id,
+    };
+
+    /// <summary>
+    /// The exclusive search-order position after the page's last hit: bm25 rank first, then the
+    /// canonical timeline tail (docs/SEARCH_SPEC.md section 6). The rank is an ordering input for
+    /// the next page's keyset and never becomes a result value.
+    /// </summary>
+    private static SearchOrderPosition OrderKeyOf(ArchiveSearchHit hit) => new()
+    {
+        Rank = hit.Rank,
+        OccurredUtc = hit.Message.OccurredAt.ToUnixTimeSeconds(),
+        SourceOrderKey = hit.Message.Source.SourceOrderKey ?? string.Empty,
+        MessageId = hit.Message.Id,
     };
 
     /// <summary>

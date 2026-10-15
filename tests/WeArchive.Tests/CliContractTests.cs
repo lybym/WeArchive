@@ -624,6 +624,16 @@ public sealed class CliContractTests
             });
         }
 
+        public Task<ArchiveSearchPage> SearchMessagesAsync(
+            ArchiveSearchQuery query, CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
+        public Task<SearchIndexVerification> VerifySearchIndexAsync(CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
+        public Task RebuildSearchIndexAsync(CancellationToken cancellationToken) =>
+            throw new NotImplementedException();
+
         public Task<ImportRun> BeginImportRunAsync(
             string accountId, SourceDescriptor descriptor, CancellationToken cancellationToken) =>
             throw new NotImplementedException();

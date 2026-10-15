@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace WeArchive.Infrastructure.Archive;
 
 /// <summary>
@@ -7,7 +9,7 @@ namespace WeArchive.Infrastructure.Archive;
 /// </summary>
 internal static class ArchiveMigrations
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     public static IReadOnlyList<Migration> All { get; } =
     [
@@ -136,7 +138,26 @@ internal static class ArchiveMigrations
             """,
             "CREATE UNIQUE INDEX ix_ingest_checkpoints_scope ON ingest_checkpoints(account_id, adapter_family, scope_kind, scope_id);",
         ]),
+        new Migration(3, "canonical FTS5 search index",
+        [
+            // The derived, rebuildable search index of docs/SEARCH_SPEC.md sections 3–4 and 10
+            // (docs/DATA_MODEL.md section 19). The CJK bigram projection cannot run in SQL, so the
+            // backfill of existing canonical rows is the migration's code hook below and belongs to
+            // this same migration transaction: an upgraded archive is immediately searchable.
+            ArchiveSearchIndex.CreateStatement,
+        ],
+        static (connection, transaction) =>
+            ArchiveSearchIndex.Rebuild(connection, transaction, CancellationToken.None)),
     ];
 }
 
-internal sealed record Migration(int Version, string Description, IReadOnlyList<string> Statements);
+/// <summary>
+/// One forward-only schema step. The optional <see cref="Backfill"/> hook runs derived-data work
+/// that cannot be expressed as SQL (the search index's CJK bigram projection) inside the same
+/// migration transaction, after the statements and before the migration record is written.
+/// </summary>
+internal sealed record Migration(
+    int Version,
+    string Description,
+    IReadOnlyList<string> Statements,
+    Action<SqliteConnection, SqliteTransaction>? Backfill = null);
