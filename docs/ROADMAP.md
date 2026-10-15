@@ -189,8 +189,8 @@ Ordered proposed slices (each owns a separate Issue):
    classifications, retain unsupported evidence and explicit diagnostics.
 3. **M2c reply/quote/forward relations:** resolve supported targets and
    nested text, preserving null/unknown for unavailable source truth.
-4. **M2d metadata refresh/merge:** maintain stable identity and export paths
-   through contact/remark changes; regression through offline rebuild/export.
+4. **M2d metadata refresh/merge (delivered by Issue #100):** maintain stable identity and
+   export paths through contact/remark changes; regression through offline rebuild/export.
 
 Acceptance: positive and negative MESSAGE_SCHEMA fixtures, before/after
 quality measures, unchanged source/Raw Vault, no invented fields, R1/R2

@@ -255,6 +255,11 @@ VoIP/system variants were sampled, so no code change is authorized.
 Status after M2c (Issue #99): **E1 is adopted** and **E2/E3 are documented and pinned**
 without behavior change — section 11 records the before/after evidence.
 
+Status after M2d (Issue #100): **F1 is hardened and pinned**, **F2 stays
+documented-not-adopted** — section 12 records the evidence. No classification outcome
+changed: the corpus, the pinned values in section 4 and every preservation invariant are
+unchanged.
+
 ### M2b — special/unknown classification
 
 | ID | P | Finding | Evidence | Bounded requirement |
@@ -500,3 +505,72 @@ A future source that persists item times is a new corpus scenario, not a data ch
   source-neutral and unchanged. Reliability levels unchanged (R1 capture / R2 conversation
   ingest / R0 read-only query); the version bump reuses the existing documented
   checkpoint-invalidation mechanism, adding no journal, marker or recovery state.
+
+## 12. M2d update: identity/remark metadata refresh and deterministic rebuild (Issue #100)
+
+The M2d slice ([Issue #100](https://github.com/lybym/WeArchive/issues/100), Roadmap M2d,
+PRD G5/G9, FR-19/22) hardens F1 and documents F2 from the section 7 matrix. No
+classification outcome changed: the corpus, the pinned tables in section 4 and every
+preservation invariant are unchanged (44 records; `SemanticBaselineTests` stays green
+without modification).
+
+### 12.1 F1 (P2) — stable identities across remark/nickname refresh (hardened, pinned)
+
+- Measured baseline (section 7): group sender identity degrades gracefully but unevenly —
+  known-participant prefixes resolve through the prefix hint, unmatched prefixes still
+  resolve through the shard's real sender id, and participants without contact metadata
+  export as stable ids with empty display data. The bounded requirement: M2d refresh/merge
+  must keep stable ids stable across remark/nickname changes (Roadmap M2d); the baseline
+  pins the id-only resolution.
+- Shipped behavior, now pinned end-to-end by `MetadataRefreshDeterminismTests`:
+  - contact metadata merges only evidence-supported updates: a newer non-null
+    remark/nickname/alias replaces the archived value; a cleared value (null after adapter
+    normalization) or an absent contact row provides no evidence and never erases the last
+    observed value (null-safe upsert, docs/DATA_MODEL.md section 6);
+  - stable participant/conversation/message ids and physical export paths never move:
+    the fixture matrix covers rename, duplicate display names, missing participant
+    metadata and observed conflicts (cleared remark, withdrawn contact row) across
+    incremental canonical ingest and the offline Raw Vault rebuild, with the group
+    conversation spanning two rotation windows (`message_1.db` oldest, `message_0.db`
+    newest — Issue #71);
+  - a sender the evidence cannot resolve (present in a shard's `Name2Id` map but absent
+    from contacts) stays `sender_id: null` and receives no invented identity row;
+  - the user-maintained `display_name_override` survives re-export — carried over
+    verbatim for referenced identities and for unreferenced ones — and wins over the
+    regenerated archive values at resolution time (docs/EXPORT_PRD.md sections 5.3/5.4);
+  - deterministic re-export: with the manifest's `created_at` pinned (its only
+    non-reproducible field), the whole package is byte-identical across repeated
+    exports, and the rebuild-produced archive exports byte-identically to the
+    incremental-ingest archive; a partial generation is refused by the rebuild and
+    leaves the existing archive untouched.
+- Delta: none in sections 4.1–4.5 — no parser, normalizer, archive, exporter or rebuilder
+  behavior change; the new coverage pins documented persistence/export behavior that was
+  previously unpinned.
+
+### 12.2 F2 (P3) — official-account sender stays unresolved (documented, not adopted)
+
+The matrix marks official-account participant modeling as optional and requires that no
+identity is invented. No real official-account participant evidence was sampled in this
+slice, so no modeling was added: the pinned corpus behavior (`text_official_push`,
+`link_official_article` — `sender_id` null) is unchanged, and the new fixture pins the
+group-level counterpart (a Name2Id sender without contact evidence resolves to no
+identity and no identities.yaml entry). Modeling official-account participants remains
+future work that needs real sampled evidence and its own approved scope.
+
+### 12.3 Verification and governance
+
+- New coverage: `tests/WeArchive.Tests/MetadataRefreshDeterminismTests.cs` — the fixture
+  matrix is driven through the shipped captured-generation pipeline
+  (`RawVaultIngestService` → `SqliteArchiveStore` → `JsonlDatasetExporter` and
+  `RebuildService`) over a synthetic v2/manifest-3 Raw Vault; no live WeChat client, no
+  key acquirer and no network is reachable from these tests, which is itself the
+  acceptance rule "no new dependency on live WeChat for canonical-only export".
+- No persisted-schema change: no migration and no migration test; the null-safe
+  participant merge rule is now stated in docs/DATA_MODEL.md section 6 without changing
+  it.
+- No canonical message-schema change; no architecture change: contact reading and sender
+  resolution stay in `src/WeArchive.Infrastructure/WeChat`; the archive, normalizer,
+  exporter and rebuilder are source-neutral and unchanged. Reliability levels unchanged
+  (R1 capture / R2 conversation ingest / R0 read-only query): the rebuild coverage
+  refusal and export staging/backup behavior are exercised exactly as shipped, adding no
+  journal, marker or recovery state.
