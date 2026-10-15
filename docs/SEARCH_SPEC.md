@@ -74,7 +74,8 @@ Excluded from the index input, per type:
   payloads (MESSAGE_SCHEMA section 7). The rule is stated so a future field cannot silently enter
   the index: a field not listed above is excluded by default.
 
-URLs inside `semantic_text` (link/app-share texts per MESSAGE_SCHEMA section 9) are canonical
+URLs inside `semantic_text` (link texts per MESSAGE_SCHEMA section 9, app-share texts per section
+10) are canonical
 message text and are therefore indexed as ordinary tokens; they arrive through the canonical text,
 not through the excluded `original_url`/`fallback_url` payload fields.
 
@@ -441,7 +442,9 @@ ideographs, punctuation-transparent phrases) are documented in sections 4.2/5.1 
 | Empty/whitespace query, or a term without any letter/digit/CJK character | `query_invalid`, exit 2, before any FTS5 call; message never echoes query content |
 | FTS5 operator-looking input (`模型") OR (1=1) --`) | Literal token sequence; matches nothing; exit 0 with empty results (no injection surface) |
 | No matches / empty archive | Success: empty `items`, `has_more` false, null cursor, exit 0 |
-| Unknown conversation or participant ID | `conversation_not_found`, exit 1 |
+| Unknown conversation ID | `conversation_not_found`, exit 1 |
+| Malformed participant ID (not `u_<16 hex>`) | `usage_error`, exit 2 |
+| Unknown but well-formed participant ID | Not an error — same as `message list`: the filter matches nothing and returns an empty successful page (exit 0) |
 | Unknown Collection name / invalid Collection config | `collection_not_found` exit 1 / `collection_config_invalid` exit 2 |
 | Missing, corrupt or failed-verification index | `search_index_unavailable`, exit 1, structured diagnostic; no automatic repair, no silent partial results |
 | Unreadable archive | `archive_unavailable`, exit 1 |
