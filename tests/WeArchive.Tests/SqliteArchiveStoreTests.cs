@@ -71,10 +71,12 @@ public sealed class SqliteArchiveStoreTests
         DateTimeOffset? at = null,
         string? orderKey = null,
         ReplyReference? reply = null,
-        JsonObject? payload = null) => new()
+        JsonObject? payload = null,
+        string conversationId = "g_1",
+        string partition = "message_0") => new()
         {
-            Id = StableIds.Message("g_1", sourceId),
-            ConversationId = "g_1",
+            Id = StableIds.Message(conversationId, sourceId),
+            ConversationId = conversationId,
             SenderId = "u_alice",
             OccurredAt = at ?? When,
             Type = type,
@@ -84,10 +86,10 @@ public sealed class SqliteArchiveStoreTests
             Source = new SourceProvenance
             {
                 SourceProfileId = "acct",
-                SourceConversationId = "100200300@chatroom",
+                SourceConversationId = conversationId == "g_1" ? "100200300@chatroom" : conversationId,
                 SourceMessageId = sourceId,
                 SourceType = "1",
-                SourcePartition = "message_0",
+                SourcePartition = partition,
                 SourceOrderKey = orderKey ?? sourceId,
                 AdapterName = "fixture",
                 AdapterVersion = "1.0.0",
@@ -370,6 +372,84 @@ public sealed class SqliteArchiveStoreTests
         var after = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
         Assert.Null(after.ReplyTo!.MessageId);
         Assert.Equal("已删除的消息。", after.ReplyTo.Text);
+    }
+
+    [Fact]
+    public async Task ReplyTargetResolvesAcrossShardPartitionsWithinOneConversation()
+    {
+        // Issue #99 cross-shard/rotation case: the server-id composite carries no partition,
+        // so a reply whose target row was read from a different rotation window resolves
+        // exactly like a same-partition one. docs/DATA_MODEL.md sections 8.7 and 16.2.
+        using var temp = new TempDirectory();
+        var store = await CreateStoreAsync(temp);
+        await SeedAsync(store);
+
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:1", "下午三点开会。", partition: "message_1"),
+            Message(
+                "s:2",
+                "我同意这个方案。",
+                reply: new ReplyReference { SourceMessageId = "s:1", SenderId = "u_bob", Text = "下午三点开会。" },
+                orderKey: "9",
+                partition: "message_0"),
+        ], CancellationToken.None);
+
+        var resolved = await store.ResolveReplyTargetsAsync("g_1", CancellationToken.None);
+        Assert.Equal(1, resolved);
+
+        var reply = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
+        Assert.Equal(StableIds.Message("g_1", "s:1"), reply.ReplyTo!.MessageId);
+    }
+
+    [Fact]
+    public async Task ReplyResolutionNeverLinksAcrossConversations()
+    {
+        // Issue #99: the reference matches by upstream id inside the referenced conversation
+        // only. The same server id archived under a different conversation must never satisfy
+        // the reference — canonical target ids are conversation-scoped derivations, so a
+        // cross-conversation link would be a wrong-target fabrication.
+        using var temp = new TempDirectory();
+        var store = await CreateStoreAsync(temp);
+        await SeedAsync(store);
+
+        await store.UpsertConversationsAsync(
+        [
+            new ArchiveConversation
+            {
+                Id = "g_2",
+                AccountId = "a_1",
+                SourceConversationId = "200300400@chatroom",
+                Kind = ConversationKind.Group,
+                Title = "另一个群",
+            },
+        ], CancellationToken.None);
+
+        // s:1 exists in both conversations. g_1's reply must resolve to g_1's own copy and
+        // stay blind to the g_2 row with the same upstream id.
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:1", "下午三点开会。"),
+            Message(
+                "s:2",
+                "我同意这个方案。",
+                reply: new ReplyReference { SourceMessageId = "s:1", SenderId = "u_bob", Text = "下午三点开会。" },
+                orderKey: "9"),
+        ], CancellationToken.None);
+        await store.UpsertMessagesAsync(
+        [
+            Message("s:1", "别的群的同名消息。", conversationId: "g_2"),
+        ], CancellationToken.None);
+
+        await store.ResolveReplyTargetsAsync("g_1", CancellationToken.None);
+        await store.ResolveReplyTargetsAsync("g_2", CancellationToken.None);
+
+        var g1Reply = Assert.Single(await store.ReadMessagesAsync("g_1", CancellationToken.None), m => m.Text == "我同意这个方案。");
+        Assert.Equal(StableIds.Message("g_1", "s:1"), g1Reply.ReplyTo!.MessageId);
+
+        // g_2 has no reply at all; its message keeps no reply relationship and the g_1
+        // resolution stayed inside g_1's own records.
+        Assert.All(await store.ReadMessagesAsync("g_2", CancellationToken.None), m => Assert.Null(m.ReplyTo));
     }
 
     [Fact]

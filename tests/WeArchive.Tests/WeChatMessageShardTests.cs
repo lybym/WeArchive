@@ -280,6 +280,80 @@ public sealed class WeChatMessageShardTests
     }
 
     [Fact]
+    public async Task ReplyReferencesAreComposedIntoTheServerIdIdentitySpace()
+    {
+        // Issue #99 (baseline defect E1): a type-49/57 quote references its target by upstream
+        // svrid. The adapter archives the target row under the documented `s:<server_id>`
+        // composite and must compose the reply reference into the same identity space — an
+        // unwrapped raw svrid can never match an archived identity, so resolution would be
+        // dead code (docs/DATA_MODEL.md sections 8.7 and 16.2).
+        using var temp = new TempDirectory();
+        var storage = temp.Combine("db_storage");
+        Directory.CreateDirectory(Path.Combine(storage, "contact"));
+        Directory.CreateDirectory(Path.Combine(storage, "message"));
+
+        const string profileId = "a_synthetic";
+        const string conversationId = "56894683949@chatroom";
+        var table = WeChat4Schema.MessageTableName(conversationId);
+        Build(Path.Combine(storage, "contact", "contact.db"), $"""
+            CREATE TABLE {WeChat4Schema.ContactTable} (username TEXT PRIMARY KEY, remark TEXT, nick_name TEXT, alias TEXT, local_type INTEGER);
+            INSERT INTO {WeChat4Schema.ContactTable} VALUES ('sender_quoting', NULL, 'Quote', NULL, 1);
+            """);
+        // The rotation-window pair: the quoted target row lives in the older shard.
+        Build(Path.Combine(storage, "message", "message_1.db"), $"""
+            CREATE TABLE {WeChat4Schema.Name2IdTable} (rowid INTEGER PRIMARY KEY, user_name TEXT);
+            INSERT INTO {WeChat4Schema.Name2IdTable} VALUES (1, 'sender_quoting');
+            CREATE TABLE "{table}" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB);
+            INSERT INTO "{table}" VALUES (1, 954009715971000100, 1, 1, 1789996701, '上午十点评审。', 0, NULL);
+            """);
+        Build(Path.Combine(storage, "message", "message_0.db"), $"""
+            CREATE TABLE {WeChat4Schema.Name2IdTable} (rowid INTEGER PRIMARY KEY, user_name TEXT);
+            INSERT INTO {WeChat4Schema.Name2IdTable} VALUES (1, 'sender_quoting');
+            CREATE TABLE "{table}" (local_id INTEGER PRIMARY KEY, server_id INTEGER, local_type INTEGER, real_sender_id INTEGER, create_time INTEGER, message_content BLOB, WCDB_CT_message_content INTEGER, compress_content BLOB);
+            INSERT INTO "{table}" VALUES (1, 954009715971000200, {57L << 32 | 49L}, 1, 1789996801, '<msg><appmsg><title>收到，我准时到。</title><refermsg><svrid>954009715971000100</svrid><fromusr>sender_quoting</fromusr><displayname>张三</displayname><content>上午十点评审。</content><createtime>1789996709</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>', 0, NULL);
+            INSERT INTO "{table}" VALUES (2, 954009715971000300, {57L << 32 | 49L}, 1, 1789996802, '<msg><appmsg><title>继续讨论</title><refermsg><fromusr>sender_quoting</fromusr><displayname>张三</displayname><content>没有服务端引用号的引用</content><createtime>1789996709</createtime><type>1</type></refermsg><type>57</type></appmsg></msg>', 0, NULL);
+            """);
+
+        var account = new WeChatAccountLocation(profileId, temp.Path, storage, null);
+        using var cache = SqlCipherDatabaseCache.ForCapturedPlaintext();
+        var reader = new WeChatAccountReader(account, cache);
+        var descriptor = new SourceDescriptor
+        {
+            AdapterName = WeChatWindowsSourceAdapter.Name,
+            AdapterVersion = WeChatWindowsSourceAdapter.Version,
+            IsAvailable = true,
+        };
+        using var adapter = new WeChatWindowsSourceAdapter(
+            new SourceAccount { SourceProfileId = profileId },
+            descriptor,
+            reader,
+            cache);
+
+        var messages = new List<SourceMessage>();
+        await foreach (var message in adapter.ReadMessagesAsync(profileId, conversationId, CancellationToken.None))
+        {
+            messages.Add(message);
+        }
+
+        Assert.Equal(3, messages.Count);
+
+        var target = Assert.Single(messages, m => m.SourceMessageId == "s:954009715971000100");
+        Assert.Null(target.Reply);
+
+        // The reference is composed into exactly the identity the target is archived under —
+        // across the rotation-window boundary — while the snapshot stays verbatim.
+        var quoted = Assert.Single(messages, m => m.SourceMessageId == "s:954009715971000200");
+        Assert.Equal("s:954009715971000100", quoted.Reply!.SourceMessageId);
+        Assert.Equal("张三", quoted.Reply.SenderName);
+        Assert.Equal("上午十点评审。", quoted.Reply.Text);
+
+        // A reference that does not exist upstream stays null; the snapshot survives.
+        var withoutReference = Assert.Single(messages, m => m.SourceMessageId == "s:954009715971000300");
+        Assert.Null(withoutReference.Reply!.SourceMessageId);
+        Assert.Equal("没有服务端引用号的引用", withoutReference.Reply.Text);
+    }
+
+    [Fact]
     public void AReadableWindowIsStillImportedWhenAnotherWindowShardIsUnreadable()
     {
         // Issue #71 preserves the fail-closed semantics: an unreadable shard is recorded, and a

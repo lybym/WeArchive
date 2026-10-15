@@ -105,8 +105,18 @@ public sealed class SemanticBaselineTests
             m.Source.AdapterVersion,
             m.IsPartial);
 
-    private static MeasuredRecord Single(IReadOnlyList<MeasuredRecord> measured, string recordId) =>
-        measured.Single(m => string.Equals(m.Source.SourceMessageId, $"sb:{recordId}", StringComparison.Ordinal));
+    private static MeasuredRecord Single(IReadOnlyList<MeasuredRecord> measured, string recordId)
+    {
+        var record = SemanticBaselineCorpus.Records.Single(r => string.Equals(r.RecordId, recordId, StringComparison.Ordinal));
+        return measured.Single(m => string.Equals(m.Source.SourceMessageId, SemanticBaselineSourceAdapter.SourceMessageIdFor(record), StringComparison.Ordinal));
+    }
+
+    /// <summary>Corpus records keyed by the upstream identity the test adapter archives them under.</summary>
+    private static IReadOnlyDictionary<string, SemanticBaselineRecord> RecordsBySourceMessageId { get; } =
+        SemanticBaselineCorpus.Records.ToDictionary(
+            r => SemanticBaselineSourceAdapter.SourceMessageIdFor(r),
+            r => r,
+            StringComparer.Ordinal);
 
     // ---- pinned classification baseline ------------------------------------------------
 
@@ -117,8 +127,9 @@ public sealed class SemanticBaselineTests
 
         // 33 M2a records + 4 additive M2b records (transfer_without_amount,
         // redpacket_without_amount, groupcollect_unsampled_shape, paycard_titleless_unknown;
-        // Issue #98).
-        Assert.Equal(37, TotalRecords);
+        // Issue #98) + 7 additive M2c records (the reply reference matrix and the revoke
+        // null-fallback; Issue #99).
+        Assert.Equal(44, TotalRecords);
         Assert.Equal(TotalRecords, measured.Count);
 
         var byType = measured
@@ -127,7 +138,7 @@ public sealed class SemanticBaselineTests
 
         var expected = new Dictionary<string, int>(StringComparer.Ordinal)
         {
-            ["text"] = 6,
+            ["text"] = 12,
             ["image"] = 1,
             ["voice"] = 3,
             ["video"] = 1,
@@ -140,7 +151,7 @@ public sealed class SemanticBaselineTests
             ["location"] = 1,
             ["contact_card"] = 1,
             ["system"] = 3,
-            ["revoke"] = 1,
+            ["revoke"] = 2,
             ["red_packet"] = 2,
             ["transfer"] = 2,
             ["unknown"] = 5,
@@ -170,8 +181,8 @@ public sealed class SemanticBaselineTests
         var byConversation = measured
             .GroupBy(m => m.Source.SourceConversationId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
-        Assert.Equal(25, byConversation[SemanticBaselineCorpus.DirectConversation]);
-        Assert.Equal(7, byConversation[SemanticBaselineCorpus.GroupConversation]);
+        Assert.Equal(31, byConversation[SemanticBaselineCorpus.DirectConversation]);
+        Assert.Equal(8, byConversation[SemanticBaselineCorpus.GroupConversation]);
         Assert.Equal(2, byConversation[SemanticBaselineCorpus.OfficialConversation]);
         Assert.Equal(3, byConversation[SemanticBaselineCorpus.SystemConversation]);
 
@@ -200,12 +211,12 @@ public sealed class SemanticBaselineTests
 
         Assert.Equal(TotalRecords, measured.Count);
 
-        var recordsById = SemanticBaselineCorpus.Records.ToDictionary(r => r.RecordId, StringComparer.Ordinal);
+        var recordsById = RecordsBySourceMessageId;
         Assert.Equal(TotalRecords, recordsById.Count);
 
         foreach (var m in measured)
         {
-            var record = recordsById[m.Source.SourceMessageId!["sb:".Length..]];
+            var record = recordsById[m.Source.SourceMessageId!];
             Assert.Equal(record.Type.ToString(System.Globalization.CultureInfo.InvariantCulture), m.Source.SourceType);
             Assert.Equal(record.SubType.ToString(System.Globalization.CultureInfo.InvariantCulture), m.Source.SourceSubtype);
             Assert.Equal(SemanticBaselineCorpus.CorpusSourceVersion, m.Message.Source.SourceVersion);
@@ -216,7 +227,7 @@ public sealed class SemanticBaselineTests
         // payload, stays partial and is never silently dropped. MESSAGE_SCHEMA section 18.
         foreach (var m in measured.Where(x => x.Message.Type == CanonicalMessageType.Unknown))
         {
-            var record = recordsById[m.Source.SourceMessageId!["sb:".Length..]];
+            var record = recordsById[m.Source.SourceMessageId!];
             Assert.True(m.Message.IsPartial);
             Assert.Equal(record.Type.ToString(System.Globalization.CultureInfo.InvariantCulture), m.Message.Payload!["source_type"]!.GetValue<string>());
             Assert.Equal(record.SubType.ToString(System.Globalization.CultureInfo.InvariantCulture), m.Message.Payload!["source_subtype"]!.GetValue<string>());
@@ -238,12 +249,92 @@ public sealed class SemanticBaselineTests
         Assert.NotNull(quote.Message.ReplyTo);
         var reply = quote.Message.ReplyTo!;
         Assert.Null(reply.MessageId); // resolved later by the archive; never guessed at normalization
-        Assert.Equal("954009715970562000", reply.SourceMessageId);
+        // Baseline defect E1 (Issue #99): the adapter composes the raw upstream svrid into the
+        // documented `s:<server_id>` identity space (docs/DATA_MODEL.md section 16.2) instead of
+        // storing an unwrapped svrid that could never match an archived target. The snapshot
+        // fields below are unchanged from the M2a baseline.
+        Assert.Equal("s:954009715970562000", reply.SourceMessageId);
         Assert.Equal(StableIds.Participant(SemanticBaselineCorpus.SourceProfileId, "wxid_bob"), reply.SenderId);
         Assert.Equal("张三", reply.SenderName);
         Assert.Equal("下午三点开会。", reply.Text);
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1776678109), reply.OccurredAt);
         Assert.Null(IngestDiagnosticCode(quote.Message)); // snapshot present → no unresolved_reply_target
+    }
+
+    // ---- M2c reply/quote/forward reference matrix (Issue #99) ---------------------------
+
+    [Fact]
+    public void ReplyReferenceMatrixResolvesOnlyAgainstArchivedServerIdIdentity()
+    {
+        var measured = Measure();
+
+        // Resolved candidate at the normalization boundary: the composed reference is present,
+        // the canonical target id is still null because resolution happens in the archive.
+        var resolved = Single(measured, "m2c_quote_resolved");
+        Assert.Equal("s:954009715971000100", resolved.Message.ReplyTo!.SourceMessageId);
+        Assert.Null(resolved.Message.ReplyTo.MessageId);
+        Assert.Equal("上午十点评审。", resolved.Message.ReplyTo.Text);
+
+        // The reference target is archived under the documented composite server id.
+        var target = Single(measured, "m2c_quote_target_text");
+        Assert.Equal("s:954009715971000100", target.Source.SourceMessageId);
+        Assert.Null(target.Message.ReplyTo);
+
+        // Absent target: the svrid names no archived record; the snapshot survives untouched.
+        var absent = Single(measured, "m2c_quote_target_absent");
+        Assert.Equal("s:954009715971000200", absent.Message.ReplyTo!.SourceMessageId);
+        Assert.Null(absent.Message.ReplyTo.MessageId);
+        Assert.Equal("一条没有落库的引用", absent.Message.ReplyTo.Text);
+        Assert.Equal("李四", absent.Message.ReplyTo.SenderName);
+
+        // Unaddressable target: a record with the exact quoted text exists, but without a
+        // server id it is only addressable by its partition-local composite — the resolver
+        // must not fall back to content matching and must leave the target null.
+        var unaddressableTarget = Single(measured, "m2c_quote_target_unaddressable");
+        Assert.Equal("sb:m2c_quote_target_unaddressable", unaddressableTarget.Source.SourceMessageId);
+        var unaddressable = Single(measured, "m2c_quote_unaddressable_target");
+        Assert.Equal("s:954009715971000300", unaddressable.Message.ReplyTo!.SourceMessageId);
+        Assert.Null(unaddressable.Message.ReplyTo.MessageId);
+        Assert.Equal("这版PPT我晚上发你。", unaddressable.Message.ReplyTo.Text);
+
+        // Malformed reference: no svrid at all; nothing addressable remains and nothing is
+        // invented, while the locally available snapshot is preserved verbatim.
+        var malformed = Single(measured, "m2c_quote_without_svrid");
+        Assert.Null(malformed.Message.ReplyTo!.SourceMessageId);
+        Assert.Null(malformed.Message.ReplyTo.MessageId);
+        Assert.Equal("没有服务端引用号的引用", malformed.Message.ReplyTo.Text);
+        Assert.Equal("张三", malformed.Message.ReplyTo.SenderName);
+        Assert.All(
+            new[] { absent, unaddressable, malformed },
+            m => Assert.Null(IngestDiagnosticCode(m.Message))); // snapshots present → no unresolved_reply_target
+    }
+
+    [Fact]
+    public void RevokeTargetFollowsTheDocumentedNullFallback()
+    {
+        var measured = Measure();
+
+        // With a locally recorded newmsgid the payload carries the deterministic derivation
+        // over the upstream id; without one the field stays null. The linkage between a
+        // revokemsg newmsgid and an archived message identity is not established by the
+        // sampled evidence, so nothing is resolved or guessed here (baseline E2, Issue #99).
+        var withNewMsgId = Single(measured, "revoke_group");
+        Assert.Equal(CanonicalMessageType.Revoke, withNewMsgId.Message.Type);
+        Assert.Equal(
+            StableIds.Message(withNewMsgId.Message.ConversationId, "954009715970562000"),
+            withNewMsgId.Message.Payload!["revoked_message_id"]!.GetValue<string>());
+        // The revoke sentence is the semantic text; payload revoked_text stays null by the
+        // shipped contract (MESSAGE_SCHEMA section 14: retain content only when the archived
+        // state legitimately carries it — the wire record never does).
+        Assert.True(withNewMsgId.Message.Payload!["revoked_text"] is null);
+        Assert.Equal("[撤回消息] 你撤回了一条消息", withNewMsgId.Message.Text);
+
+        var withoutNewMsgId = Single(measured, "m2c_revoke_without_newmsgid");
+        Assert.Equal(CanonicalMessageType.Revoke, withoutNewMsgId.Message.Type);
+        Assert.True(withoutNewMsgId.Message.Payload!["revoked_message_id"] is null);
+        Assert.True(withoutNewMsgId.Message.Payload!["revoked_text"] is null);
+        Assert.Equal("[撤回消息] 王五撤回了一条消息", withoutNewMsgId.Message.Text);
+        Assert.False(withoutNewMsgId.Message.IsPartial);
     }
 
     [Fact]
@@ -424,13 +515,13 @@ public sealed class SemanticBaselineTests
         // A fresh canonical archive rebuilt offline from the same corpus exports the exact
         // same dataset: deterministic rebuild/export at the canonical layer. Raw-Vault-only
         // rebuild determinism remains covered by RebuildServiceTests.
-        Assert.Equal(37, first.Lines.Count);
+        Assert.Equal(44, first.Lines.Count);
         Assert.Equal(first.Lines, second.Lines);
 
         Assert.Equal(5, first.Counters.Unknown);
         Assert.Equal(12, first.Counters.Partial);
         Assert.Equal(5, first.Counters.Unsupported);
-        Assert.Equal(37, first.Counters.Records);
+        Assert.Equal(44, first.Counters.Records);
         Assert.Equal(first.Counters, second.Counters);
 
         var unknownLines = first.Lines
@@ -461,7 +552,139 @@ public sealed class SemanticBaselineTests
         Assert.Equal(5, totals.GetValueOrDefault(DiagnosticCodes.UnknownMessageType));
         Assert.Equal(7, totals.GetValueOrDefault(DiagnosticCodes.PartialAppMessage));
         Assert.Equal(0, totals.GetValueOrDefault(DiagnosticCodes.UnresolvedReplyTarget));
+        // Baseline defect E1 (Issue #99): the direct conversation now resolves the one reply
+        // whose quoted record is archived under a server id, which surfaces as the documented
+        // Info diagnostic. No snapshot-only quote carries a resolvable target.
+        Assert.Equal(1, totals.GetValueOrDefault(DiagnosticCodes.ReplySnapshotOnly));
         Assert.Equal(0, diagnostics.Count(d => d.Severity == DiagnosticSeverity.Fatal));
+    }
+
+    [Fact]
+    public async Task ReplyTargetsResolveInTheFullPipelineWithoutCrossIdentityGuessing()
+    {
+        using var temp = new TempDirectory();
+        var adapter = new SemanticBaselineSourceAdapter();
+        var clock = new FixedClock();
+        var store = new SqliteArchiveStore(Path.Combine(temp.Path, "archive.db"), clock);
+        var importer = new ImportService(adapter, store, clock);
+
+        var diagnostics = new List<ImportDiagnostic>();
+        foreach (var conversation in Conversations)
+        {
+            var peer = conversation.Kind == ConversationKind.Direct ? conversation.ConversationId : null;
+            var outcome = await importer.ImportConversationAsync(new ImportRequest
+            {
+                SourceProfileId = SemanticBaselineCorpus.SourceProfileId,
+                SourceConversationId = conversation.ConversationId,
+                Kind = conversation.Kind,
+                PeerSourceUserId = peer,
+                ConversationTitle = "语义基线语料占位",
+            }, null, CancellationToken.None);
+            diagnostics.AddRange(outcome.Diagnostics);
+        }
+
+        // Exactly one reply reference resolves against the archive: the one whose quoted
+        // record is archived under the documented server-id composite (Issue #99).
+        Assert.Equal(1, diagnostics.Count(d => d.Code == DiagnosticCodes.ReplySnapshotOnly));
+
+        var accountStableId = StableIds.Account(adapter.AdapterName, SemanticBaselineCorpus.SourceProfileId);
+        var directStableId = StableIds.Conversation(
+            accountStableId,
+            ConversationKind.Direct,
+            SemanticBaselineCorpus.DirectConversation,
+            SemanticBaselineCorpus.DirectConversation);
+        var direct = (await store.ReadMessagesAsync(directStableId, CancellationToken.None)).ToList();
+
+        var resolved = Assert.Single(direct, m => m.Source.SourceMessageId == "sb:m2c_quote_resolved");
+        Assert.Equal(
+            StableIds.Message(directStableId, "s:954009715971000100"),
+            resolved.ReplyTo!.MessageId);
+        Assert.Equal("上午十点评审。", resolved.ReplyTo.Text);
+
+        // Every reference without an addressable archived target stays null while its
+        // snapshot survives; no target id is fabricated and no content matching happens.
+        foreach (var recordId in new[]
+                 {
+                     "quote_direct", "m2c_quote_target_absent", "m2c_quote_unaddressable_target",
+                 })
+        {
+            var unresolved = Assert.Single(direct, m => m.Source.SourceMessageId == $"sb:{recordId}");
+            Assert.Null(unresolved.ReplyTo!.MessageId);
+            Assert.NotNull(unresolved.ReplyTo.Text);
+        }
+
+        var malformed = Assert.Single(direct, m => m.Source.SourceMessageId == "sb:m2c_quote_without_svrid");
+        Assert.Null(malformed.ReplyTo!.MessageId);
+        Assert.Null(malformed.ReplyTo.SourceMessageId);
+        Assert.Equal("没有服务端引用号的引用", malformed.ReplyTo.Text);
+
+        // The exported dataset carries the resolved relationship and keeps the unresolvable
+        // ones explicit: round-trip through export is part of the reference matrix.
+        var workflow = new ArchiveWorkflow(new JsonlDatasetExporter(store), store, clock);
+        var exportDirectory = Path.Combine(temp.Path, "export", SemanticBaselineCorpus.DirectConversation);
+        var export = await workflow.ExportConversationAsync(
+            new ExportConversationRequest { ConversationId = directStableId, OutputDirectory = exportDirectory },
+            null,
+            CancellationToken.None);
+        Assert.True(export.Succeeded);
+
+        var lines = Directory
+            .EnumerateFiles(exportDirectory, "*.jsonl", SearchOption.AllDirectories)
+            .SelectMany(path => File.ReadAllLines(path, System.Text.Encoding.UTF8).Where(line => line.Length > 0))
+            .Select(line => JsonDocument.Parse(line))
+            .ToList();
+
+        JsonElement FindLine(string sourceMessageId) => lines
+            .Select(d => d.RootElement)
+            .Single(e => e.GetProperty("source").GetProperty("source_message_id").GetString() == sourceMessageId);
+
+        var exportedResolved = FindLine("sb:m2c_quote_resolved");
+        Assert.Equal(
+            StableIds.Message(directStableId, "s:954009715971000100"),
+            exportedResolved.GetProperty("reply_to").GetProperty("message_id").GetString());
+        Assert.Equal("上午十点评审。", exportedResolved.GetProperty("reply_to").GetProperty("text").GetString());
+
+        var exportedUnresolved = FindLine("sb:m2c_quote_target_absent");
+        Assert.True(exportedUnresolved.GetProperty("reply_to").GetProperty("message_id").ValueKind is JsonValueKind.Null);
+        Assert.Equal("一条没有落库的引用", exportedUnresolved.GetProperty("reply_to").GetProperty("text").GetString());
+
+        // Forwarded nesting survives the round-trip: structured items stay preserved with
+        // their null per-item timestamps (E3 keeps them null; nothing is inferred).
+        var groupStableId = StableIds.Conversation(
+            accountStableId,
+            ConversationKind.Group,
+            SemanticBaselineCorpus.GroupConversation,
+            null);
+        var groupExportDirectory = Path.Combine(temp.Path, "export", SemanticBaselineCorpus.GroupConversation);
+        var groupExport = await workflow.ExportConversationAsync(
+            new ExportConversationRequest { ConversationId = groupStableId, OutputDirectory = groupExportDirectory },
+            null,
+            CancellationToken.None);
+        Assert.True(groupExport.Succeeded);
+
+        var groupLines = Directory
+            .EnumerateFiles(groupExportDirectory, "*.jsonl", SearchOption.AllDirectories)
+            .SelectMany(path => File.ReadAllLines(path, System.Text.Encoding.UTF8).Where(line => line.Length > 0))
+            .Select(line => JsonDocument.Parse(line).RootElement)
+            .ToList();
+
+        var bundle = groupLines.Single(e =>
+            e.GetProperty("source").GetProperty("source_message_id").GetString() == "sb:bundle_group_structured");
+        var items = bundle.GetProperty("payload").GetProperty("items");
+        Assert.Equal(3, items.GetArrayLength());
+        Assert.All(items.EnumerateArray(), item => Assert.Equal(JsonValueKind.Null, item.GetProperty("time").ValueKind));
+        Assert.Equal("不支持类型的嵌套条目", items[2].GetProperty("text").GetString());
+
+        // E2: the revoke payload keeps the derived newmsgid value when locally recorded and
+        // stays null when the wire record carries none — the archive resolves neither.
+        var revoke = groupLines.Single(e =>
+            e.GetProperty("source").GetProperty("source_message_id").GetString() == "sb:revoke_group");
+        Assert.Equal(
+            StableIds.Message(groupStableId, "954009715970562000"),
+            revoke.GetProperty("payload").GetProperty("revoked_message_id").GetString());
+        var revokeWithoutId = groupLines.Single(e =>
+            e.GetProperty("source").GetProperty("source_message_id").GetString() == "sb:m2c_revoke_without_newmsgid");
+        Assert.Equal(JsonValueKind.Null, revokeWithoutId.GetProperty("payload").GetProperty("revoked_message_id").ValueKind);
     }
 
     // ---- pipeline harness ----------------------------------------------------------------
@@ -485,7 +708,7 @@ public sealed class SemanticBaselineTests
                 Kind = conversation.Kind,
                 PeerSourceUserId = peer,
                 ConversationTitle = "语义基线语料占位",
-            }, null, CancellationToken.None).ConfigureAwait(false);
+            }, null, CancellationToken.None);
 
             diagnostics.AddRange(outcome.Diagnostics);
         }
@@ -512,7 +735,7 @@ public sealed class SemanticBaselineTests
                 Kind = conversation.Kind,
                 PeerSourceUserId = peer,
                 ConversationTitle = "语义基线语料占位",
-            }, null, CancellationToken.None).ConfigureAwait(false);
+            }, null, CancellationToken.None);
         }
 
         var records = 0;
@@ -533,12 +756,12 @@ public sealed class SemanticBaselineTests
             var result = await workflow.ExportConversationAsync(
                 new ExportConversationRequest { ConversationId = stableId, OutputDirectory = outputDirectory },
                 null,
-                CancellationToken.None).ConfigureAwait(false);
+                CancellationToken.None);
 
             Assert.True(result.Succeeded);
 
             using var manifest = JsonDocument.Parse(
-                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "manifest.json"), CancellationToken.None).ConfigureAwait(false));
+                await File.ReadAllTextAsync(Path.Combine(outputDirectory, "manifest.json"), CancellationToken.None));
             records += manifest.RootElement.GetProperty("record_count").GetInt32();
             unknown += manifest.RootElement.GetProperty("unknown_count").GetInt32();
             partial += manifest.RootElement.GetProperty("partial_count").GetInt32();

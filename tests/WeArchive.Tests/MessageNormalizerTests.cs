@@ -279,6 +279,30 @@ public sealed class MessageNormalizerTests
         Assert.Equal("[撤回消息] 张三撤回了一条消息", message.Text);
         Assert.Equal(StableIds.Participant("a_test", "wxid_alice"), message.Payload!["operator_id"]!.GetValue<string>());
         Assert.True(message.Payload["revoked_text"] is null);
+        // Baseline E2 null-fallback (Issue #99): without a locally recorded upstream newmsgid
+        // the revoke target stays null; nothing is looked up or invented at normalization.
+        Assert.True(message.Payload["revoked_message_id"] is null);
+    }
+
+    [Fact]
+    public void RevokeWithANewmsgidDerivesTheDeterministicTargetValue()
+    {
+        // Baseline E2 (Issue #99): when the revoke record carries an upstream newmsgid the
+        // payload value is the documented deterministic derivation over that id. Whether that
+        // id matches an archived message identity is a source-evidence question the archive
+        // deliberately does not guess about: no resolution pass touches revoke payloads.
+        var message = Normalize(new SourceMessageContent
+        {
+            Kind = SourceContentKind.Revoke,
+            SystemText = "张三撤回了一条消息",
+            SystemEvent = "revokemsg",
+            OperatorSourceId = "wxid_alice",
+            RevokedSourceMessageId = "954009715970562000",
+        }, "10000");
+
+        Assert.Equal(
+            StableIds.Message(message.ConversationId, "954009715970562000"),
+            message.Payload!["revoked_message_id"]!.GetValue<string>());
     }
 
     [Fact]

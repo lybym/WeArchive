@@ -350,7 +350,11 @@ Replies/quotes are represented structurally. Three columns work together:
 
 - `reply_source_message_id` — the **upstream** id of the referenced record, addressed with the
   composite strategy of section 16.2. It is stored exactly as the adapter supplied it and is
-  what makes resolution possible, but it is provenance and is never exported.
+  what makes resolution possible, but it is provenance and is never exported. For WeChat 4.x
+  the adapter composes a quote's `<refermsg><svrid>` into the `s:<server_id>` form so the
+  reference lives in the same identity space as the archived target (baseline defect E1,
+  [Issue #99](https://github.com/lybym/WeArchive/issues/99)); an unwrapped svrid would never
+  equal an archived `s:`/`l:` identity and resolution could never fire.
 - `reply_to_message_id` — the resolved canonical `m_...` id, filled in by the archive when the
   referenced record is present in the same archive (resolved on insert and by a backfill pass
   for records imported later). It is null while the target does not resolve. The archive never
@@ -363,6 +367,10 @@ Replies/quotes are represented structurally. Three columns work together:
 
 This allows reply graph analysis both when the target is archived and when the source only
 stored a quote snapshot, or when the target is missing from the local source entirely.
+Resolution matches by upstream identity within the same conversation and never by content
+similarity: a target whose row carries no server id (addressable only by its partition-local
+composite) and a target that was never archived both stay unresolved, and no target id is
+invented (Issue #99).
 
 ## 9. Non-text events and binary policy
 
