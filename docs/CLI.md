@@ -863,6 +863,85 @@ target.
 Exits `1` with `message_not_found` or `archive_unavailable`; `2` with `usage_error`; `130` on
 cancellation.
 
+### `wearchive search <query> [options]`
+
+Runs one bounded page of canonical full-text search over the derived FTS index
+([`SEARCH_SPEC.md`](SEARCH_SPEC.md), [ADR 0013](adr/0013-fts5-chinese-mixed-tokenization-strategy.md),
+Issue #103). Like `message list` and `context` it is read-only (**R0**): a thin adapter over
+`ArchiveQueryService.SearchAsync`, it never mutates canonical data, never reads the Raw Vault,
+never opens live WeChat and never scans exported JSONL. The service owns the query grammar
+(`SEARCH_SPEC.md` section 5: whitespace-separated terms, quoted phrases, one trailing `*` prefix,
+implicit AND, case-insensitive ASCII, and the CJK bigram projection of every term, so
+`模型` matches inside `大模型上线了` and `AI玩具` matches with adjacency), filter validation,
+Collection scope resolution and the opaque search cursor; this command parses options and renders
+the page.
+
+```text
+wearchive search <query> [--conversation <stable-id>] [--collection <name>]
+                  [--since <time>] [--until <time>] [--participant <stable-id>]
+                  [--type <canonical-type>] [--limit <n>] [--cursor <opaque>]
+                  [--json] [--no-input] [--quiet]
+```
+
+The query is **one positional argument**; quote a multi-term query as a whole
+(`wearchive search "开会 预算"`). Extra positional arguments are a usage failure rather than a
+silently widened query. The query is validated fail-closed before any index access: an empty
+query, or one containing a term without any letter, digit or CJK ideograph, is `query_invalid`
+(exit 2), and error messages never echo the query content. Operator-looking input
+(`模型") OR (1=1) --`) is a literal token sequence that simply matches nothing — exit 0 with empty
+results, no injection surface.
+
+**Filters** reuse the `message list` semantics and validation: `--conversation <stable-id>`
+(`g_<16 hex>` / `u_<16 hex>`), `--since` / `--until` (identical time grammar, inclusive instants),
+`--participant <stable-id>` (canonical sender ID; a well-formed but unknown participant matches
+nothing and is not an error) and `--type <canonical-type>`. `--collection <name>` restricts
+results to the union of the Collection's member conversations, resolved through the one
+authoritative Collection catalog (ADR 0009): an unknown name is `collection_not_found` (exit 1),
+an invalid configuration is `collection_config_invalid` (exit 2), and a member that resolves to no
+archived conversation contributes no results and never errors by itself. `--conversation` and
+`--collection` are mutually exclusive scopes in v1; supplying both is a usage error. Filters
+narrow the candidate set; they never rewrite the query terms.
+
+**Pagination** is identical to `message list`: `--limit` is the page size, 1–500, default 100; the
+page reads one record beyond its limit, so `has_more` is a fact about the archive; the opaque
+cursor is bound to the normalized query plus the resolved filter set (page size excluded, so
+`--limit` may change between pages; changing a filter or the query is `cursor_invalid`). Zero
+matches — including an empty archive — is a successful result: empty `items`, `has_more` false,
+null cursor, exit 0.
+
+JSON shape (exit 0) — the envelope and every item are byte-shaped like the `message list` page:
+
+```json
+{
+  "items": [
+    {
+      "id": "m_<16-hex>",
+      "…": "…",
+      "source": { "source_message_id": "s:1234", "…": "…" }
+    }
+  ],
+  "next_cursor": "opaque-cursor-or-null",
+  "has_more": false
+}
+```
+
+Hits carry the same canonical message DTO as `message list` — canonical envelope, payload, resolved
+reply and the full provenance block — so a Harness chains `search` → `context` with stable IDs
+without a second representation. The contract exposes no score value: the result order is the FTS5
+`bm25` rank with the canonical timeline tail as the deterministic tie-break
+(`SEARCH_SPEC.md` section 6), and only the order is part of the contract.
+
+Human output prints one line per hit led by the stable message id — the value a human feeds back
+into `context` — then the `next cursor:` line when the result is resumable. The query text is
+never echoed back.
+
+Exits `1` with `conversation_not_found`, `collection_not_found`, `search_index_unavailable` (the
+derived index is missing or disagrees with the canonical rows — search fails closed, the index is
+never repaired by a query, and recovery is the explicit index rebuild of `SEARCH_SPEC.md`
+section 10.3) or `archive_unavailable`; `2` with `usage_error` (missing query or option value,
+unknown option, invalid value, mutually exclusive scopes), `query_invalid` or `cursor_invalid`;
+`130` on cancellation.
+
 ## Failure document (`--json`)
 
 In `--json` mode a non-zero exit still writes exactly one JSON document to stdout so callers can
@@ -893,6 +972,8 @@ Stable `error.code` values:
 | `message_not_found` | 1 | A stable message id resolved to no archived message |
 | `cursor_invalid` | 2 | A pagination cursor is malformed, unsupported or belongs to a different query |
 | `archive_unavailable` | 1 | The canonical archive could not be read (a missing archive file is created as an empty archive, exactly as `doctor` reports it) |
+| `query_invalid` | 2 | A search query is empty or contains a term without any letter, digit or CJK ideograph; rejected before any index access, and the message never echoes the query content (`SEARCH_SPEC.md` section 5.3, issue #103) |
+| `search_index_unavailable` | 1 | The derived FTS index is missing or disagrees with the canonical archive, so search fails closed instead of returning a silently partial result set; recovery is the explicit index rebuild, never a query-time repair (`SEARCH_SPEC.md` section 10.4, issue #103) |
 
 ## `wearchive rebuild`
 
@@ -983,23 +1064,21 @@ engine ([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5
 [ROADMAP.md](ROADMAP.md) M0.5/M1.
 
 Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26). Collection-scoped
-query/search, Collection-scoped export selection, time-range selection and an interactive Collection
-editor are not.
+*search* is implemented by the `wearchive search --collection` filter (issue #103). Collection-scoped
+`message list` filtering, Collection-scoped export selection, export time-range selection and an
+interactive Collection editor are not.
 
 `message list` and `context` are implemented (Issue #27 / M3a). The derived SQLite FTS index and
 the `ArchiveQueryService` search contract are implemented by the M3b index slice (Issue #102,
-[SEARCH_SPEC.md](SEARCH_SPEC.md)); the `wearchive search` command, its JSON/error contract and
-Collection-scoped query filters are not: there is no CLI surface for search yet, and the future
-`wearchive search` command/JSON/error contract is specified by
-[SEARCH_SPEC.md](SEARCH_SPEC.md) (sections 7–9, 12) and becomes normative here only when its
-transport slice (issue #103) ships. Statistics/activity timelines beyond archive freshness and the
-MCP transport are also not implemented: `ArchiveQueryService` already exposes
-capture/ingest/canonical freshness, but no CLI status command is wired to it yet.
+[SEARCH_SPEC.md](SEARCH_SPEC.md)), and the `wearchive search` command — its JSON/error contract
+([SEARCH_SPEC.md](SEARCH_SPEC.md) sections 7–9 and 12) and its CLI contract tests — is implemented
+by the M3b CLI slice (issue #103) and is normative in this document. Statistics/activity timelines
+beyond archive freshness and the MCP transport are not implemented: `ArchiveQueryService` already
+exposes capture/ingest/canonical freshness, but no CLI status command is wired to it yet.
 
-`--collection` is not accepted by `message list`; Collection-scoped query filtering exists today
-only inside the search service contract (the search scope is resolved through the same
-authoritative Collection catalog) and reaches the CLI with the `wearchive search` transport
-(issue #103).
+`--collection` is not accepted by `message list`; Collection scoping reaches interactive retrieval
+through `wearchive search --collection`, whose scope resolves through the same authoritative
+Collection catalog.
 
 `wearchive collection` has no `--account` option: stable conversation IDs are account-scoped by
 construction, and the capture account is auto-selected exactly as `capture` does. A member that

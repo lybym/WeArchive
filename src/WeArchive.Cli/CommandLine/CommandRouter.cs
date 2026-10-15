@@ -90,6 +90,9 @@ public sealed class CommandRouter
             ["context"] = new(sp => new Commands.ContextCommand(
                 sp.GetRequiredService<ArchiveQueryService>()),
                 "Show one canonical message with its surrounding context."),
+            ["search"] = new(sp => new Commands.SearchCommand(
+                sp.GetRequiredService<ArchiveQueryService>()),
+                "Search canonical archived messages by full-text query."),
         };
     }
 
