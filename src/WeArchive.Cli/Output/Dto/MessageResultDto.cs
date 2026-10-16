@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using WeArchive.Core.Domain;
+using WeArchive.Core.Query;
 
 namespace WeArchive.Cli.Output.Dto;
 
@@ -133,11 +134,78 @@ public sealed record MessageSourceDto
 }
 
 /// <summary>
-/// <c>message list --json</c> result. The three field names are pinned by the Issue and by
-/// docs/CLI.md; <c>next_cursor</c> is null exactly when <c>has_more</c> is false.
+/// What one <c>message list</c> page covers: the resolved scope. The member fields are non-null
+/// exactly when <c>kind</c> is <c>collection</c>, so a caller can read the scope composition —
+/// including how many members the canonical archive knows and whether the configuration carries
+/// invalid or duplicate entries — instead of silently assuming a complete, up-to-date scope
+/// (docs/PRD.md FR-23, docs/CLI.md <c>message list</c>).
+/// </summary>
+public sealed record MessageListScopeDto
+{
+    /// <summary><c>conversation</c> or <c>collection</c>.</summary>
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    /// <summary>The requested stable conversation ID (conversation scope only).</summary>
+    [JsonPropertyName("conversation_id")]
+    public string? ConversationId { get; init; }
+
+    /// <summary>The requested Collection name (collection scope only).</summary>
+    [JsonPropertyName("collection")]
+    public string? Collection { get; init; }
+
+    /// <summary>Resolved valid membership entries (collection scope only).</summary>
+    [JsonPropertyName("member_conversation_count")]
+    public int? MemberConversationCount { get; init; }
+
+    /// <summary>Resolved members the canonical archive knows as of this page (collection scope
+    /// only); the difference to <see cref="MemberConversationCount"/> is the not-yet-archived
+    /// remainder, which contributes no messages and is never an error by itself.</summary>
+    [JsonPropertyName("archived_member_conversation_count")]
+    public int? ArchivedMemberConversationCount { get; init; }
+
+    /// <summary>Declared membership entries that are not a valid stable conversation ID
+    /// (collection scope only). Reported, never silently dropped.</summary>
+    [JsonPropertyName("invalid_member_count")]
+    public int? InvalidMemberCount { get; init; }
+
+    /// <summary>Declared membership entries that repeat an earlier valid entry (collection scope
+    /// only). Reported, never silently dropped.</summary>
+    [JsonPropertyName("duplicate_member_count")]
+    public int? DuplicateMemberCount { get; init; }
+
+    public static MessageListScopeDto From(MessageQueryScope scope)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        return new MessageListScopeDto
+        {
+            Kind = scope.Kind,
+            ConversationId = scope.ConversationId,
+            Collection = scope.CollectionName,
+            MemberConversationCount = scope.MemberConversationCount,
+            ArchivedMemberConversationCount = scope.ArchivedMemberConversationCount,
+            InvalidMemberCount = scope.InvalidMemberCount,
+            DuplicateMemberCount = scope.DuplicateMemberCount,
+        };
+    }
+}
+
+/// <summary>
+/// <c>message list --json</c> result. The page fields are pinned by the Issue and by docs/CLI.md;
+/// <c>next_cursor</c> is null exactly when <c>has_more</c> is false. <c>scope</c> names the
+/// resolved scope every page was answered for; <c>wearchive search</c> reuses this envelope without
+/// it, because SEARCH_SPEC section 9.2 pins the search envelope to exactly
+/// <c>items</c>/<c>next_cursor</c>/<c>has_more</c>.
 /// </summary>
 public sealed record MessageListResultDto
 {
+    /// <summary>The resolved scope. Always set by <c>message list</c>; left null (and omitted from
+    /// the document) by the search envelope.</summary>
+    [JsonPropertyName("scope")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MessageListScopeDto? Scope { get; init; }
+
     [JsonPropertyName("items")]
     public required IReadOnlyList<MessageDto> Items { get; init; }
 

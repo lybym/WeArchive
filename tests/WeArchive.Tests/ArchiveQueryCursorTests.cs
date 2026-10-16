@@ -167,6 +167,65 @@ public sealed class ArchiveQueryCursorTests
         Assert.NotEqual(baseline, MessageCursor.Fingerprint(ConversationId, null, null, null, "text"));
     }
 
+    // ---- collection scope (issue #105, docs/PRD.md FR-23) --------------------
+
+    private static readonly string[] Members = ["g_00000000000000c1", "g_00000000000000c2"];
+
+    [Fact]
+    public void CollectionFingerprintRoundTripsThroughTheCursor()
+    {
+        var fingerprint = MessageCursor.Fingerprint(Members, null, null, null, null);
+
+        var cursor = MessageCursor.Encode(fingerprint, Position());
+        var decoded = MessageCursor.Decode(fingerprint, cursor);
+
+        Assert.Equal(Position().MessageId, decoded.MessageId);
+    }
+
+    [Fact]
+    public void CollectionFingerprintBindsTheResolvedMembershipAndItsOrder()
+    {
+        var baseline = MessageCursor.Fingerprint(Members, null, null, null, null);
+
+        Assert.Equal(baseline, MessageCursor.Fingerprint(Members, null, null, null, null));
+        Assert.NotEqual(baseline, MessageCursor.Fingerprint(Members[..1], null, null, null, null));
+        Assert.NotEqual(baseline, MessageCursor.Fingerprint([.. Members, "g_00000000000000c3"], null, null, null, null));
+        Assert.NotEqual(baseline, MessageCursor.Fingerprint([Members[1], Members[0]], null, null, null, null));
+        Assert.NotEqual(baseline, MessageCursor.Fingerprint(Members, ArchiveQueryHarness.At(1, 1), null, null, null));
+        Assert.NotEqual(baseline, MessageCursor.Fingerprint(Members, null, null, ArchiveQueryHarness.AliceId, null));
+        Assert.NotEqual(baseline, MessageCursor.Fingerprint(Members, null, null, null, "text"));
+    }
+
+    [Fact]
+    public void ACollectionCursorIsNeverReplayableAsAConversationCursor()
+    {
+        // Even a single-member collection whose member is exactly the conversation must not share
+        // a fingerprint with that conversation's listing, so a cursor cannot silently cross the
+        // scope kinds.
+        var conversationFingerprint = MessageCursor.Fingerprint(ConversationId, null, null, null, null);
+        var collectionFingerprint = MessageCursor.Fingerprint([ConversationId], null, null, null, null);
+
+        Assert.NotEqual(conversationFingerprint, collectionFingerprint);
+
+        var cursor = MessageCursor.Encode(conversationFingerprint, Position());
+        Assert.Equal(
+            ArchiveQueryErrorCodes.CursorInvalid,
+            Assert.Throws<ArchiveQueryException>(() => MessageCursor.Decode(collectionFingerprint, cursor)).Code);
+    }
+
+    [Fact]
+    public void CollectionCursorOfAnotherMembershipIsRejected()
+    {
+        var cursor = MessageCursor.Encode(
+            MessageCursor.Fingerprint(Members, null, null, null, null), Position());
+
+        var exception = Assert.Throws<ArchiveQueryException>(
+            () => MessageCursor.Decode(
+                MessageCursor.Fingerprint(Members[..1], null, null, null, null), cursor));
+
+        Assert.Equal(ArchiveQueryErrorCodes.CursorInvalid, exception.Code);
+    }
+
     [Fact]
     public void OversizedCursorIsRejectedWithoutBeingParsed()
     {

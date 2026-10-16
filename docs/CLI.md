@@ -735,15 +735,19 @@ Query field names are pinned by `[JsonPropertyName]` in
 documented envelope of [`MESSAGE_SCHEMA.md`](MESSAGE_SCHEMA.md) sections 3–6. It never exposes a
 SQLite column name, a numeric upstream message type code or a WeChat table name.
 
-### `wearchive message list --conversation <stable-id>`
+### `wearchive message list (--conversation <stable-id> | --collection <name>)`
 
-Lists one conversation's canonical messages in deterministic timeline order.
+Lists one conversation's canonical messages, or the merged canonical timeline of one Collection's
+member conversations, in deterministic timeline order.
 
 Options:
 
 ```text
---conversation <stable-id>   Required. Stable conversation id (g_<16 hex> / u_<16 hex>).
-                             The upstream source id and export-catalog aliases are not accepted here.
+--conversation <stable-id>   Required unless --collection is given. Stable conversation id
+                             (g_<16 hex> / u_<16 hex>). The upstream source id and export-catalog
+                             aliases are not accepted here.
+--collection <name>          Required unless --conversation is given. Collection name, resolved
+                             through the one authoritative Collection catalog (ADR 0009).
 --since <time>               Optional. Inclusive lower bound.
 --until <time>               Optional. Inclusive upper bound.
 --participant <stable-id>    Optional. Canonical participant id (u_<16 hex>) of the sender.
@@ -751,6 +755,21 @@ Options:
 --limit <n>                  Optional. Page size, 1–500. Default 100.
 --cursor <opaque-cursor>     Optional. Resume from a previous next_cursor.
 ```
+
+**Scopes.** Exactly one of `--conversation` / `--collection` is required; supplying both, or
+neither, is a usage error — one listing answers one resolved scope, never an ambiguous union. A
+Collection resolves through the one authoritative application-level Collection catalog
+([ADR 0009](adr/0009-collection-configuration-ownership.md)), the same catalog `collection show`,
+`sync --collection`, `search --collection` and `stats --collection` resolve through: an unknown
+name is `collection_not_found` (exit 1) and an invalid configuration is
+`collection_config_invalid` (exit 2). The scope is the Collection's resolved valid membership;
+declared entries that are not a valid stable conversation ID, and entries that repeat an earlier
+valid one, are reported in the result instead of being silently narrowed away. A member that
+resolves to no archived conversation contributes no messages and never errors by itself — the same
+semantics `search --collection` and `stats --collection` ship — and a Collection whose members are
+not archived at all is an empty successful page. No implicit sync runs and live WeChat is never
+read: the listing is as current as the canonical archive, and the result says how much of the
+declared membership that archive knows.
 
 **Time values.** `--since` and `--until` accept an ISO-8601 date (`2026-09-01`) or date-time
 (`2026-09-01T09:30:00`, `2026-09-01T09:30:00+08:00`, `2026-09-01T01:30:00Z`); the space-separated
@@ -769,10 +788,13 @@ ends option parsing, so an identifier that begins with `-` stays addressable.
 
 **Ordering and paging.** Order is `occurred_utc`, then `source_order_key` (empty when the source
 supplied none), then the stable message id, so messages that share an instant are neither repeated
-nor skipped. Pagination is keyset-based, not offset-based: `next_cursor` is an opaque token bound
-to this conversation, date range, participant and type filter set — changing `--limit` between
-pages is allowed, changing a filter is not (that is `cursor_invalid`). `next_cursor` is null
-exactly when `has_more` is false.
+nor skipped; the stable message id is globally unique, so this is one deterministic total order
+across a Collection's member conversations too, not per-conversation pages. Pagination is
+keyset-based, not offset-based: `next_cursor` is an opaque token bound to the resolved scope (the
+conversation, or the Collection's resolved membership — a catalog change invalidates an in-flight
+cursor instead of silently repointing it), the date range, the participant and the type filter set
+— changing `--limit` between pages is allowed, changing a filter is not (that is
+`cursor_invalid`). `next_cursor` is null exactly when `has_more` is false.
 
 **Filters.** `--participant` addresses the canonical stable participant id stored as the message's
 sender; an unresolved sender is never fabricated into one. `--type` is the canonical semantic type,
@@ -783,6 +805,15 @@ JSON shape (exit 0):
 
 ```json
 {
+  "scope": {
+    "kind": "collection",
+    "conversation_id": null,
+    "collection": "ai-toy",
+    "member_conversation_count": 3,
+    "archived_member_conversation_count": 2,
+    "invalid_member_count": 0,
+    "duplicate_member_count": 0
+  },
   "items": [
     {
       "id": "m_<16-hex>",
@@ -814,6 +845,16 @@ JSON shape (exit 0):
 }
 ```
 
+`scope` names what the page was answered for: `kind` is `conversation` or `collection`,
+`conversation_id` is the requested conversation (conversation scope), and `collection` plus the
+four member counts are set exactly when `kind` is `collection` — `member_conversation_count` is
+the resolved valid membership, `archived_member_conversation_count` is how many of those members
+the canonical archive knows as of this page (the difference is the not-yet-archived remainder,
+which contributes no messages and is never an error by itself), and
+`invalid_member_count`/`duplicate_member_count` report the configuration entries that were
+excluded from the scope. The counts are an observation about the listing's basis, never a
+completeness claim about the source.
+
 `payload` is the canonical type-specific structure and is null when the type carries none.
 `reply_to` is null when the message is not a reply; its `message_id` is the resolved canonical
 target and is null while the target is not archived, in which case the locally available snapshot
@@ -823,10 +864,13 @@ engineering traceability and is never an identity input.
 
 Human output prints one line per message, led by the stable message id, followed by the UTC
 timestamp, the sender, the canonical type and the semantic text, then the `next cursor:` line when
-the result is resumable.
+the result is resumable. The header names the scope: `conversation: <id>`, or
+`collection: <name> (<archived>/<resolved> members archived[, <n> invalid][, <n> duplicate])`, so
+a canonical archive behind its configuration is visible in human output too.
 
-Exits `1` with `conversation_not_found` or `archive_unavailable`; `2` with `usage_error`
-(missing/unknown option, invalid value) or `cursor_invalid`; `130` on cancellation.
+Exits `1` with `conversation_not_found`, `collection_not_found` or `archive_unavailable`; `2` with
+`usage_error` (missing/unknown option, invalid value, both or neither scope supplied) or
+`collection_config_invalid`/`cursor_invalid`; `130` on cancellation.
 
 ### `wearchive context <message-id> [--before <n>] [--after <n>]`
 
@@ -1184,9 +1228,10 @@ engine ([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5
 [ROADMAP.md](ROADMAP.md) M0.5/M1.
 
 Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26). Collection-scoped
-*search* is implemented by the `wearchive search --collection` filter (issue #103). Collection-scoped
-`message list` filtering, Collection-scoped export selection, export time-range selection and an
-interactive Collection editor are not.
+*search* is implemented by the `wearchive search --collection` filter (issue #103), and
+Collection-scoped `message list` filtering by the `message list --collection <name>` scope (issue
+#105) — both resolving through the same authoritative Collection catalog. Collection-scoped export
+selection, export time-range selection and an interactive Collection editor are not.
 
 `message list` and `context` are implemented (Issue #27 / M3a). The derived SQLite FTS index and
 the `ArchiveQueryService` search contract are implemented by the M3b index slice (Issue #102,
@@ -1198,9 +1243,10 @@ query-family command over the same `ArchiveQueryService`; the MCP transport is n
 `ArchiveQueryService` already exposes capture/ingest/canonical freshness, but no CLI status
 command is wired to it yet.
 
-`--collection` is not accepted by `message list`; Collection scoping reaches interactive retrieval
-through `wearchive search --collection`, whose scope resolves through the same authoritative
-Collection catalog.
+`message list` resolves `--collection <name>` through the one authoritative Collection catalog,
+exactly as `search --collection`, `stats --collection` and `sync --collection` do; a member that
+resolves to no archived conversation contributes no messages and is reported in the page's
+`scope`, never silently treated as up to date.
 
 `wearchive collection` has no `--account` option: stable conversation IDs are account-scoped by
 construction, and the capture account is auto-selected exactly as `capture` does. A member that

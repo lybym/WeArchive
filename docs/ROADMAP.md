@@ -244,7 +244,8 @@ Not delivered by M3a (still open in M3):
 
 - archive statistics and activity timeline beyond basic freshness (delivered later by M3c);
 - a CLI status command and MCP transport over the query service;
-- Collection-scoped query filtering.
+- Collection-scoped query filtering (delivered later: `search --collection` by M3b-2, issue #103,
+  and `message list --collection` by M4a, issue #105).
 
 ### M3b — Canonical full-text retrieval (delivered)
 
@@ -283,7 +284,7 @@ Delivered:
 Not delivered by M3c (still open in M3):
 
 - a CLI status command and MCP transport over the query service;
-- Collection-scoped `message list` filtering.
+- Collection-scoped `message list` filtering (delivered later by M4a, issue #105).
 
 ## M4 — Harness-oriented workflows
 
@@ -310,6 +311,18 @@ Delivered by Issue #26 (M4 foundation, P0 — Collection catalog and collection-
   success/no-change/failed/unresolved results and a non-zero exit status for a partially successful
   run;
 - no `sync-group`/`watch-list`/`harness-dataset` concept and no canonical SQLite migration.
+
+Delivered by Issue #105 (M4a — reuse the Collection scope for canonical query and FTS search):
+
+- `message list --collection <name>`: scope resolution through the one authoritative Collection
+  catalog (the same catalog `sync --collection`, `search --collection` and `stats --collection`
+  resolve through), exactly one scope per listing, the members' merged timeline in the one
+  canonical order, keyset cursors bound to the resolved membership, and the resolved scope —
+  including archived-member and invalid/duplicate-entry counts — reported with every page so a
+  canonical archive behind its configuration never silently reads as up to date;
+- with `search --collection` (issue #103) and `stats --collection` (issue #104), every canonical
+  query surface now scopes through the one authoritative Collection catalog; no second scope model
+  was introduced.
 
 Still open in M4: Collection-scoped export and time-range selection, richer query/Harness automation
 and status/freshness tooling.

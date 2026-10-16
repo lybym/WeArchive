@@ -6,11 +6,21 @@ namespace WeArchive.Core.Query;
 /// <summary>
 /// A caller-facing message listing request. Filter values arrive as the canonical wire forms the
 /// CLI documents, so the service — not the transport — owns filter validation.
+/// <para>
+/// The scope is exactly one of <see cref="ConversationId"/> or <see cref="CollectionName"/>;
+/// neither or both is a validation failure. A Collection resolves through the one authoritative
+/// Collection catalog (docs/PRD.md FR-23, ADR 0009).
+/// </para>
 /// </summary>
 public sealed record MessageListRequest
 {
-    /// <summary>Stable conversation ID (<c>g_...</c> / <c>u_...</c>). Required.</summary>
-    public required string ConversationId { get; init; }
+    /// <summary>Stable conversation ID (<c>g_...</c> / <c>u_...</c>), or null when the listing is
+    /// Collection-scoped.</summary>
+    public string? ConversationId { get; init; }
+
+    /// <summary>Collection name to resolve as the listing scope, or null when the listing is
+    /// conversation-scoped. Resolved through the one authoritative Collection catalog.</summary>
+    public string? CollectionName { get; init; }
 
     /// <summary>Inclusive lower bound on the message instant, as the caller spelled it.</summary>
     public string? Since { get; init; }
@@ -32,6 +42,44 @@ public sealed record MessageListRequest
 }
 
 /// <summary>
+/// The resolved scope a message listing was answered for. It is reported so a caller can tell
+/// what the page covers — never as a completeness claim about unarchived data:
+/// <c>member_conversation_count</c> counts the Collection's resolved membership and
+/// <c>archived_member_conversation_count</c> counts how many of those members the canonical
+/// archive knows, so a collection whose canonical data is behind its configuration is visible as
+/// such instead of silently reading as up to date (docs/PRD.md FR-23).
+/// </summary>
+public sealed record MessageQueryScope
+{
+    /// <summary><c>conversation</c> or <c>collection</c>.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>The requested stable conversation ID (conversation scope only).</summary>
+    public string? ConversationId { get; init; }
+
+    /// <summary>The requested Collection name (collection scope only).</summary>
+    public string? CollectionName { get; init; }
+
+    /// <summary>Resolved valid membership entries (collection scope only).</summary>
+    public int? MemberConversationCount { get; init; }
+
+    /// <summary>
+    /// Resolved members the canonical archive knows (collection scope only). A member below this
+    /// line contributes no messages and is never an error by itself, exactly like the search and
+    /// statistics scopes.
+    /// </summary>
+    public int? ArchivedMemberConversationCount { get; init; }
+
+    /// <summary>Declared membership entries that are not a valid stable conversation ID
+    /// (collection scope only). Reported, never silently dropped.</summary>
+    public int? InvalidMemberCount { get; init; }
+
+    /// <summary>Declared membership entries that repeat an earlier valid entry (collection scope
+    /// only). Reported, never silently dropped.</summary>
+    public int? DuplicateMemberCount { get; init; }
+}
+
+/// <summary>
 /// One page of canonical messages plus the opaque cursor that continues the same query.
 /// <see cref="NextCursor"/> is null exactly when <see cref="HasMore"/> is false, so a caller
 /// cannot mistake an exhausted result for a resumable one.
@@ -43,6 +91,9 @@ public sealed record MessageQueryPage
     public required bool HasMore { get; init; }
 
     public string? NextCursor { get; init; }
+
+    /// <summary>The resolved scope this page was answered for (docs/PRD.md FR-23).</summary>
+    public required MessageQueryScope Scope { get; init; }
 }
 
 /// <summary>Bounded context around one canonical message, addressed by stable message ID.</summary>

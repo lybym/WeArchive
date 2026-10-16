@@ -448,17 +448,21 @@ membership entries are deterministic outcomes. Shipped status per intended use:
 
 ```text
 sync                 -> shipped in this Issue
-query/search         -> `search --collection` is shipped (issue #103, same Collection catalog);
-                        Collection-scoped `message list` filtering is follow-up
+query/search         -> `search --collection` is shipped (issue #103) and Collection-scoped
+                        `message list` filtering is shipped (issue #105); both resolve the one
+                        authoritative Collection catalog and report the resolved scope
 Harness analysis     -> follow-up (CLI JSON resolution is shipped)
 export               -> follow-up (Collection-scoped export selection not yet wired)
 ```
 
 Ownership and rebuild-survival semantics are recorded in
 [ADR 0009](adr/0009-collection-configuration-ownership.md). Collection-scoped search filtering is
-authorized by [SEARCH_SPEC.md](SEARCH_SPEC.md) section 7 and delivered by issue #103. This does
-not authorize Collection-scoped `message list` filtering, an interactive Collection editor, or
-MCP/scheduler synchronization.
+authorized by [SEARCH_SPEC.md](SEARCH_SPEC.md) section 7 and delivered by issue #103.
+Collection-scoped `message list` filtering is authorized by
+[Issue #105](https://github.com/lybym/WeArchive/issues/105) (Roadmap M4a) and delivered by it:
+one scope per listing, deterministic merged member order, and unarchived/partial membership
+reported instead of silently reading as up to date. This does not authorize an interactive
+Collection editor or MCP/scheduler synchronization.
 
 ### FR-24 Canonical message envelope
 

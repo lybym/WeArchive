@@ -1,4 +1,5 @@
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
 using WeArchive.Core.Query;
 using WeArchive.Core.RawVault;
@@ -605,6 +606,327 @@ public sealed class ArchiveQueryServiceTests
         var page = await harness.Service.ListMessagesAsync(Request(type: type), CancellationToken.None);
 
         Assert.All(page.Items, message => Assert.Equal(type, message.Type.ToWireName()));
+    }
+
+    // ---- collection scope (issue #105, docs/PRD.md FR-23) --------------------
+
+    /// <summary>Builds a Collection-scoped request with the same defaults as <see cref="Request"/>.</summary>
+    private static MessageListRequest CollectionRequest(
+        string collectionName,
+        string? since = null,
+        string? until = null,
+        string? participant = null,
+        string? type = null,
+        int? limit = null,
+        string? cursor = null) => new()
+        {
+            CollectionName = collectionName,
+            Since = since,
+            Until = until,
+            ParticipantId = participant,
+            Type = type,
+            Limit = limit,
+            Cursor = cursor,
+        };
+
+    private static void SetCollection(ArchiveQueryHarness harness, string name, params string[] conversations) =>
+        harness.CollectionSource.Document = new CollectionCatalogDocument
+        {
+            SchemaVersion = CollectionCatalog.SupportedSchemaVersion,
+            Collections = new Dictionary<string, CollectionEntryDocument>(StringComparer.Ordinal)
+            {
+                [name] = new() { Conversations = [.. conversations] },
+            },
+        };
+
+    [Fact]
+    public async Task CollectionScopeMergesMemberTimelinesInCanonicalOrder()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var page = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", limit: ArchiveQueryService.MaxLimit), CancellationToken.None);
+
+        var expected = ArchiveQueryHarness.CanonicalOrder(
+            [.. harness.GroupMessages, .. harness.OtherMessages]);
+        Assert.Equal(expected.Select(message => message.Id), page.Items.Select(message => message.Id));
+        Assert.False(page.HasMore);
+        Assert.Null(page.NextCursor);
+
+        Assert.Equal("collection", page.Scope.Kind);
+        Assert.Null(page.Scope.ConversationId);
+        Assert.Equal("alpha", page.Scope.CollectionName);
+        Assert.Equal(2, page.Scope.MemberConversationCount);
+        Assert.Equal(2, page.Scope.ArchivedMemberConversationCount);
+        Assert.Equal(0, page.Scope.InvalidMemberCount);
+        Assert.Equal(0, page.Scope.DuplicateMemberCount);
+    }
+
+    [Fact]
+    public async Task CollectionScopeNeverLeaksNonMemberConversations()
+    {
+        using var harness = await SeededAsync();
+
+        // A third archived conversation that the Collection does not declare: its records must
+        // never appear, no matter how the timeline orders interleave.
+        var outsiderId = StableIds.GroupConversation(ArchiveQueryHarness.AccountId, "300300300@chatroom");
+        await harness.Store.UpsertConversationsAsync(
+        [
+            new ArchiveConversation
+            {
+                Id = outsiderId,
+                AccountId = ArchiveQueryHarness.AccountId,
+                SourceConversationId = "300300300@chatroom",
+                Kind = ConversationKind.Group,
+                Title = "Outsider",
+            },
+        ], CancellationToken.None);
+        await harness.Store.UpsertMessagesAsync(
+        [
+            new CanonicalMessage
+            {
+                Id = "m_0000000000000301",
+                ConversationId = outsiderId,
+                SenderId = ArchiveQueryHarness.AliceId,
+                OccurredAt = ArchiveQueryHarness.At(1, 2),
+                Type = CanonicalMessageType.Text,
+                Text = "outside the collection",
+                Source = new SourceProvenance
+                {
+                    SourceProfileId = "wxid_fixture",
+                    SourceConversationId = "300300300@chatroom",
+                    SourceMessageId = "l:message_2:1",
+                    SourceType = "1",
+                    SourcePartition = "message_0",
+                    SourceOrderKey = "0001",
+                    AdapterName = "wechat-windows",
+                    AdapterVersion = "0.1.0",
+                    SourceVersion = "4.1.13.12",
+                },
+            },
+        ], CancellationToken.None);
+
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var page = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", limit: ArchiveQueryService.MaxLimit), CancellationToken.None);
+
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder([.. harness.GroupMessages, .. harness.OtherMessages])
+                .Select(message => message.Id),
+            page.Items.Select(message => message.Id));
+        Assert.DoesNotContain(page.Items, message => message.ConversationId == outsiderId);
+    }
+
+    [Fact]
+    public async Task CollectionScopeIgnoresUnarchivedMembersWithoutFailing()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(
+            harness,
+            "mixed",
+            "g_0000000000000abc",
+            ArchiveQueryHarness.GroupConversationId);
+
+        var page = await harness.Service.ListMessagesAsync(CollectionRequest("mixed"), CancellationToken.None);
+
+        // A member that resolves to no archived conversation contributes no results and never
+        // errors by itself — the search and statistics semantics.
+        Assert.All(page.Items, message => Assert.Equal(ArchiveQueryHarness.GroupConversationId, message.ConversationId));
+        Assert.Equal(2, page.Scope.MemberConversationCount);
+        Assert.Equal(1, page.Scope.ArchivedMemberConversationCount);
+    }
+
+    [Fact]
+    public async Task CollectionScopeReportsPartialConfigInsteadOfSilentlyNarrowing()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(
+            harness,
+            "partial",
+            ArchiveQueryHarness.GroupConversationId,
+            "wxid_not_a_stable_id",
+            ArchiveQueryHarness.GroupConversationId);
+
+        var page = await harness.Service.ListMessagesAsync(CollectionRequest("partial"), CancellationToken.None);
+
+        Assert.Equal(1, page.Scope.MemberConversationCount);
+        Assert.Equal(1, page.Scope.ArchivedMemberConversationCount);
+        Assert.Equal(1, page.Scope.InvalidMemberCount);
+        Assert.Equal(1, page.Scope.DuplicateMemberCount);
+        Assert.All(page.Items, message => Assert.Equal(ArchiveQueryHarness.GroupConversationId, message.ConversationId));
+    }
+
+    [Fact]
+    public async Task EmptyCollectionIsAnEmptySuccessfulPageNotAnError()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "empty");
+
+        var page = await harness.Service.ListMessagesAsync(CollectionRequest("empty"), CancellationToken.None);
+
+        Assert.Empty(page.Items);
+        Assert.False(page.HasMore);
+        Assert.Null(page.NextCursor);
+        Assert.Equal(0, page.Scope.MemberConversationCount);
+        Assert.Equal(0, page.Scope.ArchivedMemberConversationCount);
+    }
+
+    [Fact]
+    public async Task ACollectionOfOnlyUnarchivedMembersIsAnEmptySuccessfulPage()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "ghosts", "g_0000000000000abc", "u_0000000000000def");
+
+        var page = await harness.Service.ListMessagesAsync(CollectionRequest("ghosts"), CancellationToken.None);
+
+        Assert.Empty(page.Items);
+        Assert.Equal(2, page.Scope.MemberConversationCount);
+        Assert.Equal(0, page.Scope.ArchivedMemberConversationCount);
+    }
+
+    [Fact]
+    public async Task UnknownCollectionAndInvalidConfigurationAreDeterministicFailures()
+    {
+        using var harness = await SeededAsync();
+
+        var notFound = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(CollectionRequest("missing"), CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.CollectionNotFound, notFound.Code);
+        Assert.Equal(ArchiveQueryFailureKind.NotFound, notFound.Kind);
+
+        harness.CollectionSource.Document = new CollectionCatalogDocument
+        {
+            SchemaVersion = "9.9",
+            Collections = [],
+        };
+        var configInvalid = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(CollectionRequest("alpha"), CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.CollectionConfigInvalid, configInvalid.Code);
+        Assert.Equal(ArchiveQueryFailureKind.Validation, configInvalid.Kind);
+    }
+
+    [Fact]
+    public async Task ConversationAndCollectionScopesAreMutuallyExclusiveAndOneIsRequired()
+    {
+        using var harness = await SeededAsync();
+
+        var both = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(
+                new MessageListRequest
+                {
+                    ConversationId = ArchiveQueryHarness.GroupConversationId,
+                    CollectionName = "alpha",
+                },
+                CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.InvalidRequest, both.Code);
+
+        var neither = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(new MessageListRequest(), CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.InvalidRequest, neither.Code);
+
+        var whitespaceCollection = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(CollectionRequest("  "), CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.InvalidRequest, whitespaceCollection.Code);
+    }
+
+    [Fact]
+    public async Task CollectionScopePaginationTilesTheMergedTimelineWithoutRepeatsOrOmissions()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var expected = ArchiveQueryHarness.CanonicalOrder(
+            [.. harness.GroupMessages, .. harness.OtherMessages]);
+        var collected = new List<CanonicalMessage>();
+        string? cursor = null;
+        var pages = 0;
+        do
+        {
+            var page = await harness.Service.ListMessagesAsync(
+                CollectionRequest("alpha", limit: 3, cursor: cursor), CancellationToken.None);
+            collected.AddRange(page.Items);
+            cursor = page.NextCursor;
+            pages++;
+            Assert.True(pages <= 10, "pagination did not terminate");
+        }
+        while (cursor is not null);
+
+        Assert.Equal(expected.Select(message => message.Id), collected.Select(message => message.Id));
+        Assert.Equal(4, pages);
+    }
+
+    [Fact]
+    public async Task CollectionScopeFiltersComposeWithTheConversationFilters()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var alice = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", participant: ArchiveQueryHarness.AliceId, limit: ArchiveQueryService.MaxLimit),
+            CancellationToken.None);
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder([.. harness.GroupMessages, .. harness.OtherMessages])
+                .Where(message => message.SenderId == ArchiveQueryHarness.AliceId)
+                .Select(message => message.Id),
+            alice.Items.Select(message => message.Id));
+
+        var typed = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", type: "text", limit: ArchiveQueryService.MaxLimit),
+            CancellationToken.None);
+        Assert.All(typed.Items, message => Assert.Equal(CanonicalMessageType.Text, message.Type));
+
+        var ranged = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", since: "2026-02-01", until: "2026-02-28", limit: ArchiveQueryService.MaxLimit),
+            CancellationToken.None);
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder(harness.OtherMessages).Select(message => message.Id),
+            ranged.Items.Select(message => message.Id));
+
+        var composed = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", participant: ArchiveQueryHarness.AliceId, type: "text", limit: ArchiveQueryService.MaxLimit),
+            CancellationToken.None);
+        Assert.All(composed.Items, message =>
+        {
+            Assert.Equal(ArchiveQueryHarness.AliceId, message.SenderId);
+            Assert.Equal(CanonicalMessageType.Text, message.Type);
+        });
+    }
+
+    [Fact]
+    public async Task CollectionCursorIsBoundToTheResolvedMembership()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var firstPage = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", limit: 3), CancellationToken.None);
+        Assert.NotNull(firstPage.NextCursor);
+
+        // The catalog changes between pages: resuming with the old cursor must fail instead of
+        // silently paging a different membership.
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId);
+        var exception = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(
+                CollectionRequest("alpha", limit: 3, cursor: firstPage.NextCursor), CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.CursorInvalid, exception.Code);
+    }
+
+    [Fact]
+    public async Task ACollectionCursorIsNotReplayableAgainstAConversationListing()
+    {
+        using var harness = await SeededAsync();
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var collectionPage = await harness.Service.ListMessagesAsync(
+            CollectionRequest("alpha", limit: 3), CancellationToken.None);
+        Assert.NotNull(collectionPage.NextCursor);
+
+        var conversationException = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.ListMessagesAsync(
+                Request(limit: 3, cursor: collectionPage.NextCursor), CancellationToken.None));
+        Assert.Equal(ArchiveQueryErrorCodes.CursorInvalid, conversationException.Code);
     }
 
     // ---- context window ----------------------------------------------------

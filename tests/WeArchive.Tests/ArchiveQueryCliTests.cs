@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using WeArchive.Cli.CommandLine;
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
 using WeArchive.Core.Domain;
 using WeArchive.Core.RawVault;
 using WeArchive.Core.Services;
@@ -17,7 +18,8 @@ namespace WeArchive.Tests;
 /// <para>
 /// The provider deliberately registers a source adapter and a preservation store that fail on
 /// every call, so a passing test also proves that canonical retrieval needs neither a live WeChat
-/// client nor Raw Vault access.
+/// client nor Raw Vault access. The Collection catalog is pre-registered as the harness stub so
+/// scope resolution never reads a real user configuration.
 /// </para>
 /// </summary>
 public sealed class ArchiveQueryCliTests
@@ -25,6 +27,9 @@ public sealed class ArchiveQueryCliTests
     private static ServiceProvider BuildProvider(ArchiveQueryHarness harness)
     {
         var services = new ServiceCollection();
+        // Pre-register the stub Collection catalog so AddWeArchiveCore's TryAddSingleton keeps it
+        // (the same pattern the search and stats CLI tests use).
+        services.AddSingleton<ICollectionCatalogSource>(harness.CollectionSource);
         services.AddWeArchiveCore(harness.ArchivePath, harness.VaultRoot);
         services.AddSingleton<IClock>(harness.Clock);
         services.AddSingleton<IRawVaultStore>(harness.Vault);
@@ -398,6 +403,233 @@ public sealed class ArchiveQueryCliTests
         using (var document = ParseSingleDocument(unknownOut))
         {
             Assert.Equal("usage_error", document.RootElement.GetProperty("error").GetProperty("code").GetString());
+        }
+    }
+
+    // ---- message list: collection scope (issue #105) ------------------------
+
+    private static void SetCollection(ArchiveQueryHarness harness, string name, params string[] conversations) =>
+        harness.CollectionSource.Document = new CollectionCatalogDocument
+        {
+            SchemaVersion = CollectionCatalog.SupportedSchemaVersion,
+            Collections = new Dictionary<string, CollectionEntryDocument>(StringComparer.Ordinal)
+            {
+                [name] = new() { Conversations = [.. conversations] },
+            },
+        };
+
+    [Fact]
+    public async Task MessageListCollectionJsonPinsTheScopeAndPageShape()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var (exit, stdout, stderr) = await RunAsync(
+            provider, "message", "list", "--collection", "alpha", "--json");
+
+        Assert.Equal(ExitCode.Success, exit);
+        Assert.Empty(stderr);
+        using var document = ParseSingleDocument(stdout);
+        var root = document.RootElement;
+
+        Assert.Equal(
+            ["has_more", "items", "next_cursor", "scope"],
+            root.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal));
+
+        var scope = root.GetProperty("scope");
+        Assert.Equal(
+            ["archived_member_conversation_count", "collection", "conversation_id",
+             "duplicate_member_count", "invalid_member_count", "kind", "member_conversation_count"],
+            scope.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal));
+        Assert.Equal("collection", scope.GetProperty("kind").GetString());
+        Assert.Equal("alpha", scope.GetProperty("collection").GetString());
+        Assert.Equal(JsonValueKind.Null, scope.GetProperty("conversation_id").ValueKind);
+        Assert.Equal(2, scope.GetProperty("member_conversation_count").GetInt32());
+        Assert.Equal(2, scope.GetProperty("archived_member_conversation_count").GetInt32());
+        Assert.Equal(0, scope.GetProperty("invalid_member_count").GetInt32());
+        Assert.Equal(0, scope.GetProperty("duplicate_member_count").GetInt32());
+
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder([.. harness.GroupMessages, .. harness.OtherMessages])
+                .Select(message => message.Id),
+            root.GetProperty("items").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()));
+    }
+
+    [Fact]
+    public async Task MessageListConversationJsonAlsoNamesItsScope()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        var (_, stdout, _) = await RunAsync(
+            provider,
+            "message", "list", "--conversation", ArchiveQueryHarness.GroupConversationId, "--json");
+
+        using var document = ParseSingleDocument(stdout);
+        var scope = document.RootElement.GetProperty("scope");
+        Assert.Equal("conversation", scope.GetProperty("kind").GetString());
+        Assert.Equal(ArchiveQueryHarness.GroupConversationId, scope.GetProperty("conversation_id").GetString());
+        Assert.Equal(JsonValueKind.Null, scope.GetProperty("collection").ValueKind);
+        Assert.Equal(JsonValueKind.Null, scope.GetProperty("member_conversation_count").ValueKind);
+        Assert.Equal(JsonValueKind.Null, scope.GetProperty("archived_member_conversation_count").ValueKind);
+        Assert.Equal(JsonValueKind.Null, scope.GetProperty("invalid_member_count").ValueKind);
+        Assert.Equal(JsonValueKind.Null, scope.GetProperty("duplicate_member_count").ValueKind);
+    }
+
+    [Fact]
+    public async Task MessageListCollectionScopeReportsUnarchivedAndPartialMembership()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        SetCollection(
+            harness,
+            "mixed",
+            ArchiveQueryHarness.GroupConversationId,
+            "g_0000000000000abc",
+            "wxid_not_a_stable_id",
+            ArchiveQueryHarness.GroupConversationId);
+
+        var (exit, stdout, _) = await RunAsync(
+            provider, "message", "list", "--collection", "mixed", "--json");
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var document = ParseSingleDocument(stdout);
+        var scope = document.RootElement.GetProperty("scope");
+        Assert.Equal(2, scope.GetProperty("member_conversation_count").GetInt32());
+        Assert.Equal(1, scope.GetProperty("archived_member_conversation_count").GetInt32());
+        Assert.Equal(1, scope.GetProperty("invalid_member_count").GetInt32());
+        Assert.Equal(1, scope.GetProperty("duplicate_member_count").GetInt32());
+
+        // The unarchived member contributes no items and is never an error by itself.
+        Assert.All(
+            document.RootElement.GetProperty("items").EnumerateArray(),
+            item => Assert.Equal(ArchiveQueryHarness.GroupConversationId, item.GetProperty("conversation_id").GetString()));
+    }
+
+    [Fact]
+    public async Task MessageListCollectionHumanOutputNamesTheScopeAndArchivedRatio()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        SetCollection(
+            harness,
+            "alpha",
+            ArchiveQueryHarness.GroupConversationId,
+            "g_0000000000000abc");
+
+        var (exit, stdout, stderr) = await RunAsync(
+            provider, "message", "list", "--collection", "alpha", "--limit", "1");
+
+        Assert.Equal(ExitCode.Success, exit);
+        Assert.Contains("Messages (1) [collection: alpha (1/2 members archived), more available]:", stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("{", stdout, StringComparison.Ordinal);
+        Assert.Contains("Querying archived messages", stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MessageListCollectionCursorPaginationEndToEnd()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        SetCollection(harness, "alpha", ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId);
+
+        var (firstExit, firstOut, _) = await RunAsync(
+            provider, "message", "list", "--collection", "alpha", "--limit", "5", "--json");
+        Assert.Equal(ExitCode.Success, firstExit);
+        using var first = ParseSingleDocument(firstOut);
+        Assert.True(first.RootElement.GetProperty("has_more").GetBoolean());
+        var cursor = first.RootElement.GetProperty("next_cursor").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(cursor));
+
+        var (secondExit, secondOut, _) = await RunAsync(
+            provider,
+            "message", "list", "--collection", "alpha", "--cursor", cursor!, "--json");
+        Assert.Equal(ExitCode.Success, secondExit);
+        using var second = ParseSingleDocument(secondOut);
+
+        var ids = first.RootElement.GetProperty("items").EnumerateArray()
+            .Concat(second.RootElement.GetProperty("items").EnumerateArray())
+            .Select(item => item.GetProperty("id").GetString())
+            .ToList();
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder([.. harness.GroupMessages, .. harness.OtherMessages])
+                .Select(message => message.Id),
+            ids);
+        Assert.Equal(ids.Count, ids.Distinct(StringComparer.Ordinal).Count());
+
+        // A cursor from the collection listing is not replayable against a conversation listing.
+        var (crossExit, crossOut, _) = await RunAsync(
+            provider,
+            "message", "list", "--conversation", ArchiveQueryHarness.GroupConversationId,
+            "--cursor", cursor!, "--json");
+        Assert.Equal(ExitCode.UsageError, crossExit);
+        using var cross = ParseSingleDocument(crossOut);
+        Assert.Equal("cursor_invalid", cross.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task MessageListUnknownCollectionExitsOneWithCollectionNotFound()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        var (exit, stdout, stderr) = await RunAsync(
+            provider, "message", "list", "--collection", "missing", "--json");
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var document = ParseSingleDocument(stdout);
+        Assert.Equal(
+            "collection_not_found",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("error:", stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MessageListInvalidCollectionConfigExitsTwoWithCollectionConfigInvalid()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        harness.CollectionSource.Document = new CollectionCatalogDocument
+        {
+            SchemaVersion = "9.9",
+            Collections = [],
+        };
+
+        var (exit, stdout, _) = await RunAsync(
+            provider, "message", "list", "--collection", "alpha", "--json");
+
+        Assert.Equal(ExitCode.UsageError, exit);
+        using var document = ParseSingleDocument(stdout);
+        Assert.Equal(
+            "collection_config_invalid",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task MessageListScopesAreMutuallyExclusiveAndOneIsRequired()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        var (bothExit, bothOut, _) = await RunAsync(
+            provider,
+            "message", "list",
+            "--conversation", ArchiveQueryHarness.GroupConversationId,
+            "--collection", "alpha",
+            "--json");
+        Assert.Equal(ExitCode.UsageError, bothExit);
+        using (var both = ParseSingleDocument(bothOut))
+        {
+            Assert.Equal("usage_error", both.RootElement.GetProperty("error").GetProperty("code").GetString());
+        }
+
+        var (neitherExit, neitherOut, _) = await RunAsync(provider, "message", "list", "--json");
+        Assert.Equal(ExitCode.UsageError, neitherExit);
+        using (var neither = ParseSingleDocument(neitherOut))
+        {
+            Assert.Equal("usage_error", neither.RootElement.GetProperty("error").GetProperty("code").GetString());
         }
     }
 

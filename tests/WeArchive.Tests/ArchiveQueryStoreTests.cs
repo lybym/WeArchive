@@ -110,6 +110,98 @@ public sealed class ArchiveQueryStoreTests
     }
 
     [Fact]
+    public async Task StoreMemberListScopeUnionsConversationsInCanonicalTimelineOrder()
+    {
+        using var harness = await SeededAsync();
+
+        var page = await harness.Store.QueryMessagesAsync(
+            new ArchiveMessageQuery
+            {
+                ConversationIds =
+                [
+                    ArchiveQueryHarness.GroupConversationId,
+                    ArchiveQueryHarness.SecondConversationId,
+                ],
+                Limit = 500,
+            },
+            CancellationToken.None);
+
+        Assert.False(page.HasMore);
+        Assert.Equal(
+            ArchiveQueryHarness.CanonicalOrder([.. harness.GroupMessages, .. harness.OtherMessages])
+                .Select(message => message.Id),
+            page.Items.Select(message => message.Id));
+
+        // The member filter composes with the time filter and the keyset position exactly as the
+        // conversation scope does.
+        var rangedPage = await harness.Store.QueryMessagesAsync(
+            new ArchiveMessageQuery
+            {
+                ConversationIds = [ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId],
+                Since = ArchiveQueryHarness.At(2, 1),
+                Until = ArchiveQueryHarness.At(2, 1),
+                Limit = 500,
+            },
+            CancellationToken.None);
+        Assert.Equal(
+            ["m_0000000000000101"],
+            rangedPage.Items.Select(message => message.Id));
+
+        var last = ArchiveQueryHarness.CanonicalOrder([.. harness.GroupMessages, .. harness.OtherMessages])[^1];
+        var afterPage = await harness.Store.QueryMessagesAsync(
+            new ArchiveMessageQuery
+            {
+                ConversationIds = [ArchiveQueryHarness.GroupConversationId, ArchiveQueryHarness.SecondConversationId],
+                Limit = 500,
+                After = new MessageOrderKey
+                {
+                    OccurredUtc = ArchiveQueryHarness.At(2, 1).ToUnixTimeSeconds(),
+                    SourceOrderKey = "0001",
+                    MessageId = "m_0000000000000101",
+                },
+            },
+            CancellationToken.None);
+        Assert.DoesNotContain(afterPage.Items, message => message.Id == "m_0000000000000101");
+        Assert.DoesNotContain(afterPage.Items, message => message.OccurredAt.ToUnixTimeSeconds() < ArchiveQueryHarness.At(2, 1).ToUnixTimeSeconds());
+        Assert.Equal(last.Id, afterPage.Items[^1].Id);
+    }
+
+    [Fact]
+    public async Task StoreMemberListScopeOfAnEmptyListMatchesNothing()
+    {
+        using var harness = await SeededAsync();
+
+        var page = await harness.Store.QueryMessagesAsync(
+            new ArchiveMessageQuery { ConversationIds = [], Limit = 10 },
+            CancellationToken.None);
+
+        Assert.Empty(page.Items);
+        Assert.False(page.HasMore);
+    }
+
+    [Fact]
+    public async Task StoreMessageQueryRequiresExactlyOneScope()
+    {
+        using var harness = await SeededAsync();
+
+        var unscoped = await Assert.ThrowsAsync<ArgumentException>(
+            () => harness.Store.QueryMessagesAsync(
+                new ArchiveMessageQuery { Limit = 5 }, CancellationToken.None));
+        Assert.Contains("scope", unscoped.Message, StringComparison.OrdinalIgnoreCase);
+
+        var doubleScoped = await Assert.ThrowsAsync<ArgumentException>(
+            () => harness.Store.QueryMessagesAsync(
+                new ArchiveMessageQuery
+                {
+                    ConversationId = ArchiveQueryHarness.GroupConversationId,
+                    ConversationIds = [ArchiveQueryHarness.GroupConversationId],
+                    Limit = 5,
+                },
+                CancellationToken.None));
+        Assert.Contains("scope", doubleScoped.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ContextLookupReturnsNullForAnUnknownMessage()
     {
         using var harness = await SeededAsync();
