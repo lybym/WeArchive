@@ -254,6 +254,56 @@ public sealed class ArchiveQueryService
     }
 
     /// <summary>
+    /// Resolves one <see cref="EvidenceReference"/> to exactly the canonical window it cites
+    /// (issue #107, docs/HARNESS.md section 11): the cited message ID, the cited window counts, and
+    /// the cited conversation verified against the archive.
+    /// </summary>
+    /// <param name="reference">The citation to resolve.</param>
+    /// <param name="before">Optional override of the reference's cited <c>before</c> count.</param>
+    /// <param name="after">Optional override of the reference's cited <c>after</c> count.</param>
+    /// <exception cref="ArchiveQueryException">
+    /// A window count (cited or overridden) is invalid, the cited message is unknown
+    /// (<c>message_not_found</c> — the explicit "unavailable" outcome of a stale or wrong citation),
+    /// or the reference names a conversation the cited message does not belong to
+    /// (<c>reference_unresolvable</c> — a citation that cannot be exactly true never degrades into a
+    /// nearby match), or the archive cannot be read.
+    /// </exception>
+    public async Task<MessageContextWindow> GetContextAsync(
+        EvidenceReference reference,
+        int? before,
+        int? after,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+
+        var effectiveBefore = before ?? reference.Before;
+        var effectiveAfter = after ?? reference.After;
+        ValidateContextCount(effectiveBefore, "before");
+        ValidateContextCount(effectiveAfter, "after");
+
+        var context = await ReadAsync(
+            () => _archive.ReadMessageContextAsync(reference.MessageId, effectiveBefore, effectiveAfter, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+        if (context is null)
+            throw ArchiveQueryException.MessageNotFound(reference.MessageId);
+
+        // A stable message ID is derived from its conversation, so a reference whose conversation
+        // disagrees with the archived record can never be exactly true. Fail closed instead of
+        // returning the message as if the citation had resolved.
+        if (!string.Equals(context.Target.ConversationId, reference.ConversationId, StringComparison.Ordinal))
+            throw ArchiveQueryException.ReferenceUnresolvable(
+                $"the reference names conversation '{reference.ConversationId}' but its message belongs to conversation '{context.Target.ConversationId}', so the citation cannot be resolved exactly as cited.");
+
+        return new MessageContextWindow
+        {
+            Message = context.Target,
+            Before = context.Before,
+            After = context.After,
+        };
+    }
+
+    /// <summary>
     /// Runs one bounded page of a canonical full-text search (M3b index slice,
     /// docs/SEARCH_SPEC.md sections 5–9).
     /// </summary>

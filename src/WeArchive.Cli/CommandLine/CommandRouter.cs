@@ -97,6 +97,9 @@ public sealed class CommandRouter
             ["stats"] = new(sp => new Commands.StatsCommand(
                 sp.GetRequiredService<ArchiveQueryService>()),
                 "Report read-only canonical archive statistics and activity timeline."),
+            ["status"] = new(sp => new Commands.StatusCommand(
+                sp.GetRequiredService<ArchiveQueryService>()),
+                "Report read-only archive freshness across capture, ingest and canonical stages."),
         };
     }
 

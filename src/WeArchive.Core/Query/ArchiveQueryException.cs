@@ -35,6 +35,14 @@ public static class ArchiveQueryErrorCodes
     /// <summary>The requested stable message ID is not in the archive.</summary>
     public const string MessageNotFound = "message_not_found";
 
+    /// <summary>
+    /// An evidence reference cannot be resolved exactly as cited: the archive holds no such message,
+    /// or the reference's own claims disagree with the archived record (issue #107,
+    /// docs/HARNESS.md section 11). A citation that cannot resolve exactly never degrades into a
+    /// nearby match.
+    /// </summary>
+    public const string ReferenceUnresolvable = "reference_unresolvable";
+
     /// <summary>The canonical archive could not be opened or queried.</summary>
     public const string ArchiveUnavailable = "archive_unavailable";
 
@@ -100,6 +108,14 @@ public sealed class ArchiveQueryException : Exception
             ArchiveQueryFailureKind.NotFound,
             ArchiveQueryErrorCodes.MessageNotFound,
             $"message '{messageId}' was not found in the archive.");
+
+    /// <summary>
+    /// An evidence reference cannot be resolved exactly as cited. The message names both stable
+    /// IDs — the reference's own claims, never message content — so a stale or fabricated citation
+    /// fails explicitly instead of silently resolving to different evidence (issue #107).
+    /// </summary>
+    public static ArchiveQueryException ReferenceUnresolvable(string message) =>
+        new(ArchiveQueryFailureKind.NotFound, ArchiveQueryErrorCodes.ReferenceUnresolvable, message);
 
     /// <summary>
     /// The canonical archive could not be read. A missing archive file is not this failure: the

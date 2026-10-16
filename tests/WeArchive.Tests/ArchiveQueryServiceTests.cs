@@ -1340,4 +1340,86 @@ public sealed class ArchiveQueryServiceTests
             harness.Dispose();
         }
     }
+
+    // ---- evidence references (issue #107) ------------------------------------
+
+    [Fact]
+    public async Task ReferenceResolutionReturnsExactlyTheCitedWindow()
+    {
+        using var harness = await SeededAsync();
+        var reference = EvidenceReference.Create(
+            ArchiveQueryHarness.PartialId,
+            ArchiveQueryHarness.GroupConversationId,
+            2,
+            2);
+
+        var byReference = await harness.Service.GetContextAsync(reference, null, null, CancellationToken.None);
+        var byId = await harness.Service.GetContextAsync(
+            ArchiveQueryHarness.PartialId, 2, 2, CancellationToken.None);
+
+        Assert.Equal(
+            byId.Message.Id,
+            byReference.Message.Id);
+        Assert.Equal(
+            byId.Before.Select(message => message.Id),
+            byReference.Before.Select(message => message.Id));
+        Assert.Equal(
+            byId.After.Select(message => message.Id),
+            byReference.After.Select(message => message.Id));
+        Assert.Equal(2, byReference.Before.Count);
+        Assert.Equal(2, byReference.After.Count);
+    }
+
+    [Fact]
+    public async Task ReferenceWindowOverridesApplyWithoutChangingTheCitedConversation()
+    {
+        using var harness = await SeededAsync();
+        var reference = EvidenceReference.Create(
+            ArchiveQueryHarness.PartialId,
+            ArchiveQueryHarness.GroupConversationId,
+            0,
+            0);
+
+        var window = await harness.Service.GetContextAsync(reference, 1, 1, CancellationToken.None);
+
+        Assert.Single(window.Before);
+        Assert.Single(window.After);
+        Assert.Equal(ArchiveQueryHarness.PartialId, window.Message.Id);
+    }
+
+    [Fact]
+    public async Task ReferenceResolutionFailsClosedWhenTheCitedConversationDiffers()
+    {
+        using var harness = await SeededAsync();
+        // The message exists, but the citation names a conversation it does not belong to: a
+        // fabricated or stale citation must never degrade into a nearby match.
+        var reference = EvidenceReference.Create(
+            ArchiveQueryHarness.PartialId,
+            ArchiveQueryHarness.SecondConversationId,
+            1,
+            1);
+
+        var failure = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.GetContextAsync(reference, null, null, CancellationToken.None));
+
+        Assert.Equal(ArchiveQueryErrorCodes.ReferenceUnresolvable, failure.Code);
+        Assert.Equal(ArchiveQueryFailureKind.NotFound, failure.Kind);
+        Assert.Contains(ArchiveQueryHarness.SecondConversationId, failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReferenceResolutionNamesAnAbsentMessageExplicitlyUnavailable()
+    {
+        using var harness = await SeededAsync();
+        var reference = EvidenceReference.Create(
+            "m_0000000000000fff",
+            ArchiveQueryHarness.GroupConversationId,
+            1,
+            1);
+
+        var failure = await Assert.ThrowsAsync<ArchiveQueryException>(
+            () => harness.Service.GetContextAsync(reference, null, null, CancellationToken.None));
+
+        Assert.Equal(ArchiveQueryErrorCodes.MessageNotFound, failure.Code);
+    }
 }

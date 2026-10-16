@@ -388,7 +388,9 @@ Archive statistics and the activity timeline are delivered by the M3c slice (iss
 `ArchiveQueryService.GetStatisticsAsync` and the read-only `wearchive stats` command
 ([`DATA_MODEL.md`](DATA_MODEL.md) section 24): counts are observations over archived canonical
 records that name their scope and basis, unknown/partial/unattributed records are explicit totals,
-and no derived statistics state is persisted.
+and no derived statistics state is persisted. The M4c slice (issue #107) extends `context` to
+resolve citation-ready evidence references to exactly the cited window
+([`HARNESS.md`](HARNESS.md) section 11).
 
 ### FR-17 ArchiveQueryService
 
@@ -397,12 +399,15 @@ All interactive query/search/context operations are implemented behind a source-
 Harnesses must not be required to know SQLite table layouts.
 
 Shipped by Issue #27 for structured retrieval, context windows and capture/ingest/canonical
-freshness, by the M3b slices (Issues #102/#103) for full-text search, and by the M3c slice
-(issue #104) for archive statistics and the activity timeline. It reads only the
-canonical archive: it never opens live WeChat, acquires a key, reads Raw Vault artifacts or uses
-exported JSONL as a runtime store, and it returns canonical DTOs and stable IDs rather than SQLite
-rows or WeChat structures. Keyword search is implemented behind this service, so FR-17 is complete
-for query/search/context/statistics; a future MCP transport remains optional future work.
+freshness, by the M3b slices (Issues #102/#103) for full-text search, by the M3c slice
+(issue #104) for archive statistics and the activity timeline, and by the M4c slice (issue #107)
+for the read-only `wearchive status` freshness projection and citation-ready evidence references
+(`EvidenceReference`, resolved through `wearchive context` — docs/HARNESS.md sections 11–12). It
+reads only the canonical archive: it never opens live WeChat, acquires a key, reads Raw Vault
+artifacts or uses exported JSONL as a runtime store, and it returns canonical DTOs and stable IDs
+rather than SQLite rows or WeChat structures. Keyword search is implemented behind this service, so
+FR-17 is complete for query/search/context/statistics/freshness; a future MCP transport remains
+optional future work.
 
 ### FR-18 Selective export
 

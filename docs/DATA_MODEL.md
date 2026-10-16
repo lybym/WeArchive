@@ -955,6 +955,14 @@ matched. Every capture failure degrades to that null plus an explicit reason
 could not even be enumerated), so the canonical half of the report always survives and a
 captured-but-not-yet-ingested account is still visible as such.
 
+`wearchive status` (issue #107, docs/CLI.md) is the read-only CLI projection of exactly this model:
+one `--json` document of the three stage blocks (`canonical`, `capture`, `ingest`) plus the
+`queried_at` basis, transported without change and without deriving a combined verdict. It adds **no**
+canonical schema change: freshness is computed at query time from existing rows and checkpoints, and
+no status table, journal or derived state exists. Citation-ready evidence references (issue #107,
+docs/HARNESS.md section 11) are likewise pure query-time values over existing stable IDs — no
+persistence, no new identifier store.
+
 ### 23.4 Read-only guarantee
 
 Query is **R0**: it adds no table, index, checkpoint, journal, transaction protocol or recovery

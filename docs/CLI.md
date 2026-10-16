@@ -935,7 +935,7 @@ Exits `1` with `conversation_not_found`, `collection_not_found` or `archive_unav
 `usage_error` (missing/unknown option, invalid value, both or neither scope supplied) or
 `collection_config_invalid`/`cursor_invalid`; `130` on cancellation.
 
-### `wearchive context <message-id> [--before <n>] [--after <n>]`
+### `wearchive context <message-id-or-reference> [--before <n>] [--after <n>]`
 
 Returns the bounded canonical window around one stable message id. The message's own conversation
 scopes both sides, so a window never crosses into another conversation's timeline.
@@ -943,13 +943,30 @@ scopes both sides, so a window never crosses into another conversation's timelin
 Options:
 
 ```text
-<message-id>     Required. Stable canonical message id (m_<16 hex>).
---before <n>     Optional. Preceding messages, 0–100. Default 20.
---after <n>      Optional. Following messages, 0–100. Default 20.
+<message-id-or-reference>   Required. Stable canonical message id (m_<16 hex>) or an evidence
+                            reference (below).
+--before <n>                Optional. Preceding messages, 0–100. Default 20.
+--after <n>                 Optional. Following messages, 0–100. Default 20.
 ```
 
 The target is a distinct field from the two arrays, so a caller never infers the anchor from a list
 position.
+
+**Evidence references (issue #107).** The target may instead be a citation-ready evidence reference —
+the stable, source-neutral citation convention defined in [`HARNESS.md`](HARNESS.md) section 11:
+
+```text
+wearchive://message/<m_id>?conversation=<conversation-id>&before=<n>&after=<n>
+```
+
+The reference names the stable canonical message ID, its conversation and the cited window counts —
+never a Raw Vault path, artifact hash or source-internal identifier. Resolution returns **exactly
+the cited canonical messages**, or fails explicitly: a message absent from the archive is
+`message_not_found` (exit 1), and a reference whose conversation disagrees with the archived record
+(a stale or fabricated citation) is `reference_unresolvable` (exit 1) rather than a nearby match.
+A reference that does not parse is `usage_error` (exit 2). An explicit `--before`/`--after`
+overrides the cited window; the returned `reference` field always reports the window actually
+requested, so copying it and resolving it later reproduces the same window.
 
 JSON shape (exit 0):
 
@@ -957,18 +974,23 @@ JSON shape (exit 0):
 {
   "message_id": "m_<16-hex>",
   "conversation_id": "g_<16-hex>",
+  "reference": "wearchive://message/m_<16-hex>?conversation=g_<16-hex>&before=2&after=2",
   "before": [ { "id": "m_<16-hex>", "…": "…" } ],
   "message": { "id": "m_<16-hex>", "…": "…" },
   "after": [ { "id": "m_<16-hex>", "…": "…" } ]
 }
 ```
 
+`reference` is the citation-ready evidence reference of the returned window (the stable message ID,
+its conversation and the requested window counts) — the value a Harness records as its citation
+([`HARNESS.md`](HARNESS.md) section 11).
+
 `before` and `after` contain the same item shape as `message list`. Fewer records are returned at
 the first and last edges of the timeline instead of failing; `--before 0 --after 0` returns only the
 target.
 
-Exits `1` with `message_not_found` or `archive_unavailable`; `2` with `usage_error`; `130` on
-cancellation.
+Exits `1` with `message_not_found`, `reference_unresolvable` or `archive_unavailable`; `2` with
+`usage_error`; `130` on cancellation.
 
 ### `wearchive search <query> [options]`
 
@@ -1169,6 +1191,109 @@ Exits `1` with `conversation_not_found`, `collection_not_found` or `archive_unav
 `usage_error` (unknown option, unexpected positional argument, invalid value, mutually exclusive
 scopes) or `cursor_invalid`; `130` on cancellation. No new error codes are introduced.
 
+### `wearchive status`
+
+Reports one read-only freshness document across the three independent stages — capture, ingest and
+canonical (issue #107 / M4c, [`HARNESS.md`](HARNESS.md) section 10, [`DATA_MODEL.md`](DATA_MODEL.md)
+section 23.3). Like `message list`, `context`, `search` and `stats` it is read-only (**R0**): a thin
+adapter over `ArchiveQueryService.GetFreshnessAsync`, it never mutates canonical data, opens a Raw
+Vault artifact or contacts live WeChat. There is no background scheduler behind it; the report is
+computed at query time from the canonical archive and, through the source-neutral preservation
+contract, each account's latest published generation summary.
+
+```text
+wearchive status [--json] [--no-input] [--quiet]
+```
+
+The command takes no options beyond the global ones; any option or positional argument is a usage
+error.
+
+**What is reported.** The stages are three independent facts and are never inferred from one
+another (docs/HARNESS.md section 10): captured evidence may not be ingested yet, an ingest may be
+older than the newest capture, and the newest archived message instant says nothing about either.
+The document therefore reports each stage exactly as observed and deliberately derives no combined
+fresh/stale verdict — a synthesized label would be exactly the inference the freshness model
+forbids. Unknown and unreadable states are preserved as explicit nulls plus reasons instead of
+disappearing or presenting as fresh.
+
+JSON shape (exit 0):
+
+```json
+{
+  "basis": {
+    "source": "canonical_archive",
+    "archive_path": "C:\\…\\wearchive.db",
+    "queried_at": "2026-03-01T12:00:00+08:00"
+  },
+  "canonical": {
+    "account_count": 1,
+    "conversation_count": 2,
+    "participant_count": 0,
+    "message_count": 12,
+    "last_message_at": "2026-02-02T09:00:00+08:00"
+  },
+  "capture": {
+    "unavailable_reason": null,
+    "accounts": [
+      {
+        "account_id": "a_<16-hex>",
+        "generation_id": "gen_<16-hex>",
+        "capture_time": "2026-03-01T12:00:00+08:00",
+        "completeness": "complete",
+        "artifact_count": 3,
+        "previous_generation_id": null,
+        "unavailable_reason": null
+      }
+    ]
+  },
+  "ingest": {
+    "accounts": [
+      {
+        "account_id": "a_<16-hex>",
+        "last_ingest_at": "2026-03-01T12:00:00+08:00",
+        "latest_ingested_generation_id": "gen_<16-hex>",
+        "latest_ingested_conversation_id": "g_<16-hex>",
+        "last_account_scan_at": "2026-03-01T13:00:00+08:00"
+      }
+    ]
+  }
+}
+```
+
+`basis` names when and against which archive the report was read; every stage is "as of"
+`queried_at`. `canonical` is the archive's own queryable state — the same counts `doctor` reports,
+plus the newest archived message instant (null for an empty archive); these are observations about
+the archive, never a claim that the live source has been fully captured or ingested.
+
+`capture.accounts` lists every account the canonical archive knows plus every account that has
+capture state, each with the latest published generation summary: `generation_id`, `capture_time`,
+`completeness` (`complete`/`partial`/`incomplete`), `artifact_count` and the chain predecessor
+`previous_generation_id`. A null `generation_id` always means "no generation can be reported" —
+none exists yet, or this account's state could not be read (`unavailable_reason`) — never "a
+generation was found and matched". The stage-level `capture.unavailable_reason` is set when the
+preservation store cannot be enumerated at all; the accounts list then covers only the canonically
+known accounts, so a vault-only account is visibly unknown rather than silently absent. Nothing in
+this block exposes a vault path, partition fingerprint, artifact checksum or artifact content.
+
+`ingest.accounts` reports one row per account with committed canonical publication progress:
+`last_ingest_at`, `latest_ingested_generation_id`, `latest_ingested_conversation_id` and the last
+completed account-wide scan `last_account_scan_at`. Every null is an explicit stage fact — an
+account that was captured but never ingested has a capture row and an ingest row whose fields are
+null, and that pair is precisely how "captured but not ingested" is visible. An older ingested
+generation id under a newer captured one is how "canonical is behind the preservation store" is
+visible. The checkpoint payload, its cursor encoding and its scope vocabulary never cross this
+surface.
+
+Human output prints the basis line, one `canonical:` totals line and one line per account under
+`capture:` and `ingest:`, naming unknown stages (`unavailable (…)`), per-account gaps
+(`no published generation`, `unknown (…)`), accounts with no ingest yet (`not ingested yet`) and the
+absence of an account scan (`no account scan`).
+
+Exits `0` with the report even when a stage is unavailable — reporting unavailability is the
+purpose of the command, exactly as `doctor` reports an unavailable source. Exits `1` with
+`archive_unavailable` only when the canonical archive itself cannot be read; `2` with `usage_error`;
+`130` on cancellation. This command introduces no new error codes.
+
 ## Failure document (`--json`)
 
 In `--json` mode a non-zero exit still writes exactly one JSON document to stdout so callers can
@@ -1197,6 +1322,7 @@ Stable `error.code` values:
 | `capture_failed` | 1 | `sync --conversation`/`sync --collection` could not capture usable live-source evidence |
 | `incomplete_coverage` | 1 | The published Raw Vault generation's evidence coverage is not complete, so the R2 ingest refused the canonical read; the error document carries the source-neutral `canonical_coverage` rollup (Issue #51) |
 | `message_not_found` | 1 | A stable message id resolved to no archived message |
+| `reference_unresolvable` | 1 | An evidence reference cannot be resolved exactly as cited: the reference names a conversation its message does not belong to, so the citation fails closed instead of resolving to different evidence (issue #107, `wearchive context`) |
 | `cursor_invalid` | 2 | A pagination cursor is malformed, unsupported or belongs to a different query |
 | `archive_unavailable` | 1 | The canonical archive could not be read (a missing archive file is created as an empty archive, exactly as `doctor` reports it) |
 | `query_invalid` | 2 | A search query is empty or contains a term without any letter, digit or CJK ideograph; rejected before any index access, and the message never echoes the query content (`SEARCH_SPEC.md` section 5.3, issue #103) |
@@ -1305,9 +1431,10 @@ the `ArchiveQueryService` search contract are implemented by the M3b index slice
 ([SEARCH_SPEC.md](SEARCH_SPEC.md) sections 7–9 and 12) and its CLI contract tests — is implemented
 by the M3b CLI slice (issue #103) and is normative in this document. Archive statistics and the
 activity timeline are implemented by the M3c slice (issue #104) as `wearchive stats`, a read-only
-query-family command over the same `ArchiveQueryService`; the MCP transport is not implemented:
-`ArchiveQueryService` already exposes capture/ingest/canonical freshness, but no CLI status
-command is wired to it yet.
+query-family command over the same `ArchiveQueryService`. Archive freshness is wired to the CLI by
+the M4c slice (issue #107) as the read-only `wearchive status` command, and `context` additionally
+accepts citation-ready evidence references (issue #107, [`HARNESS.md`](HARNESS.md) section 11);
+the MCP transport is not implemented.
 
 `message list` resolves `--collection <name>` through the one authoritative Collection catalog,
 exactly as `search --collection`, `stats --collection` and `sync --collection` do; a member that
