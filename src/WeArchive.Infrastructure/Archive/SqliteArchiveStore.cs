@@ -1158,6 +1158,343 @@ public sealed class SqliteArchiveStore : IArchiveStore
         return Task.FromResult(stats);
     }
 
+    /// <summary>
+    /// One read-only statistics aggregate over the canonical <c>messages</c> rows
+    /// (docs/DATA_MODEL.md section 24). Every section is derived at query time from the same
+    /// scope/range filter — no derived statistics state exists to read or write — and unknown,
+    /// partial and unattributed records are counted wherever they fall instead of being dropped.
+    /// </summary>
+    public Task<ArchiveStatisticsResult> GetArchiveStatisticsAsync(
+        ArchiveStatisticsQuery query,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using var connection = Open();
+
+        // One scope/range filter, shared verbatim by the totals, the type distribution, the
+        // first/last subselects and the breakdown page, so the sections of one result can never
+        // disagree about what was counted. The alias is substituted so the same fragment serves
+        // both the outer queries (m) and the totals' first/last subselects (m2).
+        string Filter(string alias)
+        {
+            var conditions = new List<string>(3);
+            if (query.ConversationIds is not null)
+            {
+                conditions.Add(
+                    $"{alias}.conversation_id IN (SELECT value FROM json_each($conversations))");
+            }
+
+            if (query.Since is not null)
+            {
+                conditions.Add($"{alias}.occurred_utc >= $since");
+            }
+
+            if (query.Until is not null)
+            {
+                conditions.Add($"{alias}.occurred_utc <= $until");
+            }
+
+            return conditions.Count == 0 ? string.Empty : " WHERE " + string.Join(" AND ", conditions);
+        }
+
+        void BindScope(SqliteCommand command)
+        {
+            if (query.ConversationIds is not null)
+            {
+                command.Parameters.AddWithValue(
+                    "$conversations", JsonSerializer.Serialize(query.ConversationIds));
+            }
+
+            if (query.Since is not null)
+            {
+                command.Parameters.AddWithValue("$since", query.Since.Value.ToUnixTimeSeconds());
+            }
+
+            if (query.Until is not null)
+            {
+                command.Parameters.AddWithValue("$until", query.Until.Value.ToUnixTimeSeconds());
+            }
+        }
+
+        var scope = Filter("m");
+
+        // First/last observed instants in canonical timeline order (section 8.1), so a shared
+        // instant is placed by the same rule that orders a listing. Both are facts about the
+        // counted rows; an empty scope reports null rather than an invented instant.
+        using var totals = connection.CreateCommand();
+        totals.CommandText =
+            $"""
+            SELECT COUNT(*),
+                   COUNT(DISTINCT m.conversation_id),
+                   COUNT(DISTINCT m.sender_id),
+                   SUM(m.sender_id IS NULL),
+                   SUM(m.type = 'unknown'),
+                   SUM(m.is_partial = 1),
+                   (SELECT m2.occurred_at FROM messages m2{Filter("m2")}
+                    ORDER BY m2.occurred_utc ASC, COALESCE(m2.source_order_key, '') ASC, m2.id ASC LIMIT 1),
+                   (SELECT m2.occurred_at FROM messages m2{Filter("m2")}
+                    ORDER BY m2.occurred_utc DESC, COALESCE(m2.source_order_key, '') DESC, m2.id DESC LIMIT 1)
+            FROM messages m{scope};
+            """;
+        BindScope(totals);
+
+        StatisticsTotals totalsResult;
+        using (var reader = totals.ExecuteReader())
+        {
+            reader.Read();
+            totalsResult = new StatisticsTotals
+            {
+                MessageCount = reader.GetInt32(0),
+                ConversationCount = reader.GetInt32(1),
+                SenderCount = reader.GetInt32(2),
+                UnattributedCount = reader.IsDBNull(3) ? 0 : (int)reader.GetInt64(3),
+                UnknownCount = reader.IsDBNull(4) ? 0 : (int)reader.GetInt64(4),
+                PartialCount = reader.IsDBNull(5) ? 0 : (int)reader.GetInt64(5),
+                FirstMessageAt = reader.IsDBNull(6) ? null : ParseTimestamp(reader.GetString(6)),
+                LastMessageAt = reader.IsDBNull(7) ? null : ParseTimestamp(reader.GetString(7)),
+            };
+        }
+
+        // The canonical type inventory is closed (MESSAGE_SCHEMA section 4), so this listing
+        // is inherently bounded. Only observed types appear — zero rows are never invented.
+        var byType = new List<StatisticsTypeCount>();
+        using (var types = connection.CreateCommand())
+        {
+            types.CommandText =
+                $"""
+                SELECT m.type, COUNT(*) FROM messages m{scope} GROUP BY m.type ORDER BY m.type ASC;
+                """;
+            BindScope(types);
+            using var typeReader = types.ExecuteReader();
+            while (typeReader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                byType.Add(new StatisticsTypeCount
+                {
+                    Type = typeReader.GetString(0),
+                    Count = typeReader.GetInt32(1),
+                });
+            }
+        }
+
+        var (rows, hasMore) = query.Breakdown switch
+        {
+            StatisticsBreakdownKind.Day => ReadBucketBreakdown(
+                connection, query, cancellationToken,
+                bucketExpression: "(m.occurred_utc / 86400) * 86400",
+                afterExpression: "(m.occurred_utc / 86400) * 86400",
+                afterValue: ParseDayBucketAfter(query.BreakdownAfter),
+                bindScope: BindScope,
+                isMonthBucket: false),
+            StatisticsBreakdownKind.Month => ReadBucketBreakdown(
+                connection, query, cancellationToken,
+                bucketExpression: "strftime('%Y-%m', m.occurred_utc, 'unixepoch')",
+                afterExpression: "strftime('%Y-%m', m.occurred_utc, 'unixepoch')",
+                afterValue: query.BreakdownAfter,
+                bindScope: BindScope,
+                isMonthBucket: true),
+            _ => ReadConversationBreakdown(connection, query, cancellationToken, BindScope),
+        };
+
+        return Task.FromResult(new ArchiveStatisticsResult
+        {
+            Totals = totalsResult,
+            ByType = byType,
+            BreakdownItems = rows,
+            BreakdownHasMore = hasMore,
+        });
+    }
+
+    /// <summary>
+    /// Reads one bounded keyset page of the day/month bucket breakdown. The page reads one bucket
+    /// beyond its limit, so <c>has_more</c> is a fact about the archive rather than an inference
+    /// from a full page (docs/DATA_MODEL.md section 24). The bucket key arrives as a bound
+    /// parameter; caller input never becomes SQL syntax.
+    /// </summary>
+    private static (IReadOnlyList<StatisticsBreakdownRow> Rows, bool HasMore) ReadBucketBreakdown(
+        SqliteConnection connection,
+        ArchiveStatisticsQuery query,
+        CancellationToken cancellationToken,
+        string bucketExpression,
+        string afterExpression,
+        object? afterValue,
+        Action<SqliteCommand> bindScope,
+        bool isMonthBucket)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            SELECT {bucketExpression} AS bucket_key,
+                   COUNT(*),
+                   SUM(m.type = 'unknown'),
+                   SUM(m.is_partial = 1)
+            FROM messages m
+            {FilterFor(query, afterValue is null ? null : $"{afterExpression} > $after")}
+            GROUP BY {bucketExpression}
+            ORDER BY bucket_key ASC
+            LIMIT $limit;
+            """;
+        bindScope(command);
+        if (afterValue is not null)
+        {
+            command.Parameters.AddWithValue("$after", afterValue);
+        }
+
+        command.Parameters.AddWithValue("$limit", query.BreakdownLimit + 1);
+
+        var rows = new List<StatisticsBreakdownRow>(Math.Min(query.BreakdownLimit, 128));
+        var hasMore = false;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rows.Count == query.BreakdownLimit)
+            {
+                hasMore = true;
+                break;
+            }
+
+            var messageCount = reader.GetInt64(1);
+            var unknownCount = reader.IsDBNull(2) ? 0 : reader.GetInt64(2);
+            var partialCount = reader.IsDBNull(3) ? 0 : reader.GetInt64(3);
+            rows.Add(isMonthBucket
+                ? MonthRow(reader.GetString(0), messageCount, unknownCount, partialCount)
+                : DayRow(reader.GetInt64(0), messageCount, unknownCount, partialCount));
+        }
+
+        return (rows, hasMore);
+
+        static StatisticsBreakdownRow DayRow(long epoch, long messageCount, long unknownCount, long partialCount) => new()
+        {
+            BucketStart = DateTimeOffset.FromUnixTimeSeconds(epoch),
+            MessageCount = (int)messageCount,
+            UnknownCount = (int)unknownCount,
+            PartialCount = (int)partialCount,
+        };
+
+        static StatisticsBreakdownRow MonthRow(string monthKey, long messageCount, long unknownCount, long partialCount)
+        {
+            var year = int.Parse(monthKey.AsSpan(0, 4), CultureInfo.InvariantCulture);
+            var month = int.Parse(monthKey.AsSpan(5, 2), CultureInfo.InvariantCulture);
+            return new StatisticsBreakdownRow
+            {
+                BucketStart = new DateTimeOffset(year, month, 1, 0, 0, 0, TimeSpan.Zero),
+                MessageCount = (int)messageCount,
+                UnknownCount = (int)unknownCount,
+                PartialCount = (int)partialCount,
+            };
+        }
+    }
+
+    /// <summary>
+    /// Reads one bounded keyset page of the per-conversation breakdown, keyed by the stable
+    /// conversation ID in ordinal order so every page is deterministic.
+    /// </summary>
+    private static (IReadOnlyList<StatisticsBreakdownRow> Rows, bool HasMore) ReadConversationBreakdown(
+        SqliteConnection connection,
+        ArchiveStatisticsQuery query,
+        CancellationToken cancellationToken,
+        Action<SqliteCommand> bindScope)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            SELECT m.conversation_id AS bucket_key,
+                   COUNT(*),
+                   SUM(m.type = 'unknown'),
+                   SUM(m.is_partial = 1)
+            FROM messages m
+            {FilterFor(query, query.BreakdownAfter is null ? null : "m.conversation_id > $after")}
+            GROUP BY m.conversation_id
+            ORDER BY bucket_key ASC
+            LIMIT $limit;
+            """;
+        bindScope(command);
+        if (query.BreakdownAfter is not null)
+        {
+            command.Parameters.AddWithValue("$after", query.BreakdownAfter);
+        }
+
+        command.Parameters.AddWithValue("$limit", query.BreakdownLimit + 1);
+
+        var rows = new List<StatisticsBreakdownRow>(Math.Min(query.BreakdownLimit, 128));
+        var hasMore = false;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (rows.Count == query.BreakdownLimit)
+            {
+                hasMore = true;
+                break;
+            }
+
+            rows.Add(new StatisticsBreakdownRow
+            {
+                ConversationId = reader.GetString(0),
+                MessageCount = (int)reader.GetInt64(1),
+                UnknownCount = reader.IsDBNull(2) ? 0 : (int)reader.GetInt64(2),
+                PartialCount = reader.IsDBNull(3) ? 0 : (int)reader.GetInt64(3),
+            });
+        }
+
+        return (rows, hasMore);
+    }
+
+    /// <summary>
+    /// Builds the shared scope/range <c>WHERE</c> fragment for the statistics queries, optionally
+    /// joined with the breakdown's keyset condition so the page filter is part of one clause no
+    /// matter which filters the caller supplied.
+    /// </summary>
+    private static string FilterFor(ArchiveStatisticsQuery query, string? extraCondition = null)
+    {
+        var conditions = new List<string>(4);
+        if (query.ConversationIds is not null)
+        {
+            conditions.Add("m.conversation_id IN (SELECT value FROM json_each($conversations))");
+        }
+
+        if (query.Since is not null)
+        {
+            conditions.Add("m.occurred_utc >= $since");
+        }
+
+        if (query.Until is not null)
+        {
+            conditions.Add("m.occurred_utc <= $until");
+        }
+
+        if (extraCondition is not null)
+        {
+            conditions.Add(extraCondition);
+        }
+
+        return conditions.Count == 0 ? string.Empty : " WHERE " + string.Join(" AND ", conditions);
+    }
+
+    /// <summary>
+    /// The exclusive day-bucket keyset position. The service validated the spelling; a value that
+    /// is not a non-negative multiple of a day fails closed instead of silently starting mid-bucket.
+    /// </summary>
+    private static long? ParseDayBucketAfter(string? after)
+    {
+        if (after is null)
+        {
+            return null;
+        }
+
+        if (!long.TryParse(after, NumberStyles.None, CultureInfo.InvariantCulture, out var epoch)
+            || epoch < 0
+            || epoch % 86400 != 0)
+        {
+            throw ArchiveQueryException.InvalidCursor("the cursor is not a valid pagination cursor.");
+        }
+
+        return epoch;
+    }
+
     public Task<IngestCheckpoint?> GetIngestCheckpointAsync(
         string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken)
     {

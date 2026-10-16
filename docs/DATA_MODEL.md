@@ -948,3 +948,68 @@ captured-but-not-yet-ingested account is still visible as such.
 Query is **R0**: it adds no table, index, checkpoint, journal, transaction protocol or recovery
 state, and no query failure — validation, not-found or unreadable-archive — mutates canonical data,
 Raw Vault evidence, the capture checkpoint or an ingest checkpoint.
+
+## 24. Statistics model (M3c)
+
+`ArchiveQueryService.GetStatisticsAsync` exposes archive statistics and the activity timeline
+(issue #104, docs/PRD.md FR-16/FR-17) as one bounded, read-only report over the canonical archive;
+the `wearchive stats` CLI command is a thin transport over it (docs/CLI.md).
+
+This slice adds **no** canonical schema change: every count is derived at query time from the
+existing `messages` rows and the migration-1 timeline index, in a constant number of linear passes
+over the counted set. There is **no** derived statistics table, no aggregate index and no second
+authoritative corpus to rebuild — an offline canonical rebuild reproduces the same statistics
+because it reproduces the same canonical rows. Statistics never read Raw Vault evidence, live
+sources or exported JSONL.
+
+### 24.1 Scope, basis and what is counted
+
+A report names what it counted and what the numbers are facts about:
+
+- **scope** — the whole archive, one conversation (stable ID, existence-verified, like a listing)
+  or one Collection (resolved through the one authoritative Collection catalog, section 22; a
+  member that resolves to no archived conversation contributes no counts and never errors by
+  itself);
+- **basis** — the canonical archive (its path) and the `queried_at` instant; every number is "as
+  of" that read, never a cached aggregate.
+
+Counts are observations over archived canonical records inside the scope and the inclusive
+`since`/`until` range (section 23.1 bound grammar and one-second resolution). They are never a
+claim about the source's unarchived remainder. Unknown semantics (`type = 'unknown'`), partial
+records (`is_partial`) and messages whose sender could not be resolved are explicit totals and are
+counted inside their type and breakdown bucket — unknown/partial provenance is never silently
+dropped, and an unresolvable sender is never fabricated into a stable participant identity.
+`conversation_count` counts archived conversations that contributed at least one counted message.
+
+### 24.2 Breakdowns and buckets
+
+One breakdown is selected per report: `day`, `month` or `conversation` buckets.
+
+```text
+day / month      UTC calendar buckets of the canonical instant (occurred_utc); a bucket's
+                 bucket_start is the UTC start instant of the day/month
+conversation     buckets keyed by the stable conversation ID, ordinal order
+```
+
+Buckets are UTC-derived so a timeline is deterministic regardless of the rendering machine's
+locale or offset; localized bucketing would make the same archive produce different timelines on
+different machines. Each bucket carries message, unknown and partial counts. Only observed types
+appear in the type distribution — the canonical type inventory (MESSAGE_SCHEMA section 4) is
+closed, so that listing is inherently bounded and zero rows are never invented.
+
+### 24.3 Breakdown pagination
+
+The breakdown is a bounded keyset page exactly like a message listing (section 23.2): the page
+reads one bucket beyond its limit, `has_more` is a fact about the archive, and the opaque cursor
+is an API token — not a persistent record — carrying the exclusive bucket key (day epoch,
+`YYYY-MM` month key or stable conversation ID) plus a fingerprint of the resolved scope, the
+instant bounds and the breakdown kind, so a catalog change or a filter change can never silently
+repoint a page. The page size is excluded from the fingerprint. Scope-wide totals are identical on
+every page: pagination bounds the breakdown, not the report.
+
+### 24.4 Read-only guarantee
+
+Statistics are **R0** like all query: the report adds no table, index, checkpoint or journal,
+performs no write, and every failure — validation, not-found, collection-configuration,
+unreadable-archive — is a deterministic error document with the query-family exit mapping
+(docs/CLI.md), never a mutation.

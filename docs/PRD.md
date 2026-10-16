@@ -381,7 +381,11 @@ opaque keyset cursor, `since`/`until` bounds are inclusive instants, participant
 filters use stable canonical semantics, and `context` returns a bounded before/target/after window
 around a stable message ID. Keyword search is delivered as a service contract by the M3b index
 slice (Issue #102) — see FR-15 — and reaches the CLI through `wearchive search` (issue #103).
-Archive statistics beyond freshness remain future work.
+Archive statistics and the activity timeline are delivered by the M3c slice (issue #104) through
+`ArchiveQueryService.GetStatisticsAsync` and the read-only `wearchive stats` command
+([`DATA_MODEL.md`](DATA_MODEL.md) section 24): counts are observations over archived canonical
+records that name their scope and basis, unknown/partial/unattributed records are explicit totals,
+and no derived statistics state is persisted.
 
 ### FR-17 ArchiveQueryService
 
@@ -390,11 +394,12 @@ All interactive query/search/context operations are implemented behind a source-
 Harnesses must not be required to know SQLite table layouts.
 
 Shipped by Issue #27 for structured retrieval, context windows and capture/ingest/canonical
-freshness, and by the M3b slices (Issues #102/#103) for full-text search. It reads only the
+freshness, by the M3b slices (Issues #102/#103) for full-text search, and by the M3c slice
+(issue #104) for archive statistics and the activity timeline. It reads only the
 canonical archive: it never opens live WeChat, acquires a key, reads Raw Vault artifacts or uses
 exported JSONL as a runtime store, and it returns canonical DTOs and stable IDs rather than SQLite
 rows or WeChat structures. Keyword search is implemented behind this service, so FR-17 is complete
-for query/search/context; a future MCP transport remains optional future work.
+for query/search/context/statistics; a future MCP transport remains optional future work.
 
 ### FR-18 Selective export
 

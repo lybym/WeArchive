@@ -134,6 +134,22 @@ public interface IArchiveStore
 
     Task<ArchiveStats> GetArchiveStatsAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Computes one read-only statistics aggregate (M3c, docs/DATA_MODEL.md section 24):
+    /// scope totals, the canonical type distribution and one bounded breakdown page.
+    /// <para>
+    /// Everything is derived from canonical <c>messages</c> rows at query time — no derived
+    /// statistics state is read or written. Scope arrives as archived conversation IDs (null for
+    /// the whole archive); <see cref="ArchiveStatisticsQuery.BreakdownAfter"/> is an exclusive
+    /// keyset position validated by the caller. The breakdown page returns at most
+    /// <see cref="ArchiveStatisticsQuery.BreakdownLimit"/> rows and reports whether further
+    /// matching buckets exist.
+    /// </para>
+    /// </summary>
+    Task<ArchiveStatisticsResult> GetArchiveStatisticsAsync(
+        ArchiveStatisticsQuery query,
+        CancellationToken cancellationToken);
+
     Task<IngestCheckpoint?> GetIngestCheckpointAsync(
         string accountId, string adapterFamily, string scopeKind, string scopeId, CancellationToken cancellationToken);
 

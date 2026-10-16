@@ -79,7 +79,10 @@ It must return canonical DTOs and stable IDs, not SQLite implementation details.
 range, canonical sender and canonical type with opaque cursor pagination; bounded context-window
 retrieval around a stable message id; and capture/ingest/canonical freshness. Keyword/full-text
 search is delivered by the M3b slices (Issues #102/#103) through the same service. Statistics and
-activity summaries remain target behavior, and no CLI status command is wired to the freshness API
+activity summaries are delivered by the M3c slice (issue #104) as
+`ArchiveQueryService.GetStatisticsAsync` — one bounded, read-only report of scope totals, the
+canonical type distribution and day/month/conversation breakdown buckets, with unknown, partial
+and unattributed records reported explicitly. No CLI status command is wired to the freshness API
 yet.
 
 ## 4. CLI query surface
@@ -104,13 +107,21 @@ wearchive context m_xxx `
   --before 20 `
   --after 20 `
   --json
+
+wearchive stats `
+  --bucket month `
+  --since 2026-01-01 `
+  --limit 100 `
+  --json
 ```
 
 `message list`, `context` and `search` are **shipped** and normative in [`CLI.md`](CLI.md) —
 including the `items` / `next_cursor` / `has_more` page shape, the context DTO that separates the
 target message from the messages before and after it, the `--participant` / `--type` filters and
 the time grammar. `search` runs over the FTS index of section 7 and returns the same canonical
-message DTO, so the workflow below is the shipped retrieval pattern.
+message DTO, so the workflow below is the shipped retrieval pattern. `stats` is **shipped** by the
+M3c slice (issue #104) and normative in [`CLI.md`](CLI.md): one read-only document naming its
+scope and basis, with unknown/partial/unattributed records as explicit totals.
 
 ## 5. Pagination
 

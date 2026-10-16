@@ -291,6 +291,141 @@ public sealed class ArchiveQueryService
     }
 
     /// <summary>
+    /// Computes one bounded, read-only statistics report over the canonical archive (M3c,
+    /// docs/DATA_MODEL.md section 24, docs/PRD.md FR-16/FR-17).
+    /// <para>
+    /// The service owns scope resolution (one conversation, one Collection's archived membership,
+    /// or the whole archive), filter validation and the opaque breakdown cursor; the archive store
+    /// derives every count from canonical rows at query time. No derived statistics state is read
+    /// or written, nothing touches the Raw Vault, and unknown, partial and unattributed records
+    /// are counted wherever they fall instead of being silently dropped.
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArchiveQueryException">
+    /// The request is invalid, the cursor is unusable, the requested conversation or Collection is
+    /// unknown, or the archive cannot be read.
+    /// </exception>
+    public async Task<ArchiveStatistics> GetStatisticsAsync(
+        StatisticsRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var breakdown = ParseBreakdown(request.Bucket);
+        var limit = ValidateLimit(request.Limit);
+        var since = ParseInstant(request.Since, "since");
+        var until = ParseInstant(request.Until, "until");
+        if (since is not null && until is not null && since > until)
+            throw ArchiveQueryException.Invalid("since must not be later than until.");
+
+        // --conversation and --collection are mutually exclusive scopes, exactly as search scopes
+        // them: one report counts one resolved scope, never an ambiguous union.
+        if (request.ConversationId is not null && request.CollectionName is not null)
+            throw ArchiveQueryException.Invalid(
+                "conversation and collection scopes are mutually exclusive; supply one statistics scope.");
+
+        string? conversationId = null;
+        IReadOnlyList<string>? collectionConversationIds = null;
+        var scopeKind = "archive";
+        if (request.ConversationId is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.ConversationId))
+                throw ArchiveQueryException.Invalid("a stable conversation id is required.");
+
+            scopeKind = "conversation";
+            conversationId = request.ConversationId;
+            var conversation = await ReadAsync(
+                () => _archive.GetConversationAsync(conversationId, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (conversation is null)
+                throw ArchiveQueryException.ConversationNotFound(conversationId);
+        }
+        else if (request.CollectionName is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.CollectionName))
+                throw ArchiveQueryException.Invalid("a collection name is required.");
+
+            // The one authoritative Collection catalog resolves the scope; an unknown name and an
+            // invalid configuration are deterministic failures, while a member that resolves to no
+            // archived conversation contributes no counts and never errors by itself.
+            CollectionDefinition definition;
+            try
+            {
+                definition = await _collections.ResolveAsync(request.CollectionName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (CollectionNotFoundException)
+            {
+                throw ArchiveQueryException.CollectionNotFound(request.CollectionName);
+            }
+            catch (CollectionConfigurationException exception)
+            {
+                throw ArchiveQueryException.CollectionConfigInvalid(exception);
+            }
+
+            scopeKind = "collection";
+            collectionConversationIds = definition.ConversationIds;
+        }
+
+        // The cursor is bound to the normalized scope/filter set (the resolved member IDs, so a
+        // catalog change cannot silently repoint a page) plus the breakdown kind. The page size is
+        // excluded, so a caller may change the limit between pages.
+        var fingerprint = StatisticsCursor.Fingerprint(
+            scopeKind,
+            conversationId,
+            collectionConversationIds,
+            since,
+            until,
+            breakdown.ToWireName());
+
+        string? after = null;
+        if (request.Cursor is not null)
+        {
+            after = StatisticsCursor.RequirePosition(
+                breakdown,
+                StatisticsCursor.Decode(fingerprint, request.Cursor));
+        }
+
+        var result = await ReadAsync(
+            () => _archive.GetArchiveStatisticsAsync(new ArchiveStatisticsQuery
+            {
+                ConversationIds = conversationId is not null
+                    ? [conversationId]
+                    : collectionConversationIds,
+                Since = since,
+                Until = until,
+                Breakdown = breakdown,
+                BreakdownAfter = after,
+                BreakdownLimit = limit,
+            }, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+
+        // A page that reports more buckets must hand back the cursor that reaches them; otherwise
+        // the caller would be told to continue with no way to continue.
+        var hasMore = result.BreakdownHasMore && result.BreakdownItems.Count > 0;
+        var nextCursor = hasMore
+            ? StatisticsCursor.Encode(fingerprint, StatisticsCursor.PositionOf(breakdown, result.BreakdownItems[^1]))
+            : null;
+
+        return new ArchiveStatistics
+        {
+            ScopeKind = scopeKind,
+            ConversationId = conversationId,
+            CollectionName = request.CollectionName,
+            Since = since,
+            Until = until,
+            ArchivePath = _archive.ArchivePath,
+            QueriedAt = _clock.UtcNow,
+            Totals = result.Totals,
+            ByType = result.ByType,
+            Breakdown = breakdown,
+            BreakdownItems = result.BreakdownItems,
+            HasMore = hasMore,
+            NextCursor = nextCursor,
+        };
+    }
+
+    /// <summary>
     /// Reports capture, ingest and canonical freshness together, so a caller can tell which stage
     /// is behind without reading a checkpoint table or a Raw Vault manifest
     /// (docs/HARNESS.md section 10).
@@ -385,6 +520,22 @@ public sealed class ArchiveQueryService
 
         if (type.Length == 0 || !CanonicalMessageTypes.TryParse(type, out var parsed))
             throw ArchiveQueryException.Invalid("type must be a canonical message type wire name.");
+
+        return parsed;
+    }
+
+    /// <summary>
+    /// Parses one optional breakdown wire name. An unspecified breakdown is the default day
+    /// timeline; an unsupported value is a usage failure rather than a silently different
+    /// bucketing (docs/CLI.md <c>wearchive stats</c>).
+    /// </summary>
+    private static StatisticsBreakdownKind ParseBreakdown(string? bucket)
+    {
+        if (bucket is null)
+            return StatisticsBreakdownKind.Day;
+
+        if (bucket.Length == 0 || !StatisticsBreakdownKinds.TryParse(bucket, out var parsed))
+            throw ArchiveQueryException.Invalid("bucket must be one of: day, month, conversation.");
 
         return parsed;
     }
