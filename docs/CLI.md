@@ -367,54 +367,93 @@ caller that consumed those counters must switch to `status`, `conversations_inge
 changing its orchestration or `succeeded`/`no_change` semantics; the ingest-progress
 `conversation_coverage` checkpoint is unchanged and is never reinterpreted as completeness.
 
-### `wearchive export --conversation <id-or-alias> [--output <dir>]`
+### `wearchive export (--conversation <id-or-alias> | --collection <name>) [--since <time>] [--until <time>] [--output <dir>]`
 
-Publishes one conversation's JSONL dataset (FR-12, [EXPORT_PRD.md](EXPORT_PRD.md)).
+Publishes the selected conversation(s)' JSONL dataset (FR-18, FR-23,
+[EXPORT_PRD.md](EXPORT_PRD.md) sections 7–8).
 
-**Shipped status (Issue #66).** This section documents the shipped `main` behavior, which is the
-accepted canonical-archive-only boundary. The command resolves the requested conversation from the
-**canonical archive** and delegates the whole **canonical archive → dataset** derivation
+**Shipped status (Issue #66, issue #106).** This section documents the shipped `main` behavior,
+which is the accepted canonical-archive-only boundary. The command resolves the requested scope
+from the **canonical archive** — a conversation through its stable id or uniquely matching
+archived upstream id, a Collection through the one authoritative Collection catalog — and
+delegates the whole **canonical archive → dataset** derivation
 (`Canonical SQLite → JSONL/YAML/JSON`) to the export workflow, with no live WeChat/source-adapter
 access, no capture, no Raw Vault ingest, no source metadata probe and no implicit import:
 refreshing canonical state is `sync`'s job, and export never mutates canonical tables, import-run
 rows, checkpoints or Raw Vault state. Export therefore succeeds while WeChat is stopped or
-unavailable, as long as the conversation is already archived
+unavailable, as long as the selected conversations are already archived
 ([PRD.md](PRD.md) G7/G10, [ADR 0008](adr/0008-raw-vault-canonical-query-layers.md),
 [EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2 and 15). A user who wants the newest WeChat state runs
-`wearchive sync --conversation <id>` first and exports afterwards.
+`wearchive sync --collection <name>` (or `sync --conversation <id>`) first and exports afterwards.
 
 **Historical status (`v0.4.0`).** The `v0.4.0` release shipped the superseded source-coupled
 workflow, which resolved through the live source catalog and re-imported/upserted from the live
 source before exporting. That behavior is no longer the contract of this command.
 
-Resolution is archive-backed: the selector accepts a canonical stable archive id (`g_…`/`u_…`),
-which is the primary unambiguous selector, or an upstream `source_id` that still resolves when it
-is unique among archived conversations. The same upstream id under more than one archived account
-fails deterministically as `conversation_ambiguous` (exit 1) with the ordered candidate list; it
-never picks an account arbitrarily and never falls back to the live source. The manifest carries
-the ingest diagnostics persisted for the conversation's canonical records; nothing in the export
-path re-reads the source to refresh them.
+Conversation resolution is archive-backed: the selector accepts a canonical stable archive id
+(`g_…`/`u_…`), which is the primary unambiguous selector, or an upstream `source_id` that still
+resolves when it is unique among archived conversations. The same upstream id under more than one
+archived account fails deterministically as `conversation_ambiguous` (exit 1) with the ordered
+candidate list; it never picks an account arbitrarily and never falls back to the live source. The
+manifest carries the ingest diagnostics persisted for the exported conversations' canonical
+records; nothing in the export path re-reads the source to refresh them.
 
 Options:
 
 ```text
---conversation <id-or-alias>   Required. Stable archive id (g_/u_) or upstream source id.
--o, --output <dir>             Optional. Output directory. Defaults to a per-conversation
-                               subdirectory of the per-user application data exports/
+--conversation <id-or-alias>   Required unless --collection is given. Stable archive id (g_/u_)
+                               or upstream source id.
+--collection <name>            Required unless --conversation is given. Collection name, resolved
+                               through the one authoritative Collection catalog (ADR 0009).
+--since <time>                 Optional. Inclusive lower bound; the `message list` time grammar.
+--until <time>                 Optional. Inclusive upper bound; the `message list` time grammar.
+-o, --output <dir>             Optional. Output directory (package root). Defaults to a
+                               per-scope subdirectory of the per-user application data exports/
                                directory when omitted.
 ```
 
-`--output` is always a **single-conversation package root**: the exporter rebuilds
-`manifest.json`, `conversations.yaml` and `identities.yaml` from the conversation(s) named by
-that invocation, and `conversations.yaml`/`identities.yaml` keep only the entries belonging to
-them (plus any user-maintained entries, per [EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2, 5.4 and
-15). Pointing two different conversations at one explicit `--output` root therefore leaves the
-second export's catalogs describing only the second conversation — its JSONL partitions remain
-on disk but are no longer indexed. **The default destination avoids that**: when `--output` is
-omitted, each conversation is published to its own root, `<exports>/<stable-id>/`, so the
-default destination is always a self-consistent, standalone package and exporting one
-conversation can never de-index another. Pass `--output` explicitly only when the whole package
-at that root is meant to describe the conversation(s) of that single invocation.
+**Scopes.** Exactly one of `--conversation` / `--collection` is required; supplying both, or
+neither, is a usage error — one export answers one resolved scope, never an ambiguous union. A
+Collection resolves through the one authoritative application-level Collection catalog
+([ADR 0009](adr/0009-collection-configuration-ownership.md)), the same catalog `collection show`,
+`sync --collection`, `search --collection`, `stats --collection` and `message list --collection`
+resolve through: an unknown name is `collection_not_found` (exit 1) and an invalid configuration
+is `collection_config_invalid` (exit 2). The scope is the Collection's resolved valid membership
+in first-declaration order; declared entries that are not a valid stable conversation ID, and
+entries that repeat an earlier valid one, are reported in the result instead of being silently
+narrowed away. A member that resolves to no archived conversation contributes no records and never
+errors by itself, and the export reports it explicitly — a canonical archive behind its
+configuration never silently reads as up to date. A Collection whose members are not archived at
+all has no dataset to derive and no account to name in the manifest, so it fails deterministically
+(exit 1), naming the unarchived members; archived members that span more than one account fail the
+same way, because one package carries exactly one `source_account_id`.
+
+**Time values.** `--since` and `--until` accept an ISO-8601 date (`2026-09-01`) or date-time
+(`2026-09-01T09:30:00`, `2026-09-01T09:30:00+08:00`, `2026-09-01T01:30:00Z`); the space-separated
+form (`2026-09-01 09:30:00`) is accepted as the same value. Both bounds are **inclusive instants**;
+a date-only or offset-less value denotes that instant in the machine's local offset, which is the
+same offset the archive renders canonical timestamps with (a `Z` or explicit offset always wins).
+An unparseable value is a usage failure, never a silently widened query, and `--since` later than
+`--until` is a usage failure. Bounds are compared at the archive's one-second resolution, because
+that is how the canonical timeline stores message instants: a sub-second component is truncated
+before comparison, so `--until 2026-09-01T09:30:00.500+08:00` still includes a message at
+`09:30:00`. A time range refines whichever scope was selected: only records inside the range are
+exported, so months (or conversations) without in-range records produce no partition, and
+re-exporting a conversation with a narrower range rewrites its directory per the re-export rule.
+
+`--output` is always a **single-invocation package root**: the exporter rebuilds `manifest.json`,
+`conversations.yaml` and `identities.yaml` from the conversation(s) named by that invocation, and
+`conversations.yaml`/`identities.yaml` keep only the entries belonging to them (plus any
+user-maintained entries, per [EXPORT_PRD.md](EXPORT_PRD.md) sections 3.2, 5.4 and 15). Pointing two
+different selections at one explicit `--output` root therefore leaves the second export's catalogs
+describing only the second selection — its JSONL partitions remain on disk but are no longer
+indexed. **The default destination avoids that**: when `--output` is omitted, a conversation is
+published to its own root, `<exports>/<stable-id>/`, and a Collection to its own root,
+`<exports>/collection-<name>/` (which can never collide with a stable-id root, because stable ids
+are `g_…`/`u_…`; a Collection name that cannot form a directory name is a usage error unless
+`--output` names the root explicitly). The default destination is always a self-consistent,
+standalone package and exporting one scope can never de-index another. Pass `--output` explicitly
+only when the whole package at that root is meant to describe that single invocation's selection.
 
 Reliability — **R1** (Export): a normal success publishes the complete documented output per
 [EXPORT_PRD.md](EXPORT_PRD.md) section 3. A caught cancellation or I/O failure attempts
@@ -423,10 +462,12 @@ are **not** guaranteed recovery classes. SQLite remains the system of record, an
 regenerates the dataset from it without re-importing. The canonical archive is read-only for
 this operation. No commit marker, journal or rollback ledger is persisted.
 
-Exits `1` with `failure` (export operation failure, or an exporter that reported
-`succeeded: false`), `conversation_not_found` for a selector the canonical archive does not hold,
-or `conversation_ambiguous` for an upstream source id that matches more than one archived
-conversation; `2` on a usage error; `130` on cancellation. Source-availability, account-discovery
+Exits `1` with `failure` (export operation failure, an exporter that reported `succeeded: false`,
+a Collection scope with no archived member, or archived members spanning several accounts),
+`conversation_not_found` for a conversation selector the canonical archive does not hold,
+`conversation_ambiguous` for an upstream source id that matches more than one archived
+conversation, or `collection_not_found` for an undefined Collection name; `2` on a usage error or
+`collection_config_invalid`; `130` on cancellation. Source-availability, account-discovery
 and conversation-list failures are no longer reachable from this command (Issue #66). A failed
 export writes the failure document, never the result document above; the exporter's own
 `failure_reason`, when it supplies one, is carried in `error.message`.
@@ -436,7 +477,19 @@ JSON shape (exit 0):
 ```json
 {
   "succeeded": true,
-  "output_directory": "C:\\...\\exports\\...",
+  "output_directory": "C:\\...\\exports\\collection-ai-toy",
+  "scope": {
+    "kind": "collection",
+    "conversation_id": null,
+    "collection": "ai-toy",
+    "since": null,
+    "until": null,
+    "member_conversation_count": 3,
+    "archived_member_conversation_count": 2,
+    "unarchived_conversation_ids": ["u_<16-hex>"],
+    "invalid_member_count": 0,
+    "duplicate_member_count": 0
+  },
   "conversation_ids": ["g_<16-hex>"],
   "record_count": 24,
   "unknown_count": 1,
@@ -447,7 +500,7 @@ JSON shape (exit 0):
   },
   "files": [
     { "path": "identities.yaml", "kind": "identities", "record_count": 4 },
-    { "path": "conversations.yaml", "kind": "conversations", "record_count": 1 },
+    { "path": "conversations.yaml", "kind": "conversations", "record_count": 2 },
     { "path": "collections.yaml", "kind": "collections", "record_count": 0 },
     { "path": "chats/groups/g_<16-hex>/2026/2026-01.jsonl", "kind": "timeline", "record_count": 22 }
   ],
@@ -457,6 +510,16 @@ JSON shape (exit 0):
   ]
 }
 ```
+
+`scope` names what the export was selected for: `kind` is `conversation` or `collection`,
+`conversation_id` is the resolved conversation (conversation scope), and for a Collection scope
+`collection`, the two member counts, the explicitly listed `unarchived_conversation_ids` (the
+resolved members the canonical archive does not know — they contribute no records and are never
+silently narrowed away), and `invalid_member_count`/`duplicate_member_count` are set; `since` and
+`until` carry the requested inclusive bounds when a time range was given. The same `scope` block
+is written into the package's `manifest.json` (issue #106), so the dataset itself states what it
+was selected for. `time_range` reports the exported records' observed span, not the requested
+range.
 
 `files[].kind` is a stable wire name (`identities`, `conversations`, `collections`,
 `timeline`). `manifest.json` is published last and is described by the manifest itself, so it
@@ -1222,16 +1285,19 @@ generation whose evidence coverage is not complete, it fails closed with `incomp
 The `--conversation <id-or-alias>` selector resolves by the canonical stable archive id
 (`g_…`/`u_…`) or the upstream `source_id`; `export` resolves both **from the canonical archive**
 only, so an unarchived conversation is `conversation_not_found` and an upstream id that is not
-unique among archived conversations is `conversation_ambiguous` (Issue #66). Resolution by the
-export-catalog `alias` and time-range selection is a forward refinement layered on the same export
-engine ([EXPORT_PRD.md](EXPORT_PRD.md) section 7) and is not implemented in M0.5. See
-[ROADMAP.md](ROADMAP.md) M0.5/M1.
+unique among archived conversations is `conversation_ambiguous` (Issue #66). Time-range selection
+via `--since`/`--until` and Collection-scoped export via `--collection <name>` are implemented
+(issue #106) on the same export engine, resolving the Collection through the one authoritative
+catalog; the requested scope and bounds are reported in the result and in the package manifest.
+Resolution by the export-catalog `alias` remains a forward refinement layered on the same export
+engine ([EXPORT_PRD.md](EXPORT_PRD.md) section 7). See [ROADMAP.md](ROADMAP.md) M0.5/M1/M4.
 
 Collection *resolution* and Collection-scoped `sync` are implemented (Issue #26). Collection-scoped
-*search* is implemented by the `wearchive search --collection` filter (issue #103), and
-Collection-scoped `message list` filtering by the `message list --collection <name>` scope (issue
-#105) — both resolving through the same authoritative Collection catalog. Collection-scoped export
-selection, export time-range selection and an interactive Collection editor are not.
+*search* is implemented by the `wearchive search --collection` filter (issue #103), Collection-scoped
+`message list` filtering by the `message list --collection <name>` scope (issue #105), and
+Collection-scoped export by `export --collection <name>` with `--since`/`--until` time-range
+refinement (issue #106) — all resolving through the same authoritative Collection catalog. An
+interactive Collection editor is not implemented.
 
 `message list` and `context` are implemented (Issue #27 / M3a). The derived SQLite FTS index and
 the `ArchiveQueryService` search contract are implemented by the M3b index slice (Issue #102,

@@ -36,8 +36,9 @@ M3b-2). A CLI archive-status command and MCP transport are not implemented yet.
 provenance first, then M3b rebuildable SQLite FTS5/`wearchive search`
 (including measured Chinese/mixed-language recall), then remaining M4
 Collection-scope search/export, freshness-status CLI and bounded evidence
-references. The M3b index slice and the CLI transport are both delivered.
-Existing M3a query/context
+references. The M3b index slice and the CLI transport are both delivered, as
+is Collection-scope search/export (issues #103–#106, including export
+time-range selection). Existing M3a query/context
 and Collection sync already ship; do not reimplement them. The V2-only
 forward decision affects preservation/capture, not this canonical query
 boundary (ADR 0012).
@@ -231,10 +232,13 @@ are reported deterministically and configuration is diagnosed rather than silent
 
 **Shipped status.** `collection list`, `collection show <name>` and `sync --collection <name>` are
 delivered by Issue #26. Collection-scoped `search` is delivered by issue #103
-(`wearchive search --collection`) and Collection-scoped canonical message listing by issue #105
-(`wearchive message list --collection`); both resolve the same authoritative catalog, so a
-Collection is one scope across sync, listing, search and statistics. Collection-scoped `export`
-remains target behavior and is not yet implemented.
+(`wearchive search --collection`), Collection-scoped canonical message listing by issue #105
+(`wearchive message list --collection`), and Collection-scoped export with time-range refinement
+by issue #106 (`wearchive export --collection ai-toy [--since <time>] [--until <time>]`); all of
+them resolve the same authoritative catalog, so a Collection is one scope across sync, listing,
+search, statistics and export. An export reports its resolved scope and unarchived members in the
+CLI result and in the package manifest instead of silently reading a partially archived Collection
+as complete.
 
 ## 9. Incremental synchronization for Harness workflows
 

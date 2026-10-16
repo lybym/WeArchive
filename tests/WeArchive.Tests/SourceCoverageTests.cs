@@ -316,7 +316,7 @@ public sealed class SourceCoverageTests
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new JsonlDatasetExporter(store);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(exporter, store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(exporter, store, clock);
 
         var outcome = await importer.ImportConversationAsync(
             new ImportRequest
@@ -367,7 +367,7 @@ public sealed class SourceCoverageTests
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new JsonlDatasetExporter(store);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(exporter, store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(exporter, store, clock);
 
         var outcome = await importer.ImportConversationAsync(
             new ImportRequest

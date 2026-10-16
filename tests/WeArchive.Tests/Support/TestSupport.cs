@@ -1,4 +1,7 @@
 using WeArchive.Core.Abstractions;
+using WeArchive.Core.Collections;
+using WeArchive.Core.Export;
+using WeArchive.Core.Services;
 
 namespace WeArchive.Tests.Support;
 
@@ -15,6 +18,21 @@ internal sealed class FixedClock(DateTimeOffset now) : IClock
     public DateTimeOffset UtcNow { get; set; } = now;
 
     public TimeSpan LocalOffset => TimeSpan.FromHours(8);
+}
+
+/// <summary>
+/// Shared construction helpers for the application services under test.
+/// </summary>
+internal static class TestWorkflows
+{
+    /// <summary>
+    /// Builds the canonical export workflow with an empty stub Collection catalog, so tests that
+    /// exercise conversation-scoped export are unaffected by any real configuration. Tests that
+    /// exercise Collection-scoped export construct <see cref="ArchiveWorkflow"/> directly with a
+    /// seeded <see cref="StubCollectionCatalogSource"/>.
+    /// </summary>
+    public static ArchiveWorkflow CreateExportWorkflow(IDatasetExporter exporter, IArchiveStore archive, IClock clock) =>
+        new(exporter, archive, new CollectionCatalogService(new StubCollectionCatalogSource()), clock);
 }
 
 /// <summary>Locates the repository root from the test assembly location.</summary>

@@ -304,6 +304,16 @@ still product requirements to be delivered on top of the same export engine; the
 already accepts a list of conversation IDs. Issue #26 ships Collection *resolution* and
 Collection-scoped `sync`, not Collection-scoped export selection.
 
+Shipped by issue #106: Collection-scoped export selection (`export --collection <name>`,
+resolved through the one authoritative Collection catalog per [ADR 0009](adr/0009-collection-configuration-ownership.md))
+and time-range refinement (`--since`/`--until`, inclusive instants at the archive's one-second
+resolution — the same time grammar the canonical query surfaces document). A time range refines
+whichever scope was selected: only records inside the range are exported, so a month without
+in-range records produces no partition, and re-exporting a conversation with a narrower range
+rewrites its directory per section 3.2. Unarchived Collection members contribute no records and
+are reported explicitly in the export result and in `manifest.json`'s `scope` field; alias
+selection remains future work.
+
 ---
 
 ## 8. Collections
@@ -339,7 +349,8 @@ Primary uses:
 
 `collections.yaml` is user-maintained. An export writes the empty shape only when the file does
 not exist; an existing file is never overwritten, so a user-maintained collection set survives
-regeneration. Collection *selection* is not yet wired into the export application.
+regeneration. Collection *selection* for export is shipped by issue #106 and resolves through the
+one authoritative application-level catalog, never through this derived file.
 
 **Ownership:** the `collections.yaml` inside a generated package is **derived output**, not the
 authoritative product configuration. The authoritative Collection definitions live in one
@@ -537,6 +548,7 @@ The shipped fields are:
 | `created_at` | Export creation time (the only non-reproducible field). |
 | `source_account_id` | Stable `a_...` account ID the data came from. |
 | `conversation_ids` | Stable IDs of the exported conversations. |
+| `scope` | The requested export scope (issue #106): `kind` (`conversation` or `collection`), `conversation_id` or `collection`, the requested inclusive `since`/`until` bounds when a time range was given, and — for a Collection — `member_conversation_count`, `archived_member_conversation_count`, the explicitly listed `unarchived_conversation_ids` (resolved members the archive does not know; they contribute no records) and `invalid_member_count`/`duplicate_member_count`. Collection-only fields are omitted outside a Collection scope, so a package never reads as more complete than its basis. |
 | `time_range` | `{ first_message_at, last_message_at }` across the exported records. |
 | `record_count` | Total exported timeline records. |
 | `unknown_count` | Records normalized as `unknown`. |
@@ -632,5 +644,6 @@ Phase 1 export is complete when:
 14. a Harness can locate, load and analyze a selected conversation/time range without relying on mutable human folder names.
 
 Status against this list at the MVP: 2–14 are met. Criterion 1 is met for specific
-conversations and for the export engine's conversation-id list, but collection selection and
-multi-conversation selection are not yet exposed in the application.
+conversations, for the export engine's conversation-id list, and — shipped by issue #106 — for
+Collection selection and time-range refinement (`export --collection <name> [--since] [--until]`).
+Alias selection is not yet exposed in the application.

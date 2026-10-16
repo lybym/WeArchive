@@ -20,10 +20,25 @@ public sealed record ExportRequest
     /// </summary>
     public DateTimeOffset? CreatedAt { get; init; }
 
-    /// <summary>Optional requested time range (inclusive lower, exclusive upper).</summary>
-    public DateTimeOffset? From { get; init; }
+    /// <summary>
+    /// Optional requested lower time bound. Inclusive, compared at the archive's one-second
+    /// resolution: a record whose canonical instant equals the bound is exported, and a
+    /// sub-second bound component is truncated before comparison (docs/CLI.md time grammar).
+    /// Null keeps the side unbounded.
+    /// </summary>
+    public DateTimeOffset? Since { get; init; }
 
-    public DateTimeOffset? To { get; init; }
+    /// <summary>Optional requested upper time bound; same inclusive one-second semantics as
+    /// <see cref="Since"/>. Null keeps the side unbounded.</summary>
+    public DateTimeOffset? Until { get; init; }
+
+    /// <summary>
+    /// The requested export scope, resolved by the caller. It is written into
+    /// <c>manifest.json</c> verbatim so a consumer can tell what the package was selected for —
+    /// including unarchived Collection members that therefore contribute no records
+    /// (docs/EXPORT_PRD.md sections 7, 8 and 14).
+    /// </summary>
+    public ExportScope? Scope { get; init; }
 
     /// <summary>
     /// Diagnostics accumulated while producing the archive rows for this export. They are
@@ -82,6 +97,72 @@ public sealed record ExportResult
 
     /// <summary>Root-relative paths of the per-conversation folders, for UI display.</summary>
     public IReadOnlyList<string> ConversationPaths { get; init; } = [];
+
+    /// <summary>
+    /// The requested scope this export answered for, as written into the manifest. Set by the
+    /// export workflow; the exporter itself stays scope-agnostic (docs/EXPORT_PRD.md section 14).
+    /// </summary>
+    public ExportScope? Scope { get; init; }
+}
+
+/// <summary>
+/// The requested export scope of one export invocation: which conversation or Collection it was
+/// selected for, the requested time bounds, and — for a Collection — how much of the declared
+/// membership the canonical archive knows. Unarchived members contribute no records and are
+/// reported explicitly instead of being silently narrowed away, so a package never reads as more
+/// complete than its basis (docs/PRD.md FR-23, docs/EXPORT_PRD.md sections 7, 8 and 14).
+/// <para>
+/// Serialized into <c>manifest.json</c> and mirrored on <see cref="ExportResult"/>; string bounds
+/// use the same ISO-8601 render form as every other manifest timestamp.
+/// </para>
+/// </summary>
+public sealed record ExportScope
+{
+    /// <summary><c>conversation</c> or <c>collection</c>.</summary>
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    /// <summary>The requested stable conversation ID (conversation scope only).</summary>
+    [JsonPropertyName("conversation_id")]
+    public string? ConversationId { get; init; }
+
+    /// <summary>The requested Collection name (collection scope only).</summary>
+    [JsonPropertyName("collection")]
+    public string? CollectionName { get; init; }
+
+    /// <summary>The requested inclusive lower bound, or null when unbounded.</summary>
+    [JsonPropertyName("since")]
+    public string? Since { get; init; }
+
+    /// <summary>The requested inclusive upper bound, or null when unbounded.</summary>
+    [JsonPropertyName("until")]
+    public string? Until { get; init; }
+
+    /// <summary>Resolved valid membership entries (collection scope only).</summary>
+    [JsonPropertyName("member_conversation_count")]
+    public int? MemberConversationCount { get; init; }
+
+    /// <summary>Resolved members the canonical archive knows (collection scope only); the
+    /// difference to <see cref="MemberConversationCount"/> is the not-yet-archived remainder,
+    /// which contributes no records and is never silently narrowed away.</summary>
+    [JsonPropertyName("archived_member_conversation_count")]
+    public int? ArchivedMemberConversationCount { get; init; }
+
+    /// <summary>Resolved members the canonical archive does not know, in resolved-membership
+    /// order (collection scope only). Explicitly listed so missing members stay visible; empty
+    /// when the archive holds every member.</summary>
+    [JsonPropertyName("unarchived_conversation_ids")]
+    public IReadOnlyList<string>? UnarchivedConversationIds { get; init; }
+
+    /// <summary>Declared membership entries that are not a valid stable conversation ID
+    /// (collection scope only). Reported, never silently dropped.</summary>
+    [JsonPropertyName("invalid_member_count")]
+    public int? InvalidMemberCount { get; init; }
+
+    /// <summary>Declared membership entries that repeat an earlier valid entry (collection scope
+    /// only). Reported, never silently dropped.</summary>
+    [JsonPropertyName("duplicate_member_count")]
+    public int? DuplicateMemberCount { get; init; }
 }
 
 /// <summary>
@@ -113,6 +194,15 @@ public sealed record ExportManifest
 
     [JsonPropertyName("conversation_ids")]
     public required IReadOnlyList<string> ConversationIds { get; init; }
+
+    /// <summary>
+    /// The requested scope of this export: which conversation or Collection it was selected for,
+    /// the requested time bounds, and — for a Collection — the declared-membership coverage the
+    /// canonical archive actually knows, including the explicitly listed unarchived members.
+    /// docs/EXPORT_PRD.md section 14.
+    /// </summary>
+    [JsonPropertyName("scope")]
+    public ExportScope? Scope { get; init; }
 
     [JsonPropertyName("time_range")]
     public ManifestTimeRange? TimeRange { get; init; }

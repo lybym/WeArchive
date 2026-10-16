@@ -324,8 +324,23 @@ Delivered by Issue #105 (M4a — reuse the Collection scope for canonical query 
   query surface now scopes through the one authoritative Collection catalog; no second scope model
   was introduced.
 
-Still open in M4: Collection-scoped export and time-range selection, richer query/Harness automation
-and status/freshness tooling.
+Delivered by Issue #106 (M4b — canonical-only Collection export and selected time ranges):
+
+- `export --collection <name>`: the scope resolves through the one authoritative Collection
+  catalog (the same catalog `sync --collection`, `search --collection`, `stats --collection` and
+  `message list --collection` resolve through), exports exactly the archived members in resolved
+  membership order, and reports the requested scope — archived/unarchived membership,
+  invalid/duplicate entries — explicitly in the CLI result and in the package manifest; a scope
+  with no archived member, or spanning several accounts, fails deterministically instead of
+  publishing a package that reads as more complete than its basis;
+- `export --since/--until`: inclusive instants at the archive's one-second resolution (the same
+  time grammar and semantics as `message list`/`stats`), refining whichever scope was selected;
+  months without in-range records produce no partition and a narrower re-export rewrites the
+  conversation directory per the re-export rule;
+- no canonical mutation, no Raw Vault access, no implicit sync, no R3+ machinery: the export
+  boundary of Issue #66 and the R1 publication behavior are unchanged.
+
+Still open in M4: richer query/Harness automation and status/freshness tooling.
 
 Acceptance criteria:
 
@@ -405,10 +420,10 @@ authorization (ADR 0012).
    stable IDs, provenance and context. M3a `ArchiveQueryService`,
    `message list` and `context` are already shipped (#27).
 3. Remaining M4 Harness workflows (FR-18/23, HARNESS.md): reuse the
-   authoritative Collection (#26) for scoped query/search and export;
-   add read-only CLI freshness/status, scoped time-range selection and
-   evidence references for bounded analysis. MCP is optional, separately
-   scoped, and not a prerequisite.
+   authoritative Collection (#26) for scoped query/search and export (delivered: scoped
+   query/search by #103–#105, Collection export and time-range selection by #106);
+   add read-only CLI freshness/status and evidence references for bounded analysis. MCP is
+   optional, separately scoped, and not a prerequisite.
 
 **Independent, bounded V2-only follow-up (delivered, Issue #96):** the
 historical Partial (#63) path is guarded by isolated synthetic V2 fixture
