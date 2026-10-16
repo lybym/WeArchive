@@ -132,8 +132,8 @@ as a thin adapter over the same service's `GetStatisticsAsync`.
 The Collection scope commands (`collection list`, `collection show <name>`, `sync --collection <name>`)
 are implemented by Issue #26; Collection-scoped search reaches the CLI through
 `search --collection` (issue #103), Collection-scoped `message list` filtering through the same
-`--collection` option (issue #105), while Collection-scoped export selection remains M4 follow-up
-work (see section 3.8).
+`--collection` option (issue #105), and Collection-scoped export selection plus export time-range
+selection through `export --collection` / `export --since/--until` (issue #106).
 
 ### 3.1.1 CLI process contract
 
@@ -215,8 +215,10 @@ live source -> CaptureService -> immutable Raw Vault generation
 over captured evidence (section 10), and live sync reaches the archive only through the
 preservation-first boundary above. Export is the opposite direction and does not publish at all:
 `ArchiveWorkflow` derives the dataset from the current canonical state and depends on the exporter,
-the archive and the clock only, so the export path re-imports nothing and reads no live source
-(Issue #66).
+the archive, the one Collection catalog and the clock only, so the export path re-imports nothing
+and reads no live source (Issue #66); a Collection-scoped export resolves its scope through
+`CollectionCatalogService` — the same authoritative catalog every other Collection scope uses
+(section 3.8, issue #106) — and never reads a second Collection definition.
 `ConversationSyncService` adds no second incremental-ingest implementation; it sequences the
 documented boundaries. For live sync, `SyncOrchestrationService` passes the capture result's
 generation id to the ingest boundary so only the just-published, self-contained snapshot is
@@ -478,6 +480,12 @@ Responsibilities:
   JSONL scanning. It depends on the same `SyncOrchestrationService` boundary
   `sync --conversation` uses (section 3.2), so one preservation-first workflow serves both scopes
   and the two selectors cannot drift apart (Issue #49).
+- `ArchiveWorkflow` (Core) resolves an export's Collection scope through the same
+  `CollectionCatalogService`: the scope is the resolved valid membership in first-declaration
+  order, unarchived members contribute no records and are reported explicitly in the result and
+  in the manifest, and a scope with no archived member (or spanning several accounts, which one
+  package's single `source_account_id` cannot describe) fails deterministically instead of being
+  silently narrowed (issue #106, docs/EXPORT_PRD.md sections 7 and 8).
 - The Raw Vault ingest implementation (`RawVaultIngestService`, Infrastructure) selects a
   conversation by stable conversation ID or upstream source conversation ID, so the Collection's
   membership keys address the same conversations the discovery surface reports.

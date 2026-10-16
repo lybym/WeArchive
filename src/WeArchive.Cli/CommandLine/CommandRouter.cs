@@ -64,8 +64,9 @@ public sealed class CommandRouter
             ["export"] = new(sp => new Commands.ExportCommand(
                 sp.GetRequiredService<ArchiveConversationResolver>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
-                sp.GetRequiredService<CliExportDefaults>()),
-                "Export one conversation to a JSONL dataset."),
+                sp.GetRequiredService<CliExportDefaults>(),
+                sp.GetRequiredService<IClock>()),
+                "Export a conversation or Collection to a JSONL dataset."),
             ["capture"] = new(sp => new Commands.CaptureCommand(
                 sp.GetRequiredService<SourceCatalogService>(),
                 sp.GetRequiredService<CaptureService>()),

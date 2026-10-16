@@ -752,7 +752,8 @@ public sealed class SyncExportCliTests
             new ExportCommand(
                 sp.GetRequiredService<ArchiveConversationResolver>(),
                 sp.GetRequiredService<ArchiveWorkflow>(),
-                sp.GetRequiredService<CliExportDefaults>()),
+                sp.GetRequiredService<CliExportDefaults>(),
+                sp.GetRequiredService<IClock>()),
         ];
 
         foreach (var command in commands)

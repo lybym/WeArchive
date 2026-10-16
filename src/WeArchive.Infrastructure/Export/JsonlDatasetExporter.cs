@@ -147,6 +147,22 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 var messages = await _archive.ReadMessagesAsync(conversationId, cancellationToken)
                     .ConfigureAwait(false);
 
+                // A requested time range refines the export to the selected records
+                // (docs/PRD.md FR-18, docs/EXPORT_PRD.md section 7). Bounds are inclusive instants
+                // compared at the archive's one-second resolution, exactly as the canonical query
+                // surfaces compare theirs: the archive stores whole seconds, so converting a bound
+                // to whole seconds truncates any sub-second component instead of silently widening
+                // the range. The filter runs before partitioning, manifests, counters and identity
+                // resolution, so the package describes exactly the selected records.
+                var sinceSeconds = request.Since?.ToUnixTimeSeconds();
+                var untilSeconds = request.Until?.ToUnixTimeSeconds();
+                if (sinceSeconds is not null || untilSeconds is not null)
+                {
+                    messages = [.. messages.Where(message =>
+                        (sinceSeconds is null || message.OccurredAt.ToUnixTimeSeconds() >= sinceSeconds) &&
+                        (untilSeconds is null || message.OccurredAt.ToUnixTimeSeconds() <= untilSeconds))];
+                }
+
                 var relativeFolder = BuildConversationFolder(conversation);
                 conversationPaths.Add(relativeFolder);
 
@@ -224,6 +240,7 @@ public class JsonlDatasetExporter(IArchiveStore archive) : IDatasetExporter
                 SourceAdapter = account?.AdapterName,
                 SourceVersion = account?.SourceVersion,
                 ConversationIds = [.. request.ConversationIds],
+                Scope = request.Scope,
                 TimeRange = new ManifestTimeRange
                 {
                     FirstMessageAt = first is null ? null : FormatTimestamp(first.Value),

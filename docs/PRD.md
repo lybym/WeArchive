@@ -35,9 +35,9 @@ The 0.2.x implementation already provides:
 
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
-- FTS/keyword search and a CLI archive-status command (`message list` and `context` ship as the
-  M3a structured-retrieval slice; the FTS index and full-text search remain open);
-- Collection-scoped query/search and export selection;
+- a CLI archive-status command (`message list`, `context`, the M3b `search` and the M3c `stats`
+  ship as the structured-retrieval/query slices; the read-only archive-status command remains
+  open);
 - MCP transport.
 
 Delivered since the 0.2.x list was written: incremental Raw Vault capture with explicit partition
@@ -50,7 +50,10 @@ path — `sync --conversation` converged on the shared `CaptureService` → Raw 
 conversation-scoped ingest workflow (Issue #49 / PR #53) — and the source-neutral canonical
 coverage contract: the `canonical_coverage` rollup on the sync result and shared Raw Vault ingest
 refusal path, with an incomplete read failing closed as a structured `incomplete_coverage` result
-(Issue #51 / PR #54).
+(Issue #51 / PR #54). The M3b full-text retrieval stack is shipped (`docs/SEARCH_SPEC.md`, the
+rebuildable FTS5 index, `wearchive search` — Issues #101–#103), as are archive statistics
+(`wearchive stats`, Issue #104) and Collection-scoped canonical retrieval across `search`,
+`message list` and `stats` (Issues #103–#105).
 
 M1 acceptance is complete: both M1 acceptance criteria are implemented and tested by their owning
 Issues, and the real-environment acceptance of the combined #49 + #51 canonical second-sync +
@@ -452,7 +455,9 @@ query/search         -> `search --collection` is shipped (issue #103) and Collec
                         `message list` filtering is shipped (issue #105); both resolve the one
                         authoritative Collection catalog and report the resolved scope
 Harness analysis     -> follow-up (CLI JSON resolution is shipped)
-export               -> follow-up (Collection-scoped export selection not yet wired)
+export               -> shipped (issue #106): Collection-scoped export selection with
+                        time-range refinement, resolving the same authoritative catalog and
+                        reporting the resolved scope and its unarchived members explicitly
 ```
 
 Ownership and rebuild-survival semantics are recorded in
@@ -461,7 +466,12 @@ authorized by [SEARCH_SPEC.md](SEARCH_SPEC.md) section 7 and delivered by issue 
 Collection-scoped `message list` filtering is authorized by
 [Issue #105](https://github.com/lybym/WeArchive/issues/105) (Roadmap M4a) and delivered by it:
 one scope per listing, deterministic merged member order, and unarchived/partial membership
-reported instead of silently reading as up to date. This does not authorize an interactive
+reported instead of silently reading as up to date. Collection-scoped export selection with
+time-range refinement is authorized by
+[Issue #106](https://github.com/lybym/WeArchive/issues/106) (Roadmap M4b) and delivered by it on
+the same terms: one authoritative catalog, deterministic member order, requested scope and bounds
+reported in the result and in the package manifest, and unarchived members explicit instead of
+silently narrowed. This does not authorize an interactive
 Collection editor or MCP/scheduler synchronization.
 
 ### FR-24 Canonical message envelope
@@ -693,8 +703,10 @@ rebuild/export on schema-backed positive/negative fixtures (see Roadmap M2a–d)
 Optional MCP over QueryService, richer collection/query/export automation and status/freshness tooling.
 
 Issue #26 delivers the M4 Collection *sync* foundation (authoritative Collection catalog,
-`collection list`/`show`, `sync --collection`); Collection-scoped query/search and export selection
-remain M3/M4 follow-up scope.
+`collection list`/`show`, `sync --collection`); Collection-scoped query/search is delivered by the
+M3b–M4a slices (`search --collection`, `message list --collection`, `stats --collection`), and
+Collection-scoped export selection with time-range refinement is delivered by issue #106, closing
+the export use of FR-23 on the same single scope abstraction.
 
 ## 13. Product governance
 

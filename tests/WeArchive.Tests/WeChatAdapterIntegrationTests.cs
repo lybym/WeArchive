@@ -166,7 +166,11 @@ public sealed class WeChatAdapterIntegrationTests
             clock);
         var exporter = new Infrastructure.Export.JsonlDatasetExporter(store);
         var importer = new Core.Services.ImportService(adapter, store, clock);
-        var workflow = new Core.Services.ArchiveWorkflow(exporter, store, clock);
+        var workflow = new Core.Services.ArchiveWorkflow(
+            exporter,
+            store,
+            new Core.Collections.CollectionCatalogService(new Support.StubCollectionCatalogSource()),
+            clock);
 
         // Export derives from the canonical archive only (Issue #66), so publish the conversation
         // through the importer first — exactly what an explicit `sync` publishes — and then measure

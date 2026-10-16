@@ -40,7 +40,7 @@ public sealed class ExportPipelineTests
         var store = new SqliteArchiveStore(temp.Combine("archive.db"), clock);
         var exporter = new JsonlDatasetExporter(store);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(exporter, store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(exporter, store, clock);
 
         await SeedAsync(importer).ConfigureAwait(false);
 
@@ -657,7 +657,7 @@ public sealed class ExportPipelineTests
         var exporter = new FaultingJsonlDatasetExporter(store);
         var importer = new ImportService(adapter, store, clock);
         await SeedAsync(importer);
-        var workflow = new ArchiveWorkflow(exporter, store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(exporter, store, clock);
         var output = temp.Combine("export");
 
         // First export: the commit checkpoint (DurableCommit call #1) succeeds; the old dataset
@@ -704,7 +704,7 @@ public sealed class ExportPipelineTests
         var exporter = new RootFaultingJsonlDatasetExporter(store);
         var importer = new ImportService(adapter, store, clock);
         await SeedAsync(importer);
-        var workflow = new ArchiveWorkflow(exporter, store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(exporter, store, clock);
         var output = temp.Combine("export");
 
         // First export: the prior package (group conversation + group manifest/catalogs).
@@ -750,7 +750,7 @@ public sealed class ExportPipelineTests
         var exporter = new RootMoveFaultingJsonlDatasetExporter(store);
         var importer = new ImportService(adapter, store, clock);
         await SeedAsync(importer);
-        var workflow = new ArchiveWorkflow(exporter, store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(exporter, store, clock);
         var output = temp.Combine("export");
 
         await workflow.ExportConversationAsync(GroupRequest(output), null, CancellationToken.None);

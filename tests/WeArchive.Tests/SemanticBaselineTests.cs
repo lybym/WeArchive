@@ -620,7 +620,7 @@ public sealed class SemanticBaselineTests
 
         // The exported dataset carries the resolved relationship and keeps the unresolvable
         // ones explicit: round-trip through export is part of the reference matrix.
-        var workflow = new ArchiveWorkflow(new JsonlDatasetExporter(store), store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(new JsonlDatasetExporter(store), store, clock);
         var exportDirectory = Path.Combine(temp.Path, "export", SemanticBaselineCorpus.DirectConversation);
         var export = await workflow.ExportConversationAsync(
             new ExportConversationRequest { ConversationId = directStableId, OutputDirectory = exportDirectory },
@@ -722,7 +722,7 @@ public sealed class SemanticBaselineTests
         var clock = new FixedClock();
         var store = new SqliteArchiveStore(Path.Combine(root, "archive.db"), clock);
         var importer = new ImportService(adapter, store, clock);
-        var workflow = new ArchiveWorkflow(new JsonlDatasetExporter(store), store, clock);
+        var workflow = TestWorkflows.CreateExportWorkflow(new JsonlDatasetExporter(store), store, clock);
 
         var accountStableId = StableIds.Account(adapter.AdapterName, SemanticBaselineCorpus.SourceProfileId);
         foreach (var conversation in Conversations)

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using WeArchive.Core.Export;
 
 namespace WeArchive.Cli.Output.Dto;
 
@@ -15,6 +16,15 @@ public sealed record ExportResultDto
 
     [JsonPropertyName("output_directory")]
     public required string OutputDirectory { get; init; }
+
+    /// <summary>
+    /// The requested scope this export answered for: which conversation or Collection, the
+    /// requested time bounds, and — for a Collection — how much of the declared membership the
+    /// canonical archive knows, including the explicitly listed unarchived members
+    /// (docs/CLI.md <c>export</c>, docs/EXPORT_PRD.md section 14).
+    /// </summary>
+    [JsonPropertyName("scope")]
+    public ExportScopeDto? Scope { get; init; }
 
     [JsonPropertyName("conversation_ids")]
     public IReadOnlyList<string> ConversationIds { get; init; } = [];
@@ -48,6 +58,82 @@ public sealed record ExportTimeRangeDto
 
     [JsonPropertyName("last_message_at")]
     public string? LastMessageAt { get; init; }
+}
+
+/// <summary>
+/// The <c>wearchive export</c> scope block, mirroring the manifest's <c>scope</c> field
+/// (docs/EXPORT_PRD.md section 14). Collection-only member fields are null (and rendered as JSON
+/// null, exactly as <c>message list</c> renders its scope) outside a Collection scope.
+/// </summary>
+public sealed record ExportScopeDto
+{
+    /// <summary><c>conversation</c> or <c>collection</c>.</summary>
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    /// <summary>The requested stable conversation ID (conversation scope only).</summary>
+    [JsonPropertyName("conversation_id")]
+    public string? ConversationId { get; init; }
+
+    /// <summary>The requested Collection name (collection scope only).</summary>
+    [JsonPropertyName("collection")]
+    public string? Collection { get; init; }
+
+    /// <summary>The requested inclusive lower bound, or null when unbounded.</summary>
+    [JsonPropertyName("since")]
+    public string? Since { get; init; }
+
+    /// <summary>The requested inclusive upper bound, or null when unbounded.</summary>
+    [JsonPropertyName("until")]
+    public string? Until { get; init; }
+
+    /// <summary>Resolved valid membership entries (collection scope only).</summary>
+    [JsonPropertyName("member_conversation_count")]
+    public int? MemberConversationCount { get; init; }
+
+    /// <summary>Resolved members the canonical archive knows (collection scope only); the
+    /// difference to <see cref="MemberConversationCount"/> is the not-yet-archived remainder,
+    /// which contributes no records and is reported in
+    /// <see cref="UnarchivedConversationIds"/>.</summary>
+    [JsonPropertyName("archived_member_conversation_count")]
+    public int? ArchivedMemberConversationCount { get; init; }
+
+    /// <summary>Resolved members the canonical archive does not know, in resolved-membership
+    /// order (collection scope only); empty when the archive holds every member, and null outside
+    /// a Collection scope.</summary>
+    [JsonPropertyName("unarchived_conversation_ids")]
+    public IReadOnlyList<string>? UnarchivedConversationIds { get; init; }
+
+    /// <summary>Declared membership entries that are not a valid stable conversation ID
+    /// (collection scope only). Reported, never silently dropped.</summary>
+    [JsonPropertyName("invalid_member_count")]
+    public int? InvalidMemberCount { get; init; }
+
+    /// <summary>Declared membership entries that repeat an earlier valid entry (collection scope
+    /// only). Reported, never silently dropped.</summary>
+    [JsonPropertyName("duplicate_member_count")]
+    public int? DuplicateMemberCount { get; init; }
+
+    public static ExportScopeDto From(ExportScope scope)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+
+        return new ExportScopeDto
+        {
+            Kind = scope.Kind,
+            ConversationId = scope.ConversationId,
+            Collection = scope.CollectionName,
+            Since = scope.Since,
+            Until = scope.Until,
+            MemberConversationCount = scope.MemberConversationCount,
+            ArchivedMemberConversationCount = scope.ArchivedMemberConversationCount,
+            // Collection-only member fields stay null outside a Collection scope, exactly as the
+            // message list scope renders its collection-only fields (docs/CLI.md).
+            UnarchivedConversationIds = scope.UnarchivedConversationIds,
+            InvalidMemberCount = scope.InvalidMemberCount,
+            DuplicateMemberCount = scope.DuplicateMemberCount,
+        };
+    }
 }
 
 public sealed record ExportFileDto
