@@ -215,6 +215,7 @@ Target commands:
 wearchive collection list
 wearchive collection show ai-toy
 wearchive sync --collection ai-toy
+wearchive message list --collection ai-toy
 wearchive search "报价" --collection ai-toy
 wearchive export --collection ai-toy
 ```
@@ -229,8 +230,11 @@ are reported deterministically and configuration is diagnosed rather than silent
 [ADR 0009](adr/0009-collection-configuration-ownership.md).
 
 **Shipped status.** `collection list`, `collection show <name>` and `sync --collection <name>` are
-delivered by Issue #26. Collection-scoped `search`/`export` remain target behavior and are not yet
-implemented.
+delivered by Issue #26. Collection-scoped `search` is delivered by issue #103
+(`wearchive search --collection`) and Collection-scoped canonical message listing by issue #105
+(`wearchive message list --collection`); both resolve the same authoritative catalog, so a
+Collection is one scope across sync, listing, search and statistics. Collection-scoped `export`
+remains target behavior and is not yet implemented.
 
 ## 9. Incremental synchronization for Harness workflows
 

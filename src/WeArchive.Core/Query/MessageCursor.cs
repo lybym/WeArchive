@@ -141,6 +141,42 @@ public static class MessageCursor
     }
 
     /// <summary>
+    /// Fingerprint of the filters a Collection-scoped cursor is bound to: the resolved member IDs
+    /// (so a catalog change cannot silently repoint a page, exactly like the search and statistics
+    /// cursors) plus date range, participant and type. The page size is excluded, and the
+    /// conversation-scope fingerprint above is unchanged, so an existing conversation listing
+    /// cursor stays resumable while a collection cursor can never be replayed as a conversation
+    /// cursor or the reverse.
+    /// </summary>
+    /// <param name="collectionConversationIds">The resolved member IDs, in resolution order.</param>
+    /// <param name="since">Parsed inclusive lower bound, or null.</param>
+    /// <param name="until">Parsed inclusive upper bound, or null.</param>
+    /// <param name="participantId">Canonical participant filter, or null.</param>
+    /// <param name="type">Canonical message type wire name, or null.</param>
+    public static string Fingerprint(
+        IReadOnlyList<string> collectionConversationIds,
+        DateTimeOffset? since,
+        DateTimeOffset? until,
+        string? participantId,
+        string? type)
+    {
+        ArgumentNullException.ThrowIfNull(collectionConversationIds);
+
+        var builder = new StringBuilder();
+        builder.Append("collection\u001f");
+        foreach (var id in collectionConversationIds)
+            builder.Append(id).Append('\u001e');
+        builder.Append('\u001f');
+        builder.Append(Instant(since)).Append('\u001f');
+        builder.Append(Instant(until)).Append('\u001f');
+        builder.Append(participantId ?? string.Empty).Append('\u001f');
+        builder.Append(type ?? string.Empty);
+
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return Convert.ToHexString(digest.AsSpan(0, 8)).ToLowerInvariant();
+    }
+
+    /// <summary>
     /// Renders an instant as epoch seconds so a cursor is independent of the offset spelling the
     /// caller used for the same range.
     /// </summary>

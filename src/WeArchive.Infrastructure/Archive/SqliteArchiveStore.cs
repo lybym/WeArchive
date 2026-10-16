@@ -814,13 +814,18 @@ public sealed class SqliteArchiveStore : IArchiveStore
     }
 
     /// <summary>
-    /// One bounded keyset page of a conversation's canonical timeline.
-    /// docs/DATA_MODEL.md section 23.
+    /// One bounded keyset page of a conversation's canonical timeline, or of the union of a
+    /// resolved Collection's member conversations in the same canonical timeline order across all
+    /// of them. docs/DATA_MODEL.md section 23.
     /// <para>
-    /// The cursor position is compared in the same order the query sorts by, and one extra row is
-    /// read so "there are more records" is a fact about the archive rather than an inference from
-    /// a full page. Equal timestamps are separated by <c>source_order_key</c> and then by the
-    /// stable message id, which is what makes a resume neither repeat nor skip a record.
+    /// The scope is exactly one of <see cref="ArchiveMessageQuery.ConversationId"/> or
+    /// <see cref="ArchiveMessageQuery.ConversationIds"/> — the member list uses the same
+    /// <c>json_each</c> member filter the search and statistics scopes use. The cursor position is
+    /// compared in the same order the query sorts by, and one extra row is read so "there are more
+    /// records" is a fact about the archive rather than an inference from a full page. Equal
+    /// timestamps are separated by <c>source_order_key</c> and then by the stable message id,
+    /// which is globally unique, so the order is a total order across conversations too and a
+    /// resume neither repeats nor skips a record.
     /// </para>
     /// </summary>
     public Task<ArchiveMessagePage> QueryMessagesAsync(
@@ -830,13 +835,33 @@ public sealed class SqliteArchiveStore : IArchiveStore
         ArgumentNullException.ThrowIfNull(query);
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Exactly one scope: one conversation, or the union of a resolved Collection's membership.
+        // An unscoped or double-scoped query would silently change what a page covers, so it is a
+        // caller-contract violation rather than a result shape.
+        if (query.ConversationId is null && query.ConversationIds is null)
+            throw new ArgumentException(
+                "a message query must scope one conversation or a conversation member list.",
+                nameof(query));
+        if (query.ConversationId is not null && query.ConversationIds is not null)
+            throw new ArgumentException(
+                "a message query must scope either one conversation or a conversation member list, not both.",
+                nameof(query));
+
         using var connection = Open();
         using var command = connection.CreateCommand();
 
         var sql = new StringBuilder();
-        sql.Append("SELECT ").Append(MessageColumns)
-           .Append(" FROM messages WHERE conversation_id = $conversation");
-        command.Parameters.AddWithValue("$conversation", query.ConversationId);
+        sql.Append("SELECT ").Append(MessageColumns).Append(" FROM messages WHERE ");
+        if (query.ConversationId is not null)
+        {
+            sql.Append("conversation_id = $conversation");
+            command.Parameters.AddWithValue("$conversation", query.ConversationId);
+        }
+        else
+        {
+            sql.Append("conversation_id IN (SELECT value FROM json_each($conversations))");
+            command.Parameters.AddWithValue("$conversations", JsonSerializer.Serialize(query.ConversationIds));
+        }
 
         if (query.Since is not null)
         {

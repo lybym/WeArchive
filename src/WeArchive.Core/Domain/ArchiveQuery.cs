@@ -13,11 +13,25 @@ namespace WeArchive.Core.Domain;
 /// the archive is being written by another run, and it is the reason a cursor can be resumed
 /// without duplicates.
 /// </para>
+/// <para>
+/// The scope is exactly one of <see cref="ConversationId"/> (one conversation) or
+/// <see cref="ConversationIds"/> (the union of a resolved Collection's member conversations, in
+/// the same timeline order across all of them); the caller owns scope resolution, exactly as it
+/// does for the search and statistics queries.
+/// </para>
 /// </summary>
 public sealed record ArchiveMessageQuery
 {
-    /// <summary>Stable conversation ID (<c>g_...</c> / <c>u_...</c>).</summary>
-    public required string ConversationId { get; init; }
+    /// <summary>Stable conversation ID (<c>g_...</c> / <c>u_...</c>), or null when the query is
+    /// member-list scoped.</summary>
+    public string? ConversationId { get; init; }
+
+    /// <summary>
+    /// Restricts results to the union of these conversations (a resolved Collection's membership),
+    /// in the one canonical timeline order across all members. Null when the query is
+    /// conversation-scoped; empty matches nothing.
+    /// </summary>
+    public IReadOnlyList<string>? ConversationIds { get; init; }
 
     /// <summary>Inclusive lower bound on the message instant.</summary>
     public DateTimeOffset? Since { get; init; }

@@ -131,8 +131,9 @@ thin adapter over the same service's `SearchAsync`; `wearchive stats` is impleme
 as a thin adapter over the same service's `GetStatisticsAsync`.
 The Collection scope commands (`collection list`, `collection show <name>`, `sync --collection <name>`)
 are implemented by Issue #26; Collection-scoped search reaches the CLI through
-`search --collection` (issue #103), while Collection-scoped `message list` filtering and export
-selection remain M3/M4 follow-up work (see section 3.8).
+`search --collection` (issue #103), Collection-scoped `message list` filtering through the same
+`--collection` option (issue #105), while Collection-scoped export selection remains M4 follow-up
+work (see section 3.8).
 
 ### 3.1.1 CLI process contract
 
@@ -500,8 +501,9 @@ owns option parsing and rendering only, never query semantics.
 
 Responsibilities:
 
-- list bounded canonical messages by stable conversation, date range, participant and canonical
-  type, with opaque keyset cursor pagination;
+- list bounded canonical messages by stable conversation or by the union of a resolved Collection's
+  member conversations (docs/PRD.md FR-23), with date range, participant and canonical type filters
+  and opaque keyset cursor pagination;
 - return a bounded context window around a stable message id;
 - report capture, ingest and canonical freshness from independent sources;
 - report one bounded, read-only statistics document — scope totals, canonical type distribution
@@ -549,6 +551,16 @@ aggregate index to maintain or rebuild, and an offline canonical rebuild reprodu
 report because it reproduces the same canonical rows. Unknown, partial and unattributed records
 are explicit totals and are counted inside their buckets instead of being silently dropped.
 `wearchive stats` is the thin CLI transport over it.
+
+Collection scope for the bounded message listing is the M4a extension of the same service
+([Issue #105](https://github.com/lybym/WeArchive/issues/105)): `ListMessagesAsync` accepts exactly
+one of `--conversation` or `--collection`, resolves a Collection through the one authoritative
+catalog, and merges the members' timelines in the one canonical order `(occurred_utc,
+source_order_key, id)` — the same order a single conversation uses, made total across conversations
+by the globally unique stable message id. The service owns scope resolution and validation and
+reports the resolved scope (including how many members the canonical archive knows) with the page,
+while the archive store executes the member-union query with the same `json_each` filter the search
+and statistics scopes use. No schema change, no second catalog and no new reliability machinery.
 
 ## 4. Data flow
 

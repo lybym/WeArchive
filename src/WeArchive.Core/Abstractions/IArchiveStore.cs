@@ -83,12 +83,17 @@ public interface IArchiveStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Reads one bounded page of a conversation's canonical timeline.
-    /// docs/DATA_MODEL.md section 23, docs/HARNESS.md section 5.
+    /// Reads one bounded page of a conversation's canonical timeline, or of the union of a
+    /// resolved Collection's member conversations in the same canonical timeline order across all
+    /// members. docs/DATA_MODEL.md section 23, docs/HARNESS.md section 5.
     /// <para>
-    /// Ordering is the canonical timeline order <c>(occurred_utc, source_order_key, id)</c>, and
+    /// The scope is exactly one of <see cref="ArchiveMessageQuery.ConversationId"/> or
+    /// <see cref="ArchiveMessageQuery.ConversationIds"/>; the caller owns scope resolution, exactly
+    /// as it does for the search and statistics queries. Ordering is the canonical timeline order
+    /// <c>(occurred_utc, source_order_key, id)</c>, and
     /// <see cref="ArchiveMessageQuery.After"/> is an exclusive keyset position, so consecutive
-    /// pages neither repeat nor omit a record with an equal timestamp.
+    /// pages neither repeat nor omit a record with an equal timestamp — within one conversation or
+    /// across the member union.
     /// </para>
     /// <para>
     /// The implementation returns at most <see cref="ArchiveMessageQuery.Limit"/> items and reports

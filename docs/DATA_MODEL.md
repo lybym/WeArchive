@@ -903,13 +903,25 @@ timezone of whichever process parses it. Bounds are compared at the archive's on
 (section 8.1 stores `occurred_utc` as epoch seconds): a sub-second component is truncated before
 comparison.
 
+The listing scope is exactly one conversation or the union of a resolved Collection's member
+conversations (docs/PRD.md FR-23, issue #105); the caller owns scope resolution, exactly as it does
+for the search and statistics queries. The member union is answered through the same
+`(conversation_id, occurred_utc, source_order_key, id)` timeline index with a member filter — the
+same `json_each` pattern the search and statistics scopes use — in the one canonical order above:
+the stable message id is globally unique, so that order is a total order across conversations too,
+and no per-conversation merge or second index is involved. A member that resolves to no archived
+conversation contributes no rows; no canonical schema change, derived table or second scope model
+exists for this.
+
 ### 23.2 Pagination cursors
 
 Cursors are **API tokens, not persistent archive records**: nothing is written to SQLite, no
 migration is involved, and no recovery semantics apply. A cursor carries the exclusive keyset
 position of the last returned record (epoch instant, normalized order key, stable message id) plus a
-fingerprint of the normalized filter set (conversation, date range, participant, type). Page size is
-deliberately excluded so a caller may change `--limit` between pages of the same listing.
+fingerprint of the normalized filter set — the resolved scope (the conversation, or the
+Collection's resolved member IDs, so a catalog change cannot silently repoint a page), the date
+range, the participant and the type. Page size is deliberately excluded so a caller may change
+`--limit` between pages of the same listing.
 
 A cursor is opaque to callers, and an empty, malformed, unsupported-version or filter-mismatched
 cursor is a deterministic validation failure (`docs/CLI.md`), never a silently different page.

@@ -70,11 +70,14 @@ public sealed class ArchiveQueryService
     }
 
     /// <summary>
-    /// Lists bounded canonical messages of one conversation in deterministic timeline order.
+    /// Lists bounded canonical messages of one conversation, or of the union of a resolved
+    /// Collection's member conversations, in deterministic canonical timeline order
+    /// (docs/PRD.md FR-23).
     /// </summary>
     /// <exception cref="ArchiveQueryException">
-    /// The request is invalid, the cursor is unusable, the conversation is unknown or the archive
-    /// cannot be read.
+    /// The request is invalid (no scope, both scopes, a bad filter), the cursor is unusable, the
+    /// requested conversation or Collection is unknown, the Collection configuration is invalid,
+    /// or the archive cannot be read.
     /// </exception>
     public async Task<MessageQueryPage> ListMessagesAsync(
         MessageListRequest request,
@@ -82,8 +85,11 @@ public sealed class ArchiveQueryService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (string.IsNullOrWhiteSpace(request.ConversationId))
-            throw ArchiveQueryException.Invalid("a stable conversation id is required.");
+        // --conversation and --collection are mutually exclusive scopes, exactly as search and
+        // statistics scope them: one listing answers one resolved scope, never an ambiguous union.
+        if (request.ConversationId is not null && request.CollectionName is not null)
+            throw ArchiveQueryException.Invalid(
+                "conversation and collection scopes are mutually exclusive; supply one listing scope.");
 
         var limit = ValidateLimit(request.Limit);
         var since = ParseInstant(request.Since, "since");
@@ -94,15 +100,67 @@ public sealed class ArchiveQueryService
         var participant = ValidateParticipant(request.ParticipantId);
         var type = ParseType(request.Type);
 
-        // The cursor is bound to the normalized filter set, so a caller can resume the same
-        // listing with a different spelling of the same instant and still be accepted, while a
-        // cursor from another query is rejected rather than silently paging the wrong timeline.
-        var fingerprint = MessageCursor.Fingerprint(
-            request.ConversationId, since, until, participant, type?.ToWireName());
+        string? conversationId = null;
+        CollectionDefinition? definition = null;
+        if (request.ConversationId is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.ConversationId))
+                throw ArchiveQueryException.Invalid("a stable conversation id is required.");
+
+            conversationId = request.ConversationId;
+
+            // An unknown conversation is a deterministic product outcome rather than an empty
+            // listing, so a caller can tell "this conversation has no matching messages" from
+            // "wrong id".
+            var conversation = await ReadAsync(
+                () => _archive.GetConversationAsync(conversationId, cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+            if (conversation is null)
+                throw ArchiveQueryException.ConversationNotFound(conversationId);
+        }
+        else if (request.CollectionName is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.CollectionName))
+                throw ArchiveQueryException.Invalid("a collection name is required.");
+
+            // The one authoritative Collection catalog resolves the scope; an unknown name and an
+            // invalid configuration are deterministic failures, while a member that resolves to no
+            // archived conversation contributes no results and never errors by itself — exactly as
+            // the search and statistics scopes resolve their membership.
+            try
+            {
+                definition = await _collections.ResolveAsync(request.CollectionName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (CollectionNotFoundException)
+            {
+                throw ArchiveQueryException.CollectionNotFound(request.CollectionName);
+            }
+            catch (CollectionConfigurationException exception)
+            {
+                throw ArchiveQueryException.CollectionConfigInvalid(exception);
+            }
+        }
+        else
+        {
+            throw ArchiveQueryException.Invalid(
+                "a stable conversation id or a collection name is required.");
+        }
+
+        // The cursor is bound to the normalized scope (the resolved member IDs for a Collection,
+        // so a catalog change cannot silently repoint a page) plus the normalized filter set, so a
+        // caller can resume the same listing with a different spelling of the same instant and
+        // still be accepted, while a cursor from another query is rejected rather than silently
+        // paging the wrong timeline. The conversation-scope fingerprint is unchanged, so an
+        // existing conversation cursor stays resumable.
+        var fingerprint = conversationId is not null
+            ? MessageCursor.Fingerprint(conversationId, since, until, participant, type?.ToWireName())
+            : MessageCursor.Fingerprint(definition!.ConversationIds, since, until, participant, type?.ToWireName());
 
         var query = new ArchiveMessageQuery
         {
-            ConversationId = request.ConversationId,
+            ConversationId = conversationId,
+            ConversationIds = conversationId is null ? definition!.ConversationIds : null,
             Since = since,
             Until = until,
             ParticipantId = participant,
@@ -111,13 +169,24 @@ public sealed class ArchiveQueryService
             After = request.Cursor is null ? null : MessageCursor.Decode(fingerprint, request.Cursor),
         };
 
-        // An unknown conversation is a deterministic product outcome rather than an empty listing,
-        // so a caller can tell "this conversation has no matching messages" from "wrong id".
-        var conversation = await ReadAsync(
-            () => _archive.GetConversationAsync(request.ConversationId, cancellationToken),
-            cancellationToken).ConfigureAwait(false);
-        if (conversation is null)
-            throw ArchiveQueryException.ConversationNotFound(request.ConversationId);
+        // How many of the Collection's members the canonical archive knows right now. Reporting
+        // this makes a collection whose canonical data is behind its configuration read as partial
+        // instead of silently up to date (docs/PRD.md FR-23); it is an observation about this
+        // page's read, never a completeness claim about the source.
+        int? archivedMemberCount = null;
+        if (definition is not null)
+        {
+            archivedMemberCount = 0;
+            foreach (var memberId in definition.ConversationIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var member = await ReadAsync(
+                    () => _archive.GetConversationAsync(memberId, cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+                if (member is not null)
+                    archivedMemberCount++;
+            }
+        }
 
         var page = await ReadAsync(
             () => _archive.QueryMessagesAsync(query, cancellationToken),
@@ -130,11 +199,24 @@ public sealed class ArchiveQueryService
             ? MessageCursor.Encode(fingerprint, OrderKeyOf(page.Items[^1]))
             : null;
 
+        var scope = conversationId is not null
+            ? new MessageQueryScope { Kind = "conversation", ConversationId = conversationId }
+            : new MessageQueryScope
+            {
+                Kind = "collection",
+                CollectionName = request.CollectionName,
+                MemberConversationCount = definition!.ConversationIds.Count,
+                ArchivedMemberConversationCount = archivedMemberCount,
+                InvalidMemberCount = definition.InvalidConversationIds.Count,
+                DuplicateMemberCount = definition.DuplicateConversationIds.Count,
+            };
+
         return new MessageQueryPage
         {
             Items = page.Items,
             HasMore = hasMore,
             NextCursor = nextCursor,
+            Scope = scope,
         };
     }
 
