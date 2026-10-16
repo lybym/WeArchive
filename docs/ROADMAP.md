@@ -422,7 +422,8 @@ authorization (ADR 0012).
 3. Remaining M4 Harness workflows (FR-18/23, HARNESS.md): reuse the
    authoritative Collection (#26) for scoped query/search and export (delivered: scoped
    query/search by #103–#105, Collection export and time-range selection by #106);
-   add read-only CLI freshness/status and evidence references for bounded analysis. MCP is
+   read-only CLI freshness/status (`wearchive status`) and citation-ready evidence
+   references for bounded analysis are delivered by #107 (issue #107). MCP is
    optional, separately scoped, and not a prerequisite.
 
 **Independent, bounded V2-only follow-up (delivered, Issue #96):** the

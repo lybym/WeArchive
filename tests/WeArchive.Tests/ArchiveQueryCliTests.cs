@@ -651,11 +651,15 @@ public sealed class ArchiveQueryCliTests
         var root = document.RootElement;
 
         Assert.Equal(
-            ["after", "before", "conversation_id", "message", "message_id"],
+            ["after", "before", "conversation_id", "message", "message_id", "reference"],
             root.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal));
 
         Assert.Equal(ArchiveQueryHarness.ImageId, root.GetProperty("message_id").GetString());
         Assert.Equal(ArchiveQueryHarness.GroupConversationId, root.GetProperty("conversation_id").GetString());
+        Assert.Equal(
+            $"wearchive://message/{ArchiveQueryHarness.ImageId}" +
+            $"?conversation={ArchiveQueryHarness.GroupConversationId}&before=2&after=2",
+            root.GetProperty("reference").GetString());
         Assert.Equal(ArchiveQueryHarness.ImageId, root.GetProperty("message").GetProperty("id").GetString());
         Assert.Equal(
             [ArchiveQueryHarness.SecondId, ArchiveQueryHarness.UnknownId],
@@ -794,6 +798,150 @@ public sealed class ArchiveQueryCliTests
         Assert.Equal(ExitCode.Cancelled, exit);
         using var document = ParseSingleDocument(stdout.ToString());
         Assert.Equal("cancelled", document.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    // ---- context: evidence references (issue #107) ---------------------------
+
+    [Fact]
+    public async Task ContextResultCarriesACitationReadyReferenceField()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        var (exit, stdout, _) = await RunAsync(
+            provider,
+            "context", ArchiveQueryHarness.PartialId, "--before", "2", "--after", "2", "--json");
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var document = ParseSingleDocument(stdout);
+        var root = document.RootElement;
+        Assert.Equal(
+            ["after", "before", "conversation_id", "message", "message_id", "reference"],
+            root.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal));
+        Assert.Equal(
+            $"wearchive://message/{ArchiveQueryHarness.PartialId}" +
+            $"?conversation={ArchiveQueryHarness.GroupConversationId}&before=2&after=2",
+            root.GetProperty("reference").GetString());
+    }
+
+    [Fact]
+    public async Task ContextResolvesAnEvidenceReferenceToExactlyTheCitedWindow()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        var referenceText =
+            $"wearchive://message/{ArchiveQueryHarness.PartialId}" +
+            $"?conversation={ArchiveQueryHarness.GroupConversationId}&before=2&after=2";
+
+        var (byIdExit, byIdOut, _) = await RunAsync(
+            provider, "context", ArchiveQueryHarness.PartialId, "--before", "2", "--after", "2", "--json");
+        var (byReferenceExit, byReferenceOut, _) = await RunAsync(provider, "context", referenceText, "--json");
+
+        Assert.Equal(ExitCode.Success, byIdExit);
+        Assert.Equal(ExitCode.Success, byReferenceExit);
+        using var byId = ParseSingleDocument(byIdOut);
+        using var byReference = ParseSingleDocument(byReferenceOut);
+
+        // A reference resolves to the same canonical messages the equivalent direct call returns:
+        // the citation is the address, never a different projection.
+        Assert.Equal(
+            byId.RootElement.GetProperty("message").GetProperty("id").GetString(),
+            byReference.RootElement.GetProperty("message").GetProperty("id").GetString());
+        Assert.Equal(
+            byId.RootElement.GetProperty("before").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()),
+            byReference.RootElement.GetProperty("before").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()));
+        Assert.Equal(
+            byId.RootElement.GetProperty("after").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()),
+            byReference.RootElement.GetProperty("after").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()));
+        Assert.Equal(referenceText, byReference.RootElement.GetProperty("reference").GetString());
+    }
+
+    [Fact]
+    public async Task ContextReferenceWindowOptionsOverrideTheCitedWindow()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+        var referenceText =
+            $"wearchive://message/{ArchiveQueryHarness.PartialId}" +
+            $"?conversation={ArchiveQueryHarness.GroupConversationId}&before=0&after=0";
+
+        var (exit, stdout, _) = await RunAsync(
+            provider, "context", referenceText, "--before", "1", "--after", "1", "--json");
+
+        Assert.Equal(ExitCode.Success, exit);
+        using var document = ParseSingleDocument(stdout);
+        Assert.Single(document.RootElement.GetProperty("before").EnumerateArray());
+        Assert.Single(document.RootElement.GetProperty("after").EnumerateArray());
+        // The echoed reference reports the window that was actually requested, so re-resolving it
+        // reproduces this exact window.
+        Assert.Equal(
+            $"wearchive://message/{ArchiveQueryHarness.PartialId}" +
+            $"?conversation={ArchiveQueryHarness.GroupConversationId}&before=1&after=1",
+            document.RootElement.GetProperty("reference").GetString());
+    }
+
+    [Fact]
+    public async Task MalformedEvidenceReferenceExitsTwoWithUsageError()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        var (exit, stdout, stderr) = await RunAsync(
+            provider,
+            "context", $"wearchive://message/{ArchiveQueryHarness.PartialId}?conversation=oops", "--json");
+
+        Assert.Equal(ExitCode.UsageError, exit);
+        using var document = ParseSingleDocument(stdout);
+        Assert.Equal(
+            "usage_error",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("error:", stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EvidenceReferenceNamingAnotherConversationExitsOneWithReferenceUnresolvable()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        // The message exists, but the citation names a conversation it does not belong to; it must
+        // fail closed instead of resolving to evidence the citation did not cite.
+        var (exit, stdout, _) = await RunAsync(
+            provider,
+            "context",
+            $"wearchive://message/{ArchiveQueryHarness.PartialId}" +
+            $"?conversation={ArchiveQueryHarness.SecondConversationId}&before=1&after=1",
+            "--json");
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var document = ParseSingleDocument(stdout);
+        Assert.Equal(
+            "reference_unresolvable",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task EvidenceReferenceForAnAbsentMessageExitsOneWithMessageNotFound()
+    {
+        using var harness = await SeededAsync();
+        using var provider = BuildProvider(harness);
+
+        var (exit, stdout, _) = await RunAsync(
+            provider,
+            "context",
+            "wearchive://message/m_0000000000000fff" +
+            $"?conversation={ArchiveQueryHarness.GroupConversationId}&before=1&after=1",
+            "--json");
+
+        Assert.Equal(ExitCode.Failure, exit);
+        using var document = ParseSingleDocument(stdout);
+        Assert.Equal(
+            "message_not_found",
+            document.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
     [Fact]

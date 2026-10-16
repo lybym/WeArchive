@@ -219,6 +219,9 @@ public sealed record MessageListResultDto
 /// <summary>
 /// <c>context --json</c> result: the target message is a distinct field from the bounded arrays
 /// before and after it, so a caller never has to infer the anchor from a position in a list.
+/// <c>reference</c> is the citation-ready evidence reference of the returned window (issue #107,
+/// docs/HARNESS.md section 11): the stable message ID, its conversation and the requested window
+/// counts, resolvable later through <c>wearchive context</c> to exactly the cited window.
 /// </summary>
 public sealed record MessageContextResultDto
 {
@@ -227,6 +230,9 @@ public sealed record MessageContextResultDto
 
     [JsonPropertyName("conversation_id")]
     public required string ConversationId { get; init; }
+
+    [JsonPropertyName("reference")]
+    public required string Reference { get; init; }
 
     [JsonPropertyName("before")]
     public required IReadOnlyList<MessageDto> Before { get; init; }

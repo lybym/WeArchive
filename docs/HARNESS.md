@@ -30,7 +30,8 @@ This contract is now shipped for interactive retrieval. `ArchiveQueryService`, `
 list` and `wearchive context` are implemented (Issue #27 / M3a) and are read-only over the
 canonical archive. The derived FTS index and the search service contract are implemented
 (Issue #102 / M3b-1), and the `wearchive search` CLI transport is implemented (issue #103 /
-M3b-2). A CLI archive-status command and MCP transport are not implemented yet.
+M3b-2). The read-only `wearchive status` freshness report and the citation-ready evidence
+references are implemented (issue #107 / M4c). The MCP transport is not implemented yet.
 
 **Post-v0.6.0 implementation order:** M2 message-semantic correctness and
 provenance first, then M3b rebuildable SQLite FTS5/`wearchive search`
@@ -83,8 +84,8 @@ search is delivered by the M3b slices (Issues #102/#103) through the same servic
 activity summaries are delivered by the M3c slice (issue #104) as
 `ArchiveQueryService.GetStatisticsAsync` — one bounded, read-only report of scope totals, the
 canonical type distribution and day/month/conversation breakdown buckets, with unknown, partial
-and unattributed records reported explicitly. No CLI status command is wired to the freshness API
-yet.
+and unattributed records reported explicitly. Archive freshness is wired to the CLI by the M4c
+slice (issue #107) as the read-only `wearchive status` command.
 
 ## 4. CLI query surface
 
@@ -114,6 +115,9 @@ wearchive stats `
   --since 2026-01-01 `
   --limit 100 `
   --json
+
+wearchive status `
+  --json
 ```
 
 `message list`, `context` and `search` are **shipped** and normative in [`CLI.md`](CLI.md) —
@@ -122,7 +126,9 @@ target message from the messages before and after it, the `--participant` / `--t
 the time grammar. `search` runs over the FTS index of section 7 and returns the same canonical
 message DTO, so the workflow below is the shipped retrieval pattern. `stats` is **shipped** by the
 M3c slice (issue #104) and normative in [`CLI.md`](CLI.md): one read-only document naming its
-scope and basis, with unknown/partial/unattributed records as explicit totals.
+scope and basis, with unknown/partial/unattributed records as explicit totals. `status` is
+**shipped** by the M4c slice (issue #107) and normative in [`CLI.md`](CLI.md): one read-only
+document of the three independent freshness stages of section 10.
 
 ## 5. Pagination
 
@@ -289,9 +295,17 @@ canonical  archive counts plus the newest archived message instant, as of the mo
 
 They are deliberately never inferred from one another: captured evidence may not be ingested yet,
 and an ingest may be older than the newest capture. An account that was captured but never ingested
-is reported with capture progress and null ingest progress. No CLI status command is wired to this
-yet, so a Harness currently reaches it through the application service rather than through
-`--json`.
+is reported with capture progress and null ingest progress.
+
+**Shipped by issue #107 (M4c).** `wearchive status` (normative in [`CLI.md`](CLI.md)) is the
+read-only CLI projection of this report: one JSON document with `basis` (which archive, as of
+`queried_at`), `canonical` (counts plus the newest archived message instant), `capture` (the latest
+published generation per known account, with a stage-level `unavailable_reason` when the
+preservation store cannot be enumerated at all) and `ingest` (committed canonical publication
+progress per account). It reports the stages exactly as they were observed and never derives a
+combined verdict: whether a capture is "stale" or an ingest is "behind" is the caller's judgement
+from independent facts, not a product assertion — a synthesized fresh/stale label would be exactly
+the inference this section forbids.
 
 A stage that cannot be read degrades instead of failing the report: an unreadable preservation
 store yields a null generation plus an explicit reason, so the canonical status stays available and
@@ -299,7 +313,94 @@ a real defect remains diagnosable rather than presenting as an unavailable archi
 the failure's exception type and message — engineering diagnostics a caller reports, not an input it
 parses, and never artifact contents, a fingerprint, a checksum or message content.
 
-## 11. Future MCP transport
+## 11. Evidence references (citations)
+
+A Harness that quotes archived messages downstream needs a durable, verifiable way to say *which*
+evidence it cited. An evidence reference is that citation: a stable, source-neutral address of
+exactly one archived canonical message together with the context window it was cited from
+(issue #107, docs/PRD.md FR-17).
+
+**Canonical form.**
+
+```text
+wearchive://message/<m_id>?conversation=<conversation-id>&before=<n>&after=<n>
+```
+
+The reference names only stable canonical identities and the cited window:
+
+- `<m_id>` — the stable canonical message ID (`m_<16 hex>`), the citation target;
+- `conversation` — the stable conversation ID (`g_<16 hex>` / `u_<16 hex>`) the message was cited
+  from; resolution verifies the archive agrees;
+- `before` / `after` — the window counts (0–100) the citation covers, so re-resolution reproduces
+  exactly the window the agent cited.
+
+It never contains a Raw Vault path, artifact hash, partition fingerprint, checkpoint payload or any
+source-internal identifier — a citation outlives storage layout changes precisely because it does
+not name them. The grammar is strict and fail-closed: the exact lowercase scheme, exactly those
+three query parameters, no duplicates, no percent-encoding, stable IDs in their canonical lowercase
+form. Anything else is rejected (`usage_error`), because a citation that silently parsed into a
+different window would resolve to evidence the agent did not cite.
+
+**Construction.** Every `wearchive context` result carries the citation-ready `reference` string for
+the window it returned — the returned window's own counts, so copying that field and resolving it
+later reproduces the same window. For a citation built from `message list` or `search` items, use
+the item's `id` and `conversation_id` and the window you then retrieve with `context`.
+
+A complete citation record is the reference plus the cited message's canonical envelope as returned
+by the CLI — in particular its `occurred_at`, `type`, `text` and the `source` provenance block.
+The provenance block is retained as engineering traceability, not as part of the address: it is
+never an identity input and never appears inside the reference.
+
+**Resolution.** `wearchive context <reference>` resolves a reference through the official CLI:
+
+```powershell
+wearchive context "wearchive://message/m_x?conversation=g_y&before=5&after=5" --json
+```
+
+Resolution returns exactly the cited canonical message and its cited window, or fails explicitly:
+
+- the message is not in the archive → `message_not_found` (exit 1) — the explicit "unavailable"
+  outcome of a stale or wrong-archive citation;
+- the reference names a conversation the message does not belong to → `reference_unresolvable`
+  (exit 1) — the citation cannot be exactly true, so it never degrades into a nearby match;
+- the reference does not parse → `usage_error` (exit 2).
+
+An explicit `--before`/`--after` overrides the cited window (the echoed `reference` then reports the
+window actually requested). A message ID that exists is returned verbatim with all its canonical
+semantics — unknown, partial and unresolved-sender records are cited as they are archived, never
+normalized away.
+
+## 12. A bounded Harness analysis flow
+
+The minimal bounded flow for a Harness analysis over one Collection — every step through the
+official CLI, every step read-only except a sync the caller explicitly requested
+(issue #107, [`CLI.md`](CLI.md)):
+
+```text
+1. resolve Collection      wearchive collection show <name>          (read-only)
+2. optional sync           wearchive sync --collection <name>        (write; ONLY on explicit request)
+3. status                  wearchive status --json                   (read-only)
+4. search                  wearchive search "query" --collection <name> --json
+5. context                 wearchive context <message-id> --before 20 --after 20 --json
+6. citations               the result's reference field / section 11
+7. status disclosure       wearchive status --json again; cite the basis and queried_at
+```
+
+The shape of this flow is normative for Harness integrations:
+
+- **Status before and after.** Read `wearchive status` before analysis (rule 10 below: never assume
+  a recent live message is already captured and ingested) and disclose the status basis with the
+  analysis (the `basis.archive_path` and `basis.queried_at` of the run).
+- **Sync is never implicit.** No query command syncs, and no analysis step may trigger a sync by
+  itself; refreshing canonical state is always the caller's explicit decision at step 2. Analysis
+  over a stale archive is a disclosed fact, not an error — the status stages make it visible.
+- **Everything else is read-only (R0).** Steps 1 and 3–7 mutate nothing: no canonical data, no Raw
+  Vault evidence, no checkpoint. There is no background scheduler and no second query stack; a
+  future MCP transport would expose the same service, not replace the flow.
+- **Scope through Collection.** `--collection` resolves the same authoritative catalog in search,
+  listing, statistics and export, so one named scope covers the whole analysis.
+
+## 13. Future MCP transport
 
 A future stdio MCP server may expose the same `ArchiveQueryService` operations.
 
@@ -325,7 +426,7 @@ sync_collection
 
 MCP MUST NOT implement a second query engine or directly parse Raw Vault artifacts. It is a transport adapter over application services.
 
-## 12. Recommended Harness rules
+## 14. Recommended Harness rules
 
 A Harness integration should follow these rules:
 
@@ -340,7 +441,7 @@ A Harness integration should follow these rules:
 9. Treat unknown canonical messages as retained evidence, not as permission to inspect arbitrary upstream structures automatically.
 10. Use archive freshness/status before assuming a recent live-WeChat message has already been captured and ingested.
 
-## 13. Why JSONL remains
+## 15. Why JSONL remains
 
 JSONL remains a first-class interchange format for:
 

@@ -570,6 +570,16 @@ reports the resolved scope (including how many members the canonical archive kno
 while the archive store executes the member-union query with the same `json_each` filter the search
 and statistics scopes use. No schema change, no second catalog and no new reliability machinery.
 
+Archive freshness projection and evidence references are the M4c extension of the same service
+([Issue #107](https://github.com/lybym/WeArchive/issues/107)). `GetFreshnessAsync` already owned the
+three independent reads (canonical counts, per-account capture summaries through `IRawVaultStore`,
+ingest progress through `IIngestProgressSource`); `wearchive status` is its thin CLI transport and
+derives no verdict of its own. `EvidenceReference` pins the citation-ready reference grammar
+(docs/HARNESS.md section 11) in Core, and the reference-aware `GetContextAsync` overload owns the
+exactly-cited resolution semantics — including the fail-closed conversation check — so the CLI stays
+a renderer and a future MCP transport would inherit the same semantics. Both are query-time values
+over existing stable IDs: no schema change, no derived state, R0 unchanged.
+
 ## 4. Data flow
 
 ```mermaid
