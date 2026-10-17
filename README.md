@@ -90,6 +90,13 @@ The difficult archive/source/export engine is already implemented:
 - bounded canonical retrieval through `ArchiveQueryService` with `wearchive message list` and
   `wearchive context` — cursor-paginated, canonical-filtered, read-only over the archive's existing
   timeline index ([docs/CLI.md](docs/CLI.md));
+- Chinese/mixed-language full-text search (`wearchive search`) over a rebuildable SQLite FTS5
+  index (migration 3, deterministic offline rebuild) per [SEARCH_SPEC.md](docs/SEARCH_SPEC.md) and
+  [ADR 0013](docs/adr/0013-fts5-chinese-mixed-tokenization-strategy.md);
+- read-only archive statistics and activity timeline (`wearchive stats`);
+- Collection-scoped canonical query (`message list --collection`) and canonical-only Collection
+  export with selected time ranges (`export --collection`, `--since`/`--until`);
+- read-only archive freshness/status (`wearchive status`) and citation-ready evidence references;
 - deterministic machine export to monthly JSONL plus YAML/JSON catalogs;
 - structured Fatal/Partial/Info diagnostics;
 - fixture and real-environment integration tests.
@@ -167,13 +174,10 @@ In scope:
 
 Not yet complete:
 
-- M2 semantic fidelity/unknown-message quality improvements;
-- M3b full-text archive search (no FTS index exists), including Chinese/mixed text evaluation;
-- Collection-scoped query/search and export selection (Collection resolution and
-  `sync --collection` are shipped);
-- a CLI archive-status command and MCP transport (capture/ingest/canonical freshness is available
-  through `ArchiveQueryService`);
-- scope-level time-range selection (message-level `--since`/`--until` bounds ship on `message list`).
+- MCP transport (optional, separately scoped);
+- real-environment acceptance of the 0.7.0 release line: the M2/M3b/M3c/M4 capability set is
+  delivered on `main` and packaged by the 0.7.0 RC, but CI cannot exercise a live WeChat client;
+- Raw Vault encryption-at-rest, GC/compaction and scheduled capture (deferred).
 
 Out of current scope:
 
