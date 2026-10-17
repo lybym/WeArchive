@@ -599,6 +599,22 @@ are valid data.
 
 Migration 1 creates the initial canonical schema. Migration 2 adds scoped `ingest_checkpoints`; it leaves migration-1 `source_checkpoints` and all existing archive rows untouched. Migration 3 (Issue #102) creates the derived canonical FTS5 search index (`messages_fts`) and backfills it from the existing canonical rows inside the migration's own transaction; it adds no canonical table or column and changes no existing row.
 
+### 18.1 Historical note: the v0.6.0 migration runner and `user_version` (no fail-closed guard)
+
+The shipped v0.6.0 migration runner (`SqliteArchiveStore.ApplyMigrations`, `tags/v0.6.0`) has no
+`user_version` guard: it derives applied migrations from `schema_migrations` alone and, on every
+open, unconditionally writes `user_version` to the binary's current schema version (2). Opening an
+archive already upgraded to schema version 3 with the v0.6.0 binary therefore rewrites
+`user_version` 3 → 2 on open; it does **not** fail closed and does not refuse the newer archive.
+No migration is re-run and no canonical row changes — `schema_migrations` (still recording
+version 3) remains authoritative. The next open with a v0.7.0 (or newer) binary re-advances
+`user_version` to 3; the current runner writes it only when it differs, so a plain open stays a
+read-only operation on an up-to-date archive.
+
+This demotion is factual, documented behavior of the shipped v0.6.0 line, not a defect fixed in
+product code: the v0.6.x line received no fail-closed schema-version guard. To roll back an
+archive that was upgraded to schema version 3, restore the pre-upgrade archive backup.
+
 ## 19. Search indexing
 
 Full-text search is a derived index, not the canonical store.
@@ -880,8 +896,12 @@ boundary over the canonical archive; CLI `--json` and a future MCP transport are
 (`docs/HARNESS.md` sections 2–5, `docs/ARCHITECTURE.md` section 3.9).
 
 This slice adds **no** canonical schema change: bounded retrieval orders and filters with the
-existing migration-1 timeline index `(conversation_id, occurred_utc, source_order_key, id)`, and
-section 19 still holds — there is no FTS table, virtual table or second search engine.
+existing migration-1 timeline index `(conversation_id, occurred_utc, source_order_key, id)`.
+
+Full-text search is served by the one derived FTS5 virtual table `messages_fts` that migration 3
+creates and backfills (section 18), owned, maintained and rebuilt per section 19. Retrieval reads
+canonical rows and that derived index only — never Raw Vault evidence or retained raw source
+records (section 20) — and defines no second search engine.
 
 ### 23.1 Bounded retrieval
 

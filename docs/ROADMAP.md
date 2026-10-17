@@ -174,30 +174,31 @@ fixture can supply the remaining regression evidence.
 deferred, as do GC/compaction, scheduled capture, cross-account dedup,
 media and R3+ recovery. They are not v0.6.0 release blockers.
 
-## M2 — Message semantics and completeness (next active milestone)
+## M2 — Message semantics and completeness (delivered)
 
 **Goal:** improve canonical semantic fidelity without weakening provenance,
 source completeness, stable IDs or deterministic export.
 
-Ordered proposed slices (each owns a separate Issue):
-1. **M2a quality baseline (delivered by Issue #97):** privacy-safe classification of
+**Delivered on `main` by Issues #97–#100 (PRs #109–#112) and shipped in Stable v0.7.0.**
+Slices (each owned a separate Issue):
+1. **M2a quality baseline (delivered by Issue #97, PR #109):** privacy-safe classification of
    unknown messages, representative fixtures, measured semantics/coverage and
    reproducible regression acceptance criteria. The measured baseline, the synthetic
    wire-level corpus and the pinned regression tests live in
    `docs/SEMANTIC_QUALITY_BASELINE.md` and `tests/WeArchive.Tests/SemanticBaselineTests.cs`.
-2. **M2b special/unknown messages:** improve high-impact supported
-   classifications, retain unsupported evidence and explicit diagnostics.
-3. **M2c reply/quote/forward relations:** resolve supported targets and
-   nested text, preserving null/unknown for unavailable source truth.
-4. **M2d metadata refresh/merge (delivered by Issue #100):** maintain stable identity and
+2. **M2b special/unknown messages (delivered by Issue #98, PR #110):** improve high-impact
+   supported classifications, retain unsupported evidence and explicit diagnostics.
+3. **M2c reply/quote/forward relations (delivered by Issue #99, PR #111):** resolve supported
+   targets and nested text, preserving null/unknown for unavailable source truth.
+4. **M2d metadata refresh/merge (delivered by Issue #100, PR #112):** maintain stable identity and
    export paths through contact/remark changes; regression through offline rebuild/export.
 
-Acceptance: positive and negative MESSAGE_SCHEMA fixtures, before/after
+Acceptance criteria — met: positive and negative MESSAGE_SCHEMA fixtures, before/after
 quality measures, unchanged source/Raw Vault, no invented fields, R1/R2
 safety gates, and deterministic re-export. No claim that all unknowns can
 be resolved.
 
-## M3 — Search and retrieval
+## M3 — Search and retrieval (complete)
 
 **Goal:** make the archive efficient for targeted machine analysis.
 
@@ -240,30 +241,31 @@ Delivered:
 - no new index, no schema migration and no FTS table: bounded retrieval uses the migration-1
   timeline index.
 
-Not delivered by M3a (still open in M3):
+Not delivered by M3a (delivered later, unless noted):
 
 - archive statistics and activity timeline beyond basic freshness (delivered later by M3c);
-- a CLI status command and MCP transport over the query service;
+- a CLI status command and MCP transport over the query service (the read-only status command
+  was delivered later by issue #107, PR #119; an MCP transport remains optional and undelivered);
 - Collection-scoped query filtering (delivered later: `search --collection` by M3b-2, issue #103,
   and `message list --collection` by M4a, issue #105).
 
 ### M3b — Canonical full-text retrieval (delivered)
 
-- **M3b-0 specification and benchmark (delivered by Issue #101):** `docs/SEARCH_SPEC.md` and
+- **M3b-0 specification and benchmark (delivered by Issue #101, PR #113):** `docs/SEARCH_SPEC.md` and
   ADR 0013 fix the searchable-field inventory, the CJK bigram-projection index input, the
   matching/filter/cursor contract, the derived-index lifecycle and the measured tokenization
   selection (unicode61 + bigram projection: recall 1.000/precision 1.000 on the pinned fixture
   corpus; unicode61-only 0.420; trigram 0.560).
-- **M3b-1 index slice (delivered by Issue #102):** the rebuildable SQLite FTS5 index
+- **M3b-1 index slice (delivered by Issue #102, PR #114):** the rebuildable SQLite FTS5 index
   (migration 3 + same-transaction maintenance + deterministic rebuild + integrity verification)
   and the `ArchiveQueryService` search contract (matching, filters, keyset cursor pagination),
   implementing the specification; the recall baseline passes through the real archive.
-- **M3b-2 CLI slice (delivered by Issue #103):** the `wearchive search` command — one-document
+- **M3b-2 CLI slice (delivered by Issue #103, PR #115):** the `wearchive search` command — one-document
   JSON contract, human output, section 7 filters including Collection scope, opaque cursor
   pagination, the section 12 error mapping and the CLI contract tests — implements the same
   specification and is normative in `docs/CLI.md`.
 
-### M3c — Archive statistics and activity timeline (delivered by Issue #104)
+### M3c — Archive statistics and activity timeline (delivered by Issue #104, PR #116)
 
 **Goal:** expose source-neutral canonical counts and activity timelines without duplicating search
 or inventing engagement metrics.
@@ -281,9 +283,10 @@ Delivered:
 - no new persisted or derived state: every count is computed from canonical rows at query time, so
   an offline canonical rebuild reproduces the same statistics.
 
-Not delivered by M3c (still open in M3):
+Not delivered by M3c (delivered later, unless noted):
 
-- a CLI status command and MCP transport over the query service;
+- a CLI status command and MCP transport over the query service (the read-only status command
+  was delivered later by issue #107, PR #119; an MCP transport remains optional and undelivered);
 - Collection-scoped `message list` filtering (delivered later by M4a, issue #105).
 
 ## M4 — Harness-oriented workflows
@@ -312,7 +315,7 @@ Delivered by Issue #26 (M4 foundation, P0 — Collection catalog and collection-
   run;
 - no `sync-group`/`watch-list`/`harness-dataset` concept and no canonical SQLite migration.
 
-Delivered by Issue #105 (M4a — reuse the Collection scope for canonical query and FTS search):
+Delivered by Issue #105 / PR #117 (M4a — reuse the Collection scope for canonical query and FTS search):
 
 - `message list --collection <name>`: scope resolution through the one authoritative Collection
   catalog (the same catalog `sync --collection`, `search --collection` and `stats --collection`
@@ -324,7 +327,7 @@ Delivered by Issue #105 (M4a — reuse the Collection scope for canonical query 
   query surface now scopes through the one authoritative Collection catalog; no second scope model
   was introduced.
 
-Delivered by Issue #106 (M4b — canonical-only Collection export and selected time ranges):
+Delivered by Issue #106 / PR #118 (M4b — canonical-only Collection export and selected time ranges):
 
 - `export --collection <name>`: the scope resolves through the one authoritative Collection
   catalog (the same catalog `sync --collection`, `search --collection`, `stats --collection` and
@@ -340,7 +343,19 @@ Delivered by Issue #106 (M4b — canonical-only Collection export and selected t
 - no canonical mutation, no Raw Vault access, no implicit sync, no R3+ machinery: the export
   boundary of Issue #66 and the R1 publication behavior are unchanged.
 
-Still open in M4: richer query/Harness automation and status/freshness tooling.
+Delivered by Issue #107 / PR #119 (M4c — read-only archive status and citation-ready evidence
+references):
+
+- `wearchive status` (docs/CLI.md): one `--json` document projecting capture/ingest/canonical
+  freshness from the three independent sources of DATA_MODEL section 23.3 plus the `queried_at`
+  basis, transported without change and without deriving a combined verdict; no canonical schema
+  change and no status table, journal or derived state;
+- citation-ready evidence references: query-time `wearchive://message/...` values over existing
+  stable IDs, resolved by `wearchive context` (docs/HARNESS.md section 11) — no persistence and
+  no new identifier store.
+
+Still open in M4: richer query/Harness automation (the status/freshness tooling was delivered by
+issue #107, PR #119). MCP transport remains optional, separately scoped and not a prerequisite.
 
 Acceptance criteria:
 
@@ -399,10 +414,11 @@ Exact version numbers are chosen by release work; roadmap order is normative, ve
 
 ## Current priority
 
-**Stable baseline: `v0.6.0`** (2026-10-14, #86 hourly V2 acceptance,
-#93 merged, Release/CI passed). M1.5 V2 storage/correctness is **complete**,
-not a pending P0. Encryption-at-rest remains an independent deferred
-protection item.
+**Stable baseline: `v0.7.0`** (published 2026-10-17 from Release PR #121).
+M1.5 V2 storage/correctness is **complete**, not a pending P0. M2 (message
+semantics and completeness), M3 (search and retrieval) and M4a–c
+(Collection-scoped query/export/status, Issues #105–#107) shipped in this
+release. Encryption-at-rest remains an independent deferred protection item.
 
 **V2-only forward policy:** only V2 (manifest v3/vault format 2) for new
 capture/sync and future real-environment acceptance. No v1-only/mixed
@@ -411,20 +427,22 @@ files/readers remain untouched pending any separate breaking-change
 authorization (ADR 0012).
 
 **Next implementation priorities in dependency order:**
-1. M2a semantic evidence/quality baseline → M2b special/unknown semantics
-   → M2c reply/forward targets → M2d metadata refresh/merge correctness
-   (PRD FR-07/19/24/25, MESSAGE_SCHEMA).
-2. M3b FTS5 over canonical SQLite (PRD FR-15/16/17): evaluate Chinese/
-   mixed-language tokenization and performance; implement reproducible
-   rebuildable index and `wearchive search` with bounded JSON results,
-   stable IDs, provenance and context. M3a `ArchiveQueryService`,
-   `message list` and `context` are already shipped (#27).
-3. Remaining M4 Harness workflows (FR-18/23, HARNESS.md): reuse the
-   authoritative Collection (#26) for scoped query/search and export (delivered: scoped
-   query/search by #103–#105, Collection export and time-range selection by #106);
-   read-only CLI freshness/status (`wearchive status`) and citation-ready evidence
-   references for bounded analysis are delivered by #107 (issue #107). MCP is
-   optional, separately scoped, and not a prerequisite.
+
+No product milestone is currently active on `main`: M2a–d (#97–#100, PRs
+#109–#112), M3b FTS5 retrieval including the `wearchive search` CLI
+(#101–#103, PRs #113–#115), M3c statistics (#104, PR #116) and the M4
+Collection-scoped query/export/status workflows (#105–#107, PRs #117–#119)
+are delivered and shipped in Stable v0.7.0. The remaining named work is
+optional and requires its own Issue/scope decision before implementation:
+
+1. MCP transport over `ArchiveQueryService` and richer Harness automation
+   (FR-18/23, HARNESS.md) — optional, separately scoped, not a prerequisite.
+2. M5 optional human convenience (richer human-readable reports, interactive
+   helpers, scheduled local sync integration) — candidate work must be
+   separately justified.
+3. Deferred/exploratory items (encryption-at-rest, macOS/Linux support,
+   binary media preservation, OCR/ASR, and the other listed items) remain
+   intentionally uncommitted.
 
 **Independent, bounded V2-only follow-up (delivered, Issue #96):** the
 historical Partial (#63) path is guarded by isolated synthetic V2 fixture
