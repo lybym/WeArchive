@@ -139,30 +139,33 @@ Do not delete or mutate v1 evidence, silently migrate vaults or remove the
 already-shipped legacy reader. Any breaking legacy-reader removal requires a new
 approved Issue/compatibility decision. Raw Vault encryption-at-rest is deferred.
 
-**Next product milestone: M2 — message semantics and completeness.**
-Sequence: (1) the privacy-safe semantic/coverage measurement baseline is established
-(Issue #97, `docs/SEMANTIC_QUALITY_BASELINE.md`); (2) address unknown/special-message
-classification and explicit diagnostics;
-(3) resolve reply/quote target linkages within supported evidence;
-(4) validate contact/remark metadata refresh, stable IDs and deterministic
-rebuild/export. Scope must be backed by MESSAGE_SCHEMA, test fixtures and bounded
-real-world evidence. Do not fabricate missing semantics.
+**M2 — message semantics and completeness (delivered by Issues #97–#100).**
+Delivered: the privacy-safe semantic/coverage measurement baseline
+(Issue #97, `docs/SEMANTIC_QUALITY_BASELINE.md`), special-message classification
+with explicit unknown diagnostics (Issue #98), reply/quote/forwarded-bundle
+relationship resolution (Issue #99) and contact/remark metadata refresh with
+stable IDs and deterministic rebuild/export (Issue #100).
 
-**Then M3b — canonical full-text retrieval**, after existing M3a:
-- M3a delivered by Issue #27: `ArchiveQueryService`, `message list`, `context`,
+**M3b/M3c — canonical full-text retrieval and statistics (delivered by Issues #101–#104).**
+- M3a was delivered by Issue #27: `ArchiveQueryService`, `message list`, `context`,
   structured pagination and freshness from independent capture/ingest/canonical sources.
-- M3b targets a rebuildable SQLite FTS5 index, Chinese/mixed-language retrieval
-  evaluation, `wearchive search` CLI and deterministic canonical provenance.
+- Delivered: `docs/SEARCH_SPEC.md` and ADR 0013 (unicode61 + bigram projection),
+  the rebuildable SQLite FTS5 index (migration 3, deterministic offline rebuild,
+  Issue #102), the `wearchive search` CLI (Issue #103) and `wearchive stats`
+  (Issue #104).
 - Query remains read-only (R0); do not query Raw Vault or walk exported JSONL
   for interactive retrieval.
 
-**Then remaining M4 — Harness/Collection workflows:**
-- Issue #26 already delivered authoritative `collections.yaml`,
+**M4 — Harness/Collection workflows (delivered by Issues #105–#107).**
+- Issue #26 delivered authoritative `collections.yaml`,
   `collection list|show` and `sync --collection`.
-- The remaining work is Collection-scoped canonical query/search and export,
-  selected time ranges, read-only archive status, bounded references and
-  machine-readable Harness workflows. Any future MCP is an optional transport,
-  not a replacement query stack, and requires its own scope decision.
+- Delivered: Collection-scoped canonical query/search
+  (`message list --collection` via Issue #105, alongside `search --collection`
+  and `stats --collection`), canonical-only Collection export with selected
+  time ranges (Issue #106), and read-only archive freshness/status with
+  citation-ready evidence references (Issue #107).
+- Remaining optional work (MCP transport, richer Harness automation, human
+  convenience reports) requires its own scope decision.
 
 **Post-v0.6.0 reliability follow-up (complete, Issue #96):** the historical
 Partial scenario (#63) is confirmed and guarded by isolated V2-only synthetic

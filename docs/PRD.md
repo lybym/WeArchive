@@ -18,10 +18,11 @@ This architecture decision is recorded in [ADR 0008](adr/0008-raw-vault-canonica
 ## 2. Current versus target status
 
 **Stable baseline: `v0.6.0` (2026-10-14).** Raw Vault V2 storage and
-source-snapshot correctness, M1 source/sync, canonical-only offline export,
-M3a structured retrieval and the M4 Collection sync foundation are shipped.
-M2 semantic completeness is next, then M3b FTS/search and remaining M4
-Harness workflows. See [ROADMAP](ROADMAP.md) and the
+source-snapshot correctness, M1 source/sync, canonical-only offline export and
+M3a structured retrieval are shipped. The M2 semantic slices, the M3b/M3c
+retrieval slices and the M4 Collection query/export/status slices are delivered
+on `main` (Issues #94–#107) and packaged by the 0.7.0 release line. See
+[ROADMAP](ROADMAP.md) and the
 [V2-only forward policy](adr/0012-v2-only-forward-operations.md).
 
 
@@ -35,10 +36,9 @@ The 0.2.x implementation already provides:
 
 The following are accepted target requirements but are not yet shipped in 0.2.x:
 
-- a CLI archive-status command (`message list`, `context`, the M3b `search` and the M3c `stats`
-  ship as the structured-retrieval/query slices; the read-only archive-status command remains
-  open);
-- MCP transport.
+- a CLI archive-status command — since delivered on `main` by the M4c slice
+  (`wearchive status`, Issue #107);
+- MCP transport (still open; optional and separately scoped per ROADMAP).
 
 Delivered since the 0.2.x list was written: incremental Raw Vault capture with explicit partition
 coverage (Issue #25), conversation-scoped Raw Vault ingest checkpoints (Issue #24), the
@@ -687,7 +687,7 @@ Raw Vault encryption-at-rest remains deferred independent protection work,
 not an incomplete v0.6.0 release gate. M2 follows the delivered V2 slice;
 M3b full-text search and M4 Harness workflows follow M2.
 
-### M2 — Semantic completeness
+### M2 — Semantic completeness (delivered by Issues #97–#100)
 
 Use privacy-safe classification measurements to prioritize unknown and special
 message gaps, then improve reply/quote/forward target resolution and contact
@@ -695,7 +695,14 @@ metadata merge fidelity. Preserve unsupported raw evidence, distinguish
 unavailable values from known semantics, and validate deterministic offline
 rebuild/export on schema-backed positive/negative fixtures (see Roadmap M2a–d).
 
-### M3 — Query/Harness foundation
+Delivered on `main`: the M2a semantic quality/evidence baseline (Issue #97,
+`docs/SEMANTIC_QUALITY_BASELINE.md`), M2b special-message classification with
+explicit unknown diagnostics (Issue #98), M2c reply/quote/forwarded-bundle
+relationship resolution (Issue #99) and M2d contact/remark metadata refresh
+with stable IDs and deterministic rebuild/export (Issue #100). Reliability
+levels (R1 capture, R2 conversation ingest, R0 query) are unchanged.
+
+### M3 — Query/Harness foundation (delivered)
 
 - `ArchiveQueryService`;
 - message/date/conversation retrieval;
@@ -703,15 +710,22 @@ rebuild/export on schema-backed positive/negative fixtures (see Roadmap M2a–d)
 - Collection-backed scopes;
 - `docs/HARNESS.md` contract and CLI JSON query surface.
 
+Delivered on `main` across M3a (Issue #27), M3b-0/1/2 (Issues #101–#103: the
+search specification with ADR 0013, the rebuildable FTS5 index — migration 3 —
+and `wearchive search`), M3c (Issue #104: `wearchive stats`) and M4a
+(Issue #105: `message list --collection`).
+
 ### M4 — MCP and advanced Harness workflows
 
 Optional MCP over QueryService, richer collection/query/export automation and status/freshness tooling.
 
 Issue #26 delivers the M4 Collection *sync* foundation (authoritative Collection catalog,
 `collection list`/`show`, `sync --collection`); Collection-scoped query/search is delivered by the
-M3b–M4a slices (`search --collection`, `message list --collection`, `stats --collection`), and
+M3b–M4a slices (`search --collection`, `message list --collection`, `stats --collection`),
 Collection-scoped export selection with time-range refinement is delivered by issue #106, closing
-the export use of FR-23 on the same single scope abstraction.
+the export use of FR-23 on the same single scope abstraction, and read-only archive freshness
+status with citation-ready evidence references is delivered by issue #107 (`wearchive status`, M4c).
+The MCP transport itself remains optional future work.
 
 ## 13. Product governance
 
