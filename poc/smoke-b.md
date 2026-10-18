@@ -6,7 +6,7 @@
 Step 03（实现 Scope 并创建 Feature PR）→ Step 04（独立 Review）→ Step 05（修复）
 的 REQUEST_CHANGES 真实循环路径。
 
-- Issue: Refs #126
+- Issue: Refs #127
 - Batch: poc-20261018
 - Feature Branch: poc/team-issue/poc-20261018/smoke-b
 - Base Branch: poc/team-issue/poc-20261018/base
